@@ -378,11 +378,6 @@ public class PartGrapple extends APart {
             }
         }
 
-        hookDataValid = true;
-        hookPosition.set(position);
-        hookVelocity.set(direction).scale(hookSpeedVar.currentValue / 20D);
-        setAnchor(hookPosition);
-        setState(STATE_FLYING);
         return direction;
     }
 

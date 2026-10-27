@@ -215,6 +215,13 @@ public class PartGrapple extends APart {
     }
 
     /**
+     * Returns true if the hook is out of the launcher, flying or attached.
+     */
+    public boolean isLineOut() {
+        return lineOutVar.isActive;
+    }
+
+    /**
      * Called by the vehicle we are on, on both client and server, once per tick just before it moves.
      */
     public void updateLine() {
@@ -320,6 +327,27 @@ public class PartGrapple extends APart {
      * Fires the hook from the launcher at whatever is under the controller's crosshair.
      */
     private void launch() {
+        hookDataValid = true;
+        hookPosition.set(position);
+        hookVelocity.set(getLaunchDirection()).scale(hookSpeedVar.currentValue / 20D);
+        setAnchor(hookPosition);
+        setState(STATE_FLYING);
+    }
+
+    /**
+     * Returns where the hook would end up if fired now: the first thing in its path, or the end of the line.
+     * The hook flies straight, so this is exact for anything that holds still.  Used by the aiming crosshair.
+     */
+    public Point3D getAimPoint() {
+        Point3D end = getLaunchDirection().scale(rangeVar.currentValue).add(position);
+        Hit hit = findHit(position, end);
+        return hit != null ? hit.position : end;
+    }
+
+    /**
+     * Returns the direction the hook leaves the launcher in, in world coordinates.
+     */
+    private Point3D getLaunchDirection() {
         double range = rangeVar.currentValue;
         Point3D target;
         IWrapperEntity controller = getController();
@@ -355,6 +383,7 @@ public class PartGrapple extends APart {
         hookVelocity.set(direction).scale(hookSpeedVar.currentValue / 20D);
         setAnchor(hookPosition);
         setState(STATE_FLYING);
+        return direction;
     }
 
     /**

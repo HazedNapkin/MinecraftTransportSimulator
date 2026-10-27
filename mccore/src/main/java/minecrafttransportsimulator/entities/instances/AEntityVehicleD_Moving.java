@@ -33,6 +33,7 @@ import minecrafttransportsimulator.packets.instances.PacketPlayerChatMessage;
 import minecrafttransportsimulator.packets.instances.PacketVehicleServerMovement;
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
+import minecrafttransportsimulator.systems.grapple.GrappleLineCollision;
 import minecrafttransportsimulator.systems.summoning.VehicleSummonManager;
 
 /**
@@ -117,6 +118,13 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     public final List<BoundingBox> allBlockCollisionBoxes = new ArrayList<>(); //Public so we can add ground device boxes to this set.
     private AEntityE_Interactable<?> lastCollidedEntity;
     public VehicleGroundDeviceCollection groundDeviceCollective;
+
+    //Grapple data.
+    public final List<PartGrapple> grapples = new ArrayList<>();
+    /**True if a grapple line is holding our pitch this tick, so ground pitch correction shouldn't level us.**/
+    public boolean pitchHeldByGrapple;
+    /**Push out of a wall to apply after moving this tick, if a grapple line has dragged us into one.**/
+    private Point3D grapplePushOut;
 
     public AEntityVehicleD_Moving(AWrapperWorld world, IWrapperPlayer placingPlayer, ItemVehicle item, IWrapperNBT data) {
         super(world, placingPlayer, item, data);
@@ -224,6 +232,9 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             } else {
                 slipping = false;
             }
+            //Grapples go after our own forces, so their lines can override tyre grip and steering.
+            world.beginProfiling("Grapples", false);
+            updateGrapples();
             world.beginProfiling("Summoning", false);
             VehicleSummonManager.onVehicleTick((EntityVehicleF_Physics) this);
             world.beginProfiling("TotalMovement", false);
@@ -350,6 +361,34 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
         super.updatePartList();
         if (ticksExisted > 1) {
             updateGroundDevicesRequest = true;
+        }
+        grapples.clear();
+        for (APart part : allParts) {
+            if (part instanceof PartGrapple) {
+                grapples.add((PartGrapple) part);
+            }
+        }
+    }
+
+    /**
+     * Updates all grapple lines on this vehicle, applying their forces to our motion.
+     * If a line has dragged us into a wall, this also works out how to step us back out.
+     */
+    private void updateGrapples() {
+        pitchHeldByGrapple = false;
+        grapplePushOut = null;
+        if (!grapples.isEmpty()) {
+            boolean attached = false;
+            for (PartGrapple grapple : grapples) {
+                if (grapple.isValid) {
+                    grapple.updateLine();
+                    attached |= grapple.isAttached();
+                }
+            }
+            //Only while attached, so we don't change how collisions are handled the rest of the time.
+            if (attached && towedByConnection == null) {
+                grapplePushOut = GrappleLineCollision.findPushOut((EntityVehicleF_Physics) this, GrappleLineCollision.getAllBoxes((EntityVehicleF_Physics) this));
+            }
         }
     }
 
@@ -879,7 +918,10 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
                 }
                 if (!groundDeviceCollective.isBlockedVertically() && (fallingDown || towedByConnection != null)) {
                     world.beginProfiling("GroundHandlingPitch", false);
-                    groundDeviceCollective.performPitchCorrection(groundMotion);
+                    //Don't level us if a grapple line is holding one end up, or the lifted end drops straight back down.
+                    if (!pitchHeldByGrapple) {
+                        groundDeviceCollective.performPitchCorrection(groundMotion);
+                    }
                     //Don't do roll correction if we don't have roll.
                     if (groundDeviceCollective.canDoRollChecks()) {
                         world.beginProfiling("GroundHandlingRoll", false);
@@ -959,6 +1001,12 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             if (lastCollidedEntity != null) {
                 motionApplied.add(vehicleCollisionMotion);
                 rotationApplied.angles.add(vehicleCollisionRotation.angles);
+            }
+
+            //Add grapple push-out.  Moves made by a box already inside a block are cancelled, so this can't go
+            //through motion.  It goes in motionApplied so clients count it towards what they've moved.
+            if (grapplePushOut != null) {
+                motionApplied.add(grapplePushOut);
             }
 
             //All contributions done, add calculated motions.

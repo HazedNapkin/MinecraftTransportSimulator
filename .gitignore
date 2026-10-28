@@ -27,3 +27,6 @@ CLAUDE.md
 /Batvehicles_MTS_Patch
 buildAll.ps1
 buildAll.bat
+/.jdks
+build-all.bat
+build-all.ps1

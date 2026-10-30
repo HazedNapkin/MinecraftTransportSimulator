@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.DoublePredicate;
 
 import minecrafttransportsimulator.baseclasses.BlockHitResult;
@@ -26,6 +27,7 @@ import minecrafttransportsimulator.mcinterface.IWrapperEntity;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
+import minecrafttransportsimulator.packets.instances.PacketPartGrapple;
 import minecrafttransportsimulator.packets.instances.PacketPlayerChatMessage;
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
@@ -199,6 +201,12 @@ public class PartGrapple extends APart {
     //Launch direction for the current tick, so the turret and crosshair don't raycast every frame.
     private final Point3D launchDirection = new Point3D();
     private long launchDirectionTick = -1;
+    //Aim sent by a controller looking through an animated camera, as angles relative to their seat.
+    private UUID cameraAimControllerID;
+    private final RotationMatrix cameraAimOrientation = new RotationMatrix();
+    //Client-only: the last aim this client sent, so it only sends when it changes.
+    private UUID cameraAimSentID;
+    private final Point3D cameraAimSentAngles = new Point3D();
 
     public PartGrapple(AEntityF_Multipart<?> entityOn, IWrapperPlayer placingPlayer, JSONPartDefinition placementDefinition, ItemPartGrapple item, IWrapperNBT data) {
         super(entityOn, placingPlayer, placementDefinition, item, data);
@@ -284,6 +292,7 @@ public class PartGrapple extends APart {
             updateServerHook();
         } else {
             updateRenderAnchor();
+            sendCameraAim();
         }
 
         //Both sides run the vehicle's side of the line so clients don't have to wait on server corrections.
@@ -435,11 +444,27 @@ public class PartGrapple extends APart {
         double range = rangeVar.currentValue;
         Point3D target;
         IWrapperEntity controller = getController();
+        AEntityB_Existing inputSeat = null;
+        Point3D sight = null;
         if (controller != null) {
+            //An animated camera turns the rider to face along it.  If that camera follows this launcher, aiming
+            //where the rider faces feeds the launcher's turn back into its own aim and it drifts forever, so
+            //aim with the rider's mouse input instead, the same as guns do.
+            //Everywhere but the controller's own client, use the aim they sent, as nothing else knows it.
+            AEntityB_Existing seat = controller.getEntityRiding();
+            if (seat != null && seat.isRiderCameraInputActive) {
+                inputSeat = seat;
+                sight = new Point3D(0, 0, range).rotate(seat.riderCameraInputOrientation).rotate(seat.orientation);
+            } else if (seat != null && controller.getID().equals(cameraAimControllerID)) {
+                sight = new Point3D(0, 0, range).rotate(cameraAimOrientation).rotate(seat.orientation);
+            } else {
+                sight = controller.getLineOfSight(range).copy();
+            }
+
             //Find what the crosshair is on and aim the hook from the launcher at that point.
             //This way the hook goes where the controller is looking, even though the launcher is offset from their eyes.
             Point3D eye = controller.getEyePosition().copy();
-            Point3D eyeEnd = eye.copy().add(controller.getLineOfSight(range));
+            Point3D eyeEnd = eye.copy().add(sight);
             Hit aimHit = findHit(eye, eyeEnd);
             target = aimHit != null ? aimHit.position : eyeEnd;
         } else {
@@ -459,9 +484,64 @@ public class PartGrapple extends APart {
                     turnAxis.set(0, 1, 0).rotate(orientation);
                 }
                 direction.set(forward).rotate(new RotationMatrix().setToAxisAngle(turnAxis.normalize(), maxAimAngle));
+                if (inputSeat != null) {
+                    //Turn the mouse input back by as much as the shot was, so it stops at the edge of the cone
+                    //like the launcher does, rather than running on past it with nothing moving.
+                    sight.rotate(new RotationMatrix().setToAxisAngle(turnAxis, maxAimAngle - angle)).reOrigin(inputSeat.orientation);
+                    inputSeat.riderCameraInputOrientation.angles.set(getPitch(sight), getYaw(sight), 0);
+                    inputSeat.riderCameraInputOrientation.updateToAngles();
+                }
             }
         }
         return direction;
+    }
+
+    /**
+     * Client side: if we're the controller and looking through an animated camera, sends our aim to the
+     * server when it changes, so the hook goes where we're aiming rather than where the camera turned us.
+     * Tells the server once we stop, so it goes back to the way we face.
+     */
+    private void sendCameraAim() {
+        IWrapperEntity controller = getController();
+        AEntityB_Existing seat = controller != null ? controller.getEntityRiding() : null;
+        if (seat != null && seat.isRiderCameraInputActive) {
+            Point3D angles = seat.riderCameraInputOrientation.angles;
+            if (!controller.getID().equals(cameraAimSentID) || Math.abs(angles.x - cameraAimSentAngles.x) > 1.0E-3 || Math.abs(angles.y - cameraAimSentAngles.y) > 1.0E-3) {
+                cameraAimSentID = controller.getID();
+                cameraAimSentAngles.set(angles.x, angles.y, 0);
+                InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, cameraAimSentID, cameraAimSentAngles));
+            }
+        } else if (cameraAimSentID != null) {
+            InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, cameraAimSentID, null));
+            cameraAimSentID = null;
+        }
+    }
+
+    /**
+     * Sets the aim sent by a controller looking through an animated camera, as pitch and yaw relative to their
+     * seat, or clears it if the angles are null.  Returns true if it was taken, so it's passed on to clients.
+     */
+    public boolean setCameraAimAngles(UUID controllerID, Point3D angles) {
+        if (controllerID == null) {
+            return false;
+        }
+        if (angles == null) {
+            if (!controllerID.equals(cameraAimControllerID)) {
+                return false;
+            }
+            cameraAimControllerID = null;
+            return true;
+        }
+        if (!Double.isFinite(angles.x) || !Double.isFinite(angles.y)) {
+            return false;
+        }
+        IWrapperEntity controller = getController();
+        if (controller == null || !controllerID.equals(controller.getID()) || controller.getEntityRiding() == null) {
+            return false;
+        }
+        cameraAimControllerID = controllerID;
+        cameraAimOrientation.setToAngles(new Point3D(Math.max(-90, Math.min(90, angles.x)), angles.y, 0));
+        return true;
     }
 
     /**

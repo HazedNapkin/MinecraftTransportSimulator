@@ -397,6 +397,9 @@ public class LanguageSystem {
     public static final LanguageEntry INTERACT_JUMPERCABLE_LINKDROPPED = new LanguageEntry("interact.jumpercable.linkdropped", "The two engines have moved too far apart from one another.  Breaking link.");
     public static final LanguageEntry INTERACT_JUMPERCABLE_POWEREQUAL = new LanguageEntry("interact.jumpercable.powerequal", "The two engines now have the same battery level.  Breaking link.");
     public static final LanguageEntry INTERACT_JUMPERCABLE_ALREADYLINKED = new LanguageEntry("interact.jumpercable.alreadylinked", "This engine is already linked to another engine and cannot be linked.");
+    public static final LanguageEntry INTERACT_GRAPPLE_MANTLEREADY = new LanguageEntry("interact.grapple.mantleready", "Continue holding winch to pull up over the edge.");
+    public static final LanguageEntry INTERACT_GRAPPLE_MANTLECOMPLETE = new LanguageEntry("interact.grapple.mantlecomplete", "Mantle complete.  Release the grapple to drive off, or reverse to go back down.");
+    public static final LanguageEntry INTERACT_GRAPPLE_MANTLEBLOCKED = new LanguageEntry("interact.grapple.mantleblocked", "An overhang sticks out too far for the wheels to climb past.  Let the line out or reverse to go back down.");
     public static final LanguageEntry INTERACT_JUMPERCABLE_TOOFAR = new LanguageEntry("interact.jumpercable.toofar", "The two engines are too far away.  They should be no further than 16 blocks apart.");
     public static final LanguageEntry INTERACT_JUMPERCABLE_SAMEVEHICLE = new LanguageEntry("interact.jumpercable.samevehicle", "The two engines are on the same vehicle.  That's not going to work well..");
 

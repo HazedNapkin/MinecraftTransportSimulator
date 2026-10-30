@@ -51,6 +51,15 @@ public class JSONSubDefinition {
     @JSONDescription("Like extraMaterialLists, but these materials are dropped after crafting.  Think returning a bucket after needing a bucket of water.")
     public List<List<String>> extraReturnedMaterialLists;
 
+    @JSONDescription("Grapples only.  If true, this variant's hook can't attach to blocks or placed parts, as if disableBlockAttach were set in the grapple section.  Use this rather than a variableModifier on a constant, so the item's tooltip shows it too.  Can't turn off a disableBlockAttach set in the grapple section.")
+    public boolean grappleDisableBlockAttach;
+
+    @JSONDescription("Grapples only.  Like grappleDisableBlockAttach, but for disableEntityAttach.")
+    public boolean grappleDisableEntityAttach;
+
+    @JSONDescription("Grapples only.  Like grappleDisableBlockAttach, but for disableVehicleAttach.")
+    public boolean grappleDisableVehicleAttach;
+
     @Deprecated
     public List<String> extraMaterials;
     @Deprecated

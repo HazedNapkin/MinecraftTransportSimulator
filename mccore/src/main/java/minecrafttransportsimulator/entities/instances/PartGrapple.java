@@ -1,9 +1,11 @@
 package minecrafttransportsimulator.entities.instances;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.DoublePredicate;
 
 import minecrafttransportsimulator.baseclasses.BlockHitResult;
 import minecrafttransportsimulator.baseclasses.BoundingBox;
@@ -23,6 +25,9 @@ import minecrafttransportsimulator.jsondefs.JSONPartDefinition;
 import minecrafttransportsimulator.mcinterface.IWrapperEntity;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
+import minecrafttransportsimulator.mcinterface.InterfaceManager;
+import minecrafttransportsimulator.packets.instances.PacketPlayerChatMessage;
+import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
 
 /**
@@ -39,8 +44,10 @@ import minecrafttransportsimulator.systems.LanguageSystem;
  * each end can't move further apart and gets pulled back to the line length.  A vehicle is pulled with
  * its whole tow chain, and the chain's tyres and brakes hold back what they can.  The line's torque turns
  * the vehicle so the point the line is on swings round towards the other end: it twists and pitches up
- * about its far wheels, or hangs below the line once clear of the ground.  At the top of a wall, the
- * launcher vehicle is tipped over the lip, and the mantle takes over and hauls it up and onto the top.
+ * about its far wheels, or hangs below the line once clear of the ground.  Once a wheel or collision box at
+ * the end of the launcher vehicle facing the hook touches a wall with the hook up on it, the line stops
+ * pushing it about.  The vehicle squares up to the wall and the plane between its wheel bottoms is pitched up
+ * the face and over the lip instead.  Near the top, it can then be hauled over the edge.  See {@link ClimbPath}.
  * <p>
  * All of this runs from {@link AEntityVehicleD_Moving} just before it moves, via {@link #updateLine()},
  * so the line's forces go through the vehicle's normal collision checks and movement sync.
@@ -67,12 +74,16 @@ public class PartGrapple extends APart {
     public static final int STATE_VEHICLE = 4;
 
     public static final int MANTLE_NONE = 0;
-    /**Hanging at the lip for {@link #MANTLE_PAUSE_TICKS}.**/
-    public static final int MANTLE_PAUSE = 1;
-    /**Lifting straight up while tilting towards the hook, until the launcher-end wheels clear the top.**/
-    public static final int MANTLE_LIFT = 2;
-    /**Moving towards the hook while tilting down to level, until the far wheels are over the top.**/
-    public static final int MANTLE_ROLL = 3;
+    /**Being winched up the wall.  How far up follows the line length.**/
+    public static final int MANTLE_CLIMB = 1;
+    /**Winched in as far as the line goes, close enough to the top to be pulled over it.  Holding reel for {@link #MANTLE_HOLD_TICKS} starts the pull.**/
+    public static final int MANTLE_READY = 2;
+    /**Being pulled up over the edge while reel is held, or slipping back to where it started while it isn't.**/
+    public static final int MANTLE_PULL = 3;
+    /**Flat on top of the wall, held there until the grapple is released.  Driving backwards goes back down.**/
+    public static final int MANTLE_COMPLETE = 4;
+    /**Driving backwards down the wall, letting the line out.**/
+    public static final int MANTLE_DESCEND = 5;
 
     /**Fraction of any over-stretch pulled back each tick.  Higher is a stiffer line.**/
     private static final double STIFFNESS = 0.3;
@@ -80,10 +91,6 @@ public class PartGrapple extends APart {
     private static final double MAX_PULL = 0.6;
     /**How many times the range the two ends can be pulled apart before the line snaps.**/
     private static final double SNAP_FACTOR = 1.5;
-    /**Cap on the pitch added by the wall-top assist and the mantle, in degrees per tick.**/
-    private static final double MAX_TILT_RATE = 4;
-    /**Fraction of the angle error to pointing along the line corrected each tick by the wall-top assist.**/
-    private static final double HANG_ASSIST = 0.15;
     /**Cap on how fast a line can turn a vehicle on either end of it, in degrees per tick.**/
     private static final double MAX_PULL_TURN = 6;
     /**Turns smaller than this, in degrees, aren't applied to a vehicle on the line.**/
@@ -93,22 +100,38 @@ public class PartGrapple extends APart {
     /**How often the server checks the anchor block still exists, in ticks.**/
     private static final int ANCHOR_CHECK_INTERVAL = 10;
 
-    /**How long the vehicle hangs at the lip before the mantle can start, in ticks.**/
-    private static final int MANTLE_PAUSE_TICKS = 10;
-    /**How fast the mantle lifts and rolls the vehicle, in blocks per tick.**/
+    /**How long reel has to be held at the top of the line before the pull over the edge starts, in ticks.**/
+    private static final int MANTLE_HOLD_TICKS = 30;
+    /**How fast the launcher-end wheels move along the wall while being pulled over the edge, in blocks per tick.**/
     private static final double MANTLE_SPEED = 1D / 16D;
-    /**Pitch the vehicle is tilted to, in degrees from level, by the time its launcher-end wheels reach the top.**/
-    private static final double MANTLE_ROLL_PITCH = 45;
-    /**How far above the top the launcher-end wheels are carried, in blocks, so they don't catch the lip.**/
-    private static final double MANTLE_CLEARANCE = 1D / 16D;
-    /**The vehicle counts as climbing a wall when its launcher end points further up than this (sine of about 37 degrees).**/
-    private static final double MANTLE_CLIMB_STEEPNESS = 0.6;
-    /**The line has stopped lifting the vehicle once it points up less than this (sine of 30 degrees).**/
-    private static final double MANTLE_FLAT_LINE = 0.5;
-    /**How many 1/16 block steps ahead of the wheels we look for the wall face.  48 is 3 blocks.**/
-    private static final int MANTLE_FACE_SEARCH = 48;
-    /**How many blocks above the wheels we look for the top of the wall.**/
-    private static final int MANTLE_LIP_SEARCH = 4;
+    /**How fast they slip back while reel isn't held during the pull, in blocks per tick.**/
+    private static final double MANTLE_SLIP_SPEED = 1D / 64D;
+    /**How fast they move at full throttle when driving back down the wall, in blocks per tick.**/
+    private static final double MANTLE_DESCEND_SPEED = 1D / 16D;
+    /**Longest the hook's depth below the top of the wall plus the line's minimum length can be, in blocks, for the pull over the edge to be offered once the line is all the way in.**/
+    private static final double MANTLE_REACH = 4;
+    /**Most the climb pitches the vehicle up, in degrees.  Short of upright, where its angles go wrong.  See {@link ClimbPath#getPose}.**/
+    private static final double MANTLE_MAX_PITCH = 89.5;
+    /**How far ahead of the launcher-end wheels a wall face counts as touching them, in blocks.**/
+    private static final double MANTLE_CONTACT = 0.25;
+    /**How far round the wall the path looks, and how far up above the hook, in blocks.**/
+    private static final double MANTLE_PATH_MARGIN = 2;
+    /**Longest path a climb can have, in blocks along the wall, so a bad hook can't search half the world.**/
+    private static final double MANTLE_MAX_PATH = 48;
+    /**Spacing of the points checked along the underside of each collision box, in blocks.**/
+    private static final double MANTLE_UNDERSIDE_STEP = 1D / 8D;
+    /**How far down below the wheels the path looks for the ground, in blocks.**/
+    private static final int MANTLE_GROUND_SEARCH = 8;
+    /**Spacing of the samples along the wall, in blocks.**/
+    private static final double MANTLE_STEP = 1D / 16D;
+    /**Half the size of the box used to check a point for blocks, in blocks.**/
+    private static final double MANTLE_PROBE_RADIUS = 1D / 128D;
+    /**Cap on how far the vehicle moves towards its place on the wall in a tick, in blocks, so starting a climb slides it there rather than snapping.**/
+    private static final double MANTLE_MAX_MOVE = 0.2;
+    /**Cap on how far the vehicle turns towards its place on the wall in a tick, in degrees.**/
+    private static final double MANTLE_MAX_TURN = 6;
+    /**Throttle below this doesn't count as driving.**/
+    private static final double MANTLE_THROTTLE = 0.05;
 
     //Modifiable properties.
     private final ComputedVariable rangeVar;
@@ -139,10 +162,17 @@ public class PartGrapple extends APart {
     private final ComputedVariable anchorYVar;
     private final ComputedVariable anchorZVar;
     private final ComputedVariable mantleVar;
-    private final ComputedVariable mantleLipVar;
-    private final ComputedVariable mantleEdgeXVar;
-    private final ComputedVariable mantleEdgeZVar;
+    /**How far the launcher-end wheels have gone along the climb path, in blocks.**/
+    private final ComputedVariable mantleProgressVar;
+    /**Progress the pull over the edge started from, and slips back to.**/
+    private final ComputedVariable mantleReadyVar;
+    //Where the climb path starts and which way it faces.  Clients build the same path from these.
+    private final ComputedVariable mantleOriginXVar;
+    private final ComputedVariable mantleOriginZVar;
+    private final ComputedVariable mantleBaseVar;
     private final ComputedVariable mantleYawVar;
+    /**1 if the front of the vehicle faces the wall, -1 if the back does.**/
+    private final ComputedVariable mantleSideVar;
 
     //Server-only hook state that can't live in a variable.  Lost on reload, which drops flying hooks and hooks in entities.
     private boolean hookDataValid;
@@ -152,7 +182,13 @@ public class PartGrapple extends APart {
     private AEntityF_Multipart<?> hookedMultipart;
     /**Where the hook sits on what it's stuck in.  World-aligned for entities, local for multiparts.**/
     private final Point3D hookOffset = new Point3D();
-    private int mantlePauseTicks;
+    private int mantleHoldTicks;
+    /**True once the driver's been told an overhang stops the climb, so they aren't told every tick.**/
+    private boolean mantleBlockedSent;
+    private String lastClimbDebug;
+    //The climb path, built on each side from the mantle variables when it's first needed.
+    private ClimbPath climbPath;
+    private double[] climbPathKey;
 
     //Client-only hook positions for the last two ticks, so the render can interpolate.
     private Point3D prevRenderAnchor;
@@ -191,10 +227,13 @@ public class PartGrapple extends APart {
         addVariable(this.anchorYVar = new ComputedVariable(this, "grapple_anchor_y", data));
         addVariable(this.anchorZVar = new ComputedVariable(this, "grapple_anchor_z", data));
         addVariable(this.mantleVar = new ComputedVariable(this, VAR_MANTLE, data));
-        addVariable(this.mantleLipVar = new ComputedVariable(this, "grapple_mantle_lip", data));
-        addVariable(this.mantleEdgeXVar = new ComputedVariable(this, "grapple_mantle_edge_x", data));
-        addVariable(this.mantleEdgeZVar = new ComputedVariable(this, "grapple_mantle_edge_z", data));
+        addVariable(this.mantleProgressVar = new ComputedVariable(this, "grapple_mantle_progress", data));
+        addVariable(this.mantleReadyVar = new ComputedVariable(this, "grapple_mantle_ready", data));
+        addVariable(this.mantleOriginXVar = new ComputedVariable(this, "grapple_mantle_origin_x", data));
+        addVariable(this.mantleOriginZVar = new ComputedVariable(this, "grapple_mantle_origin_z", data));
+        addVariable(this.mantleBaseVar = new ComputedVariable(this, "grapple_mantle_base", data));
         addVariable(this.mantleYawVar = new ComputedVariable(this, "grapple_mantle_yaw", data));
+        addVariable(this.mantleSideVar = new ComputedVariable(this, "grapple_mantle_side", data));
     }
 
     @Override
@@ -207,9 +246,10 @@ public class PartGrapple extends APart {
         maxAimAngleVar.setTo(definition.grapple.maxAimAngle, false);
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
         isFixedVar.setTo(definition.grapple.isFixed ? 1 : 0, false);
-        disableBlockAttachVar.setTo(definition.grapple.disableBlockAttach ? 1 : 0, false);
-        disableEntityAttachVar.setTo(definition.grapple.disableEntityAttach ? 1 : 0, false);
-        disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach ? 1 : 0, false);
+        //The variant can add to these, so its item tooltip can show them.  See ItemPartGrapple.
+        disableBlockAttachVar.setTo(definition.grapple.disableBlockAttach || subDefinition.grappleDisableBlockAttach ? 1 : 0, false);
+        disableEntityAttachVar.setTo(definition.grapple.disableEntityAttach || subDefinition.grappleDisableEntityAttach ? 1 : 0, false);
+        disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach || subDefinition.grappleDisableVehicleAttach ? 1 : 0, false);
         disableMantleVar.setTo(definition.grapple.disableMantle ? 1 : 0, false);
     }
 
@@ -228,6 +268,14 @@ public class PartGrapple extends APart {
     }
 
     /**
+     * Returns this grapple's state for the vehicle's dev mode movement log: hook state, climb phase and
+     * progress, line length against the launcher's distance from the hook, and the reel and slack inputs.  Temporary.
+     */
+    public String getDebugState() {
+        return String.format("[grapple state %d mantle %d progress %.3f rope %.2f distance %.2f share %.2f reel %b slack %b]", getState(), getMantle(), mantleProgressVar.currentValue, ropeVar.currentValue, isAttached() ? position.distanceTo(getAnchor()) : 0, selfShareVar.currentValue, reelVar.isActive, slackVar.isActive);
+    }
+
+    /**
      * Called by the vehicle we are on, on both client and server, once per tick just before it moves.
      */
     public void updateLine() {
@@ -240,11 +288,15 @@ public class PartGrapple extends APart {
 
         //Both sides run the vehicle's side of the line so clients don't have to wait on server corrections.
         //How much of the pull the vehicle takes is decided by the server at attach time.
-        //The mantle moves our vehicle itself, so it only runs when we're at the front of our tow chain.
+        //The climb moves our vehicle itself, so it only runs when we're at the front of our tow chain.
         if (isAttached() && selfShareVar.currentValue > 0) {
-            if (getMantle() != MANTLE_NONE && vehicleOn.towedByConnection == null) {
+            boolean mantling = getMantle() != MANTLE_NONE && vehicleOn.towedByConnection == null;
+            if (mantling) {
                 updateMantle();
-            } else {
+                //If the climb just finished, the line takes over this tick rather than leaving us stopped for one.
+                mantling = getMantle() != MANTLE_NONE;
+            }
+            if (!mantling) {
                 applyLineForces(getAnchor(), ropeVar.currentValue, selfShareVar.currentValue);
             }
         }
@@ -313,18 +365,27 @@ public class PartGrapple extends APart {
             return;
         }
 
-        double rope = ropeVar.currentValue;
-        if (reelVar.isActive) {
-            rope -= reelSpeedVar.currentValue / 20D;
-        } else if (slackVar.isActive) {
-            rope += reelSpeedVar.currentValue / 20D;
+        //Once it's being pulled over the edge, or driven, the mantle sets the line length itself.
+        if (getMantle() < MANTLE_PULL) {
+            double rope = ropeVar.currentValue;
+            if (reelVar.isActive) {
+                rope -= reelSpeedVar.currentValue / 20D;
+            } else if (slackVar.isActive) {
+                rope += reelSpeedVar.currentValue / 20D;
+            }
+            if (getMantle() == MANTLE_NONE) {
+                //The line pulls no harder once it's stretched past MAX_PULL / STIFFNESS, so don't wind in any
+                //more than that while whatever's on the end is stuck.  Otherwise holding reel against a wall
+                //stores up line the vehicle then gets yanked by, and a climb that starts jumps up the wall to it.
+                rope = Math.max(rope, position.distanceTo(anchor) - MAX_PULL / STIFFNESS);
+                if (!slackVar.isActive && anchor.y > position.y && vehicleOn.groundDeviceCollective.groundedGroundDevices.isEmpty()) {
+                    //Hanging off the hook, the winch takes in any slack, so we stay where we got to rather than
+                    //dropping back down to where the line was when reel was let go.
+                    rope = Math.min(rope, position.distanceTo(anchor));
+                }
+            }
+            ropeVar.setTo(clampRope(rope), true);
         }
-        if (getMantle() != MANTLE_NONE) {
-            //The mantle carries the vehicle, not the line.  Keep the line just taut, so it doesn't yank
-            //the vehicle when the mantle hands back to it.
-            rope = position.distanceTo(anchor);
-        }
-        ropeVar.setTo(clampRope(rope), true);
 
         //Pull whatever we're stuck in.  The vehicle's share is applied on both sides in updateLine.
         double targetShare = 1 - selfShareVar.currentValue;
@@ -610,7 +671,13 @@ public class PartGrapple extends APart {
             stopping.addScaled(towards, -radialSpeed * share);
         }
         //Pull back towards the line length.  Motion gets scaled by speedFactor when applied, so undo that here.
-        Point3D spring = towards.copy().scale(Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor);
+        double springSpeed = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
+        if (lead.groundDeviceCollective.groundedGroundDevices.isEmpty()) {
+            //In the air, nothing slows down what the line has already pulled us to, so only make up what we're short
+            //of.  Otherwise each tick's pull adds to the last, and the line flings us past the hook.
+            springSpeed = Math.max(0, springSpeed - Math.max(0, radialSpeed));
+        }
+        Point3D spring = towards.copy().scale(springSpeed);
 
         Point3D force = stopping.copy().add(spring).scale(lead.currentMass);
         Point3D moving = spring.copy().scale(lead.currentMass);
@@ -867,8 +934,9 @@ public class PartGrapple extends APart {
         if (angle != 0) {
             RotationMatrix turnMatrix = new RotationMatrix().setToAxisAngle(axis, angle);
             //Vehicles turn about their origin, so shift the origin to keep the pivot where it is.
-            Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(turnMatrix));
-            vehicle.motion.addScaled(pivotShift.rotate(vehicle.orientation), 1D / vehicle.speedFactor);
+            Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(turnMatrix)).rotate(vehicle.orientation).scale(1D / vehicle.speedFactor);
+            vehicle.motion.add(pivotShift);
+            vehicle.grappleTurnMotion.add(pivotShift);
             vehicle.rotation.angles.add(turnMatrix.convertToAngles());
         }
     }
@@ -922,236 +990,1127 @@ public class PartGrapple extends APart {
         }
         vehicleOn.motion.add(pull[0]);
 
-        List<BoundingBox> freeBoxes = vehicleOn.getBoxesOutsideBlocks(vehicleOn.getBoxesForWallChecks());
-        if (!applyWallTopTilt(lineNormal, freeBoxes)) {
-            turnFromLine(vehicleOn, position, pull[1], null, freeBoxes);
-        }
-
         //Vehicles don't stop wheels going into walls, and the line usually pulls the vehicle towards one.
-        Point3D blocked = vehicleOn.clampMotionToWalls(freeBoxes);
+        List<BoundingBox> freeBoxes = vehicleOn.getBoxesOutsideBlocks(vehicleOn.getBoxesForWallChecks());
+        vehicleOn.clampMotionToWalls(freeBoxes);
 
-        //A straight line to a hook on top of a wall stops lifting once the launcher is level with the
-        //hook, which leaves the wheels below the lip.  When that happens, the server hands over to the
-        //mantle to haul the vehicle over the top.  These checks are cheap, so the block search in
-        //tryStartMantle only runs while the vehicle is actually stuck against a wall.
-        Point3D towardsHook = new Point3D(lineNormal.x, 0, lineNormal.z);
-        if (!world.isClient() && !disableMantleVar.isActive && lineNormal.y < MANTLE_FLAT_LINE && towardsHook.length() > 1.0E-3 && blocked.dotProduct(towardsHook.normalize(), false) > 0) {
-            tryStartMantle(towardsHook);
+        //The line's own physics can't carry a vehicle up a wall: the wheels catch on the face and the
+        //line's turning levels the vehicle as the line flattens near the top.  So once the end facing the
+        //hook is up against a wall with the hook up on it, the server hands over to the climb, which carries
+        //the vehicle up the wall and over the lip.  It doesn't wait for the wall checks to say we're blocked, as
+        //they leave out wheels already touching a block, and a vehicle the line holds against a wall isn't moving into it.
+        if (!world.isClient() && tryStartClimb()) {
+            return;
         }
+
+        turnFromLine(vehicleOn, position, pull[1], null, freeBoxes);
+        //Turning moves our origin to keep the pivot still, so check that against the walls too.
+        vehicleOn.clampMotionToWalls(freeBoxes);
     }
 
     /**
-     * Pitches the vehicle over the top of a wall when only its launcher-end wheels are up on it, such as
-     * the front wheels just over the lip.  The vehicle pitches about those wheels until it points along
-     * the line, so the line drags it over the edge and down flat onto the top.  The line's torque alone
-     * would let the far end tip back down off the edge, as the middle of the vehicle hangs past the wheels,
-     * so this takes over from it here.  This runs whichever way the line points, as at the top it usually
-     * runs level or downhill.  The vehicle never tilts past pointing along the line.
+     * Starts the climb if the end of the vehicle facing the hook is being reeled up against a wall too tall for
+     * its wheels to drive up, by their climbHeight, with the hook up on it.  Server only.  The wall counts as touching if it's just in
+     * front of any of the wheels at that end, or any of the collision boxes that hit blocks.  The hook can be on
+     * top of the wall or in its face, even on a part sticking out past the face we touched, as long as it's above
+     * the height the wheels could drive up.  The climb path works out how far up the line can take us.  Blocks are
+     * checked by their collision boxes, so grass and flowers don't count as a wall.  This is cheap enough to
+     * check every tick: a few block checks just in front of each wheel and box.
+     * <p>
+     * The climb turns the vehicle square onto the wall's face and keeps it there, so whichever end touched it
+     * faces it, with no roll.  See {@link ClimbPath}.
      *
-     * @param freeBoxes the vehicle's boxes that aren't already inside a block, to check the tilt against.
-     * @return true if only the launcher-end wheels are grounded, so this has turned the vehicle instead of the line's torque.
+     * @return true if the climb started.
      */
-    private boolean applyWallTopTilt(Point3D lineNormal, List<BoundingBox> freeBoxes) {
-        //Work in the vehicle's own frame, where pitch is a turn about X, so only Y and Z matter.
-        //There's no centre of mass, so take the middle of the wheels.  Without wheels, use the origin.
-        Point3D launcher = toVehicleLocal(position);
-        Point3D center = new Point3D();
-        int wheels = 0;
-        for (APart other : vehicleOn.allParts) {
-            if (other instanceof PartGroundDevice && !other.placementDefinition.isSpare) {
-                center.add(toVehicleLocal(other.position));
-                ++wheels;
+    private boolean tryStartClimb() {
+        //Only reeling moves a climb, so only start one while reeling.  Otherwise bumping a wall with the line
+        //taut would pin us to it until the line was let out.  Not a debug message, as this is most ticks.
+        if (getState() != STATE_BLOCK || !reelVar.isActive) {
+            return false;
+        }
+        Point3D heading = new Point3D(vehicleOn.headingVector.x, 0, vehicleOn.headingVector.z);
+        if (heading.length() < 1.0E-3) {
+            debugClimb("vehicle is pointing straight up or down");
+            return false;
+        }
+        heading.normalize();
+        //The end facing the hook goes up the wall, whichever end the launcher is on.  Judge that from the
+        //middle of the wheels, not the launcher.  Up against the wall, the hook is nearly straight above the
+        //launcher, so which way the line leans from it is noise, and it can point at the wrong end.
+        WheelSplit wheels = new WheelSplit(1);
+        Point3D anchor = getAnchor();
+        double side = toVehicleLocal(anchor).z >= wheels.centerZ ? 1 : -1;
+        if (side < 0) {
+            wheels = new WheelSplit(side);
+        }
+        Point3D ahead = heading.scale(side);
+        if (wheels.launcherEnd.isEmpty() || wheels.farEnd.isEmpty()) {
+            debugClimb("needs wheels at both ends");
+            return false;
+        }
+        //The wheels drive up anything up to their climb height by themselves, so only a wall taller than that counts.
+        //Go by the wheel at this end that climbs least, as that's the one the wall stops.
+        APart lowest = wheels.getLowest(wheels.launcherEnd);
+        double climbHeight = Double.MAX_VALUE;
+        for (APart wheel : wheels.launcherEnd) {
+            climbHeight = Math.min(climbHeight, ((PartGroundDevice) wheel).definition.ground.climbHeight);
+        }
+        double stepHeight = lowest.position.y - lowest.getHeight() / 2D + climbHeight + MANTLE_STEP;
+
+        Point3D face = null;
+        for (APart wheel : wheels.launcherEnd) {
+            double radius = wheel.getHeight() / 2D;
+            if ((face = findWallAhead(wheel.position, radius, radius, ahead, stepHeight)) != null) {
+                break;
             }
         }
-        if (wheels > 0) {
-            center.scale(1D / wheels);
+        if (face == null) {
+            for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+                if ((toVehicleLocal(box.globalCenter).z - wheels.centerZ) * side > 0) {
+                    //Boxes don't turn with us, so take how far this one reaches out along our heading.
+                    double reach = Math.abs(ahead.x) * box.widthRadius + Math.abs(ahead.z) * box.depthRadius;
+                    if ((face = findWallAhead(box.globalCenter, reach, box.heightRadius, ahead, stepHeight)) != null) {
+                        break;
+                    }
+                }
+            }
         }
-        Point3D arm = launcher.copy().subtract(center);
-        if (Math.hypot(arm.y, arm.z) < 0.1) {
-            //Launcher sits on the middle of the vehicle, so it has no launcher end.
+        if (face == null) {
+            debugClimb("no wall too tall to drive up touching the wheels or collision boxes");
+            logWallProbes(wheels, ahead, stepHeight);
             return false;
         }
 
-        //Sort the grounded wheels into the launcher end and the far end of the vehicle.
-        Point3D launcherEnd = new Point3D();
-        int launcherEndWheels = 0;
-        for (PartGroundDevice groundDevice : vehicleOn.groundDeviceCollective.groundedGroundDevices) {
-            Point3D wheel = toVehicleLocal(groundDevice.position);
-            if ((wheel.z - center.z) * arm.z < 0) {
-                return false;
-            }
-            launcherEnd.add(wheel);
-            ++launcherEndWheels;
-        }
-        if (launcherEndWheels == 0) {
+        //Block faces line up with the world's axes, so square up to whichever one we're mostly heading along.
+        Point3D wallNormal = Math.abs(ahead.x) > Math.abs(ahead.z) ? new Point3D(Math.signum(ahead.x), 0, 0) : new Point3D(0, 0, Math.signum(ahead.z));
+
+        //The hook has to be above what the wheels could drive up, so the line pulls us up the wall.  It doesn't
+        //have to be in or past the face we touched: the top can stick out over it, and the path steps out over
+        //anything sticking out that the wheels could climb.  The path works out how far up we can get.
+        if (anchor.y < stepHeight) {
+            debugClimb("hook is below the part of the wall the wheels can't drive up");
             return false;
         }
 
-        //Tilt that would point the vehicle along the line.  Positive is nose down.
-        Point3D pivot = launcherEnd.scale(1D / launcherEndWheels);
-        Point3D lineLocal = lineNormal.copy().reOrigin(vehicleOn.orientation);
-        double overError = wrapAngle(getTiltAngle(new Point3D(0, 0, Math.signum(arm.z))) - getTiltAngle(lineLocal));
-        double tilt = Math.max(-MAX_TILT_RATE, Math.min(MAX_TILT_RATE, overError * HANG_ASSIST));
-
-        //Turns are only checked against the collision boxes, so a tilt could swing the wheels into a wall.
-        tilt = vehicleOn.limitTiltToWalls(freeBoxes, pivot, tilt);
-        if (tilt != 0) {
-            vehicleOn.rotation.angles.x += tilt;
-            //Vehicles turn about their origin, so shift the origin to keep the pivot where it is.
-            Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(new RotationMatrix().setToAxisAngle(1, 0, 0, tilt)));
-            vehicleOn.motion.addScaled(pivotShift.rotate(vehicleOn.orientation), 1D / vehicleOn.speedFactor);
+        //Set the path before the phase, so clients have it by the time they start following it.
+        Point3D leadCenter = wheels.getWorldCenter(wheels.launcherEnd);
+        double lowestBottom = Double.MAX_VALUE;
+        for (APart other : wheels.launcherEnd) {
+            lowestBottom = Math.min(lowestBottom, other.position.y - other.getHeight() / 2D);
         }
-        vehicleOn.pitchHeldByGrapple = true;
-        vehicleOn.rollHeldByGrapple = true;
+        for (APart other : wheels.farEnd) {
+            lowestBottom = Math.min(lowestBottom, other.position.y - other.getHeight() / 2D);
+        }
+        mantleOriginXVar.setTo(leadCenter.x, true);
+        mantleOriginZVar.setTo(leadCenter.z, true);
+        mantleBaseVar.setTo(lowestBottom - 0.5, true);
+        mantleYawVar.setTo(Math.toDegrees(Math.atan2(wallNormal.x, wallNormal.z)), true);
+        mantleSideVar.setTo(side, true);
+        if (getClimbPath() == null) {
+            debugClimb("couldn't work out a path up the wall");
+            return false;
+        }
+        debugClimb("started");
+        //Start from where we really are on the wall.  The line might be stretched, and the climb follows its length.
+        ropeVar.setTo(clampRope(position.distanceTo(anchor)), true);
+        mantleProgressVar.setTo(0, true);
+        mantleReadyVar.setTo(0, true);
+        setMantle(MANTLE_CLIMB);
         return true;
     }
 
     /**
-     * Starts the mantle if the vehicle is climbing a wall and the top of the wall is in reach.  Server only.
-     * Looks for the wall face ahead of the lowest launcher-end wheel, then for the first air block
-     * above the face, which is the top of the wall.
+     * Looks for a wall just in front of a wheel or collision box, from its middle out to {@link #MANTLE_CONTACT}
+     * past its front, at heights up its front.  The wall also has to be solid at the step height there, so a
+     * kerb the wheels could roll up, or a ledge the vehicle could drive under, doesn't count.  Its whole front is
+     * checked, not just the part above the step height, as a low nose hits the wall well before the wheels do.
+     *
+     * @param center the middle of the wheel or box.
+     * @param reach how far its front is from its middle, along ahead.
+     * @param halfHeight half its height.
+     * @param ahead the horizontal direction towards the wall.  Must be normalized.
+     * @param stepHeight the height the wall has to be solid at to count.
+     * @return the first solid point found, which is on the middle if it's already in the wall, or null if there's no wall there.
      */
-    private void tryStartMantle(Point3D towardsHook) {
-        WheelSplit wheels = new WheelSplit();
-        if (wheels.launcherEnd.isEmpty() || wheels.farEnd.isEmpty() || vehicleOn.headingVector.y * wheels.side < MANTLE_CLIMB_STEEPNESS) {
-            return;
-        }
-
-        Point3D face = wheels.getLowestLauncherEnd().position.copy();
-        Point3D step = towardsHook.copy().scale(1D / 16D);
-        boolean foundFace = false;
-        for (int i = 0; i < MANTLE_FACE_SEARCH && !foundFace; ++i) {
-            face.add(step);
-            foundFace = !world.isAir(face);
-        }
-        if (!foundFace) {
-            return;
-        }
-
-        Point3D column = new Point3D(Math.floor(face.x) + 0.5, Math.floor(face.y) + 0.5, Math.floor(face.z) + 0.5);
-        for (int i = 0; i < MANTLE_LIP_SEARCH; ++i) {
-            column.y += 1;
-            if (world.isAir(column)) {
-                //Set the path before the phase, so clients have it by the time they start following it.
-                mantleLipVar.setTo(Math.floor(column.y), true);
-                mantleEdgeXVar.setTo(face.x, true);
-                mantleEdgeZVar.setTo(face.z, true);
-                mantleYawVar.setTo(Math.toDegrees(Math.atan2(towardsHook.x, towardsHook.z)), true);
-                mantlePauseTicks = 0;
-                setMantle(MANTLE_PAUSE);
-                return;
+    private Point3D findWallAhead(Point3D center, double reach, double halfHeight, Point3D ahead, double stepHeight) {
+        Point3D step = ahead.copy().scale(MANTLE_STEP);
+        int steps = (int) Math.ceil((reach + MANTLE_CONTACT) / MANTLE_STEP);
+        //Start just off the bottom, so a wheel resting on the ground doesn't find it.
+        for (double y = center.y - halfHeight + MANTLE_STEP; y <= center.y + halfHeight; y += MANTLE_STEP * 4) {
+            Point3D point = new Point3D(center.x, y, center.z);
+            if (isSolid(point)) {
+                //Already inside the wall here, as a taut line can drag us into it.  That's touching it too.
+                if (isSolid(new Point3D(point.x, stepHeight, point.z))) {
+                    return point;
+                }
+                continue;
             }
+            for (int i = 0; i < steps; ++i) {
+                Point3D next = point.copy().add(step);
+                if (isSolid(next)) {
+                    if (isSolid(new Point3D(next.x, stepHeight, next.z))) {
+                        return next;
+                    }
+                    break;
+                }
+                point = next;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Dev mode only, temporary: logs where the wheels and boxes at the end facing the hook are, and how far
+     * ahead of each the nearest solid block is, so a wall the climb misses can be found in the log.
+     */
+    private void logWallProbes(WheelSplit wheels, Point3D ahead, double stepHeight) {
+        if (!ConfigSystem.settings.general.devMode.value || vehicleOn.ticksExisted % 10 != 0) {
+            return;
+        }
+        StringBuilder log = new StringBuilder(String.format("GrappleWall tick %d: ahead (%.2f %.2f) stepHeight %.2f", vehicleOn.ticksExisted, ahead.x, ahead.z, stepHeight));
+        for (APart wheel : wheels.launcherEnd) {
+            double radius = wheel.getHeight() / 2D;
+            log.append(String.format(" | wheel local z %.2f y %.2f to %.2f reach %.2f wall %s", toVehicleLocal(wheel.position).z, wheel.position.y - radius, wheel.position.y + radius, radius, getWallDistances(wheel.position, radius, ahead)));
+        }
+        for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+            double localZ = toVehicleLocal(box.globalCenter).z;
+            if ((localZ - wheels.centerZ) * wheels.side > 0) {
+                log.append(String.format(" | box local z %.2f y %.2f to %.2f reach %.2f wall %s", localZ, box.globalCenter.y - box.heightRadius, box.globalCenter.y + box.heightRadius, Math.abs(ahead.x) * box.widthRadius + Math.abs(ahead.z) * box.depthRadius, getWallDistances(box.globalCenter, box.heightRadius, ahead)));
+            }
+        }
+        InterfaceManager.coreInterface.logError(log.toString());
+    }
+
+    /**
+     * Dev mode only, temporary: how far ahead of the middle the first solid block is at the bottom, middle and top, up to 4 blocks.
+     */
+    private String getWallDistances(Point3D center, double halfHeight, Point3D ahead) {
+        StringBuilder distances = new StringBuilder();
+        for (double y : new double[] {center.y - halfHeight + MANTLE_STEP, center.y, center.y + halfHeight - MANTLE_STEP}) {
+            String found = "-";
+            for (double distance = 0; distance <= 4; distance += MANTLE_STEP) {
+                if (isSolid(new Point3D(center.x, y, center.z).addScaled(ahead, distance))) {
+                    found = String.format("%.2f", distance);
+                    break;
+                }
+            }
+            distances.append(distances.length() == 0 ? "" : "/").append(found);
+        }
+        return distances.toString();
+    }
+
+    /**
+     * Returns the climb path for the current mantle variables, building it if they've changed.  Null if no path could be built from them.
+     */
+    private ClimbPath getClimbPath() {
+        double[] key = {mantleOriginXVar.currentValue, mantleOriginZVar.currentValue, mantleBaseVar.currentValue, mantleYawVar.currentValue, mantleSideVar.currentValue, anchorXVar.currentValue, anchorYVar.currentValue, anchorZVar.currentValue};
+        if (climbPathKey == null || !Arrays.equals(key, climbPathKey)) {
+            climbPathKey = key;
+            climbPath = ClimbPath.build(this);
+        }
+        return climbPath;
+    }
+
+    /**
+     * Carries the vehicle up the wall.  Runs on both client and server.  The server moves the progress
+     * along the path and changes phase, and both sides put the vehicle where the path says for that progress:
+     * -Climb and ready: the progress follows the line, so reeling in carries the vehicle up the wall and
+     * letting out lowers it.  Once the line is all the way in, near enough the top, holding reel for
+     * {@link #MANTLE_HOLD_TICKS} starts the pull.
+     * -Pull: holding reel carries on along the path, over the edge and onto the top.  Letting go slips back
+     * to where the pull started.
+     * -Complete: flat on top, and held there until the grapple is released.  Driving backwards goes back
+     * down the path, letting the line out.
+     */
+    private void updateMantle() {
+        boolean server = !world.isClient();
+        ClimbPath path = getClimbPath();
+        if (path == null) {
+            if (server) {
+                setMantle(MANTLE_NONE);
+            }
+            return;
+        }
+
+        double progress = mantleProgressVar.currentValue;
+        if (server) {
+            Point3D anchor = getAnchor();
+            int phase = getMantle();
+            switch (phase) {
+                case MANTLE_CLIMB:
+                case MANTLE_READY: {
+                    double rope = ropeVar.currentValue;
+                    //With the mantle off, the line can carry us up the wall, but not over the edge.  An overhang we
+                    //can't get past stops us under it, short of the edge.
+                    boolean canMantle = !disableMantleVar.isActive && !path.blocked;
+                    progress = path.getProgressForLine(progress, rope, anchor, canMantle ? path.completeAt : path.getLipProgress());
+                    if (progress <= 0 && path.getLineLength(0, anchor) < rope - MANTLE_CONTACT) {
+                        //Let back down to the bottom with line to spare.  The line takes over again.
+                        setMantle(MANTLE_NONE);
+                        return;
+                    }
+                    if (path.blocked) {
+                        if (progress >= path.completeAt - ClimbPath.SAMPLE) {
+                            if (!mantleBlockedSent && reelVar.isActive) {
+                                mantleBlockedSent = true;
+                                sendMantleMessage(LanguageSystem.INTERACT_GRAPPLE_MANTLEBLOCKED);
+                            }
+                            if (isDrivingBackwards()) {
+                                setMantle(MANTLE_DESCEND);
+                            }
+                        } else if (progress < path.completeAt - MANTLE_CONTACT) {
+                            //Tell them again if they come back up to it.
+                            mantleBlockedSent = false;
+                        }
+                    }
+                    if (!path.blocked && progress >= path.completeAt) {
+                        progress = path.completeAt;
+                        completeMantle();
+                        break;
+                    }
+                    //If the path can't take the launcher any closer to the hook, the winch can't pull us any
+                    //further, so that's as far in as the line goes.  Keep the line at that length, so letting
+                    //it out lowers us straight away rather than first paying out line we never used.
+                    boolean lineIn = rope <= minLengthVar.currentValue + 1.0E-6;
+                    double length = path.getLineLength(progress, anchor);
+                    if (length > rope + 1.0E-3) {
+                        ropeVar.setTo(clampRope(length), true);
+                        lineIn = true;
+                    }
+                    //Close enough to the edge if the hook's depth below the top, plus the line left at its
+                    //shortest, is in reach.  A hook on top counts as no depth.
+                    double reach = Math.max(0, path.top - anchor.y) + minLengthVar.currentValue;
+                    if (canMantle && lineIn && reach <= MANTLE_REACH) {
+                        if (phase == MANTLE_CLIMB) {
+                            mantleReadyVar.setTo(progress, true);
+                            mantleHoldTicks = 0;
+                            setMantle(MANTLE_READY);
+                            sendMantleMessage(LanguageSystem.INTERACT_GRAPPLE_MANTLEREADY);
+                        } else if (!reelVar.isActive) {
+                            mantleHoldTicks = 0;
+                        } else if (++mantleHoldTicks >= MANTLE_HOLD_TICKS) {
+                            setMantle(MANTLE_PULL);
+                        }
+                    } else if (phase == MANTLE_READY) {
+                        setMantle(MANTLE_CLIMB);
+                    } else if (lineIn && canMantle) {
+                        debugClimb(String.format("line is in, but the hook's depth below the top plus the minimum line length is %.2f blocks, more than %.0f", reach, MANTLE_REACH));
+                    }
+                    break;
+                }
+                case MANTLE_PULL: {
+                    if (reelVar.isActive) {
+                        progress += MANTLE_SPEED;
+                        if (progress >= path.completeAt) {
+                            progress = path.completeAt;
+                            completeMantle();
+                        }
+                    } else {
+                        progress -= MANTLE_SLIP_SPEED;
+                        if (progress <= mantleReadyVar.currentValue) {
+                            progress = mantleReadyVar.currentValue;
+                            mantleHoldTicks = 0;
+                            setMantle(MANTLE_READY);
+                        }
+                    }
+                    break;
+                }
+                case MANTLE_COMPLETE: {
+                    //Held flat on top until the grapple is released, or we drive back down.
+                    if (isDrivingBackwards()) {
+                        setMantle(MANTLE_DESCEND);
+                    }
+                    break;
+                }
+                case MANTLE_DESCEND: {
+                    if (reelVar.isActive) {
+                        //Winching back up.  Over the edge, that's the pull, and below it, the line.
+                        if (progress > mantleReadyVar.currentValue && mantleReadyVar.currentValue > 0) {
+                            setMantle(MANTLE_PULL);
+                        } else {
+                            setMantle(MANTLE_CLIMB);
+                        }
+                    } else if (isDrivingBackwards()) {
+                        progress -= MANTLE_DESCEND_SPEED * vehicleOn.throttleVar.currentValue;
+                        if (progress <= 0) {
+                            ropeVar.setTo(clampRope(path.getLineLength(0, anchor)), true);
+                            setMantle(MANTLE_NONE);
+                            return;
+                        }
+                    }
+                    //Let the line out as we go down, so it's the right length when it takes over again.
+                    ropeVar.setTo(clampRope(path.getLineLength(progress, anchor)), true);
+                    break;
+                }
+            }
+            mantleProgressVar.setTo(progress, true);
+        }
+        holdClimbPose(path, progress);
+    }
+
+    private void completeMantle() {
+        setMantle(MANTLE_COMPLETE);
+        sendMantleMessage(LanguageSystem.INTERACT_GRAPPLE_MANTLECOMPLETE);
+    }
+
+    /**
+     * Moves the vehicle to where the path puts it, and tells it to leave its ground and collision checks
+     * out this tick.  The move and turn are capped, so starting a climb slides the vehicle onto the wall
+     * rather than snapping it there.
+     */
+    private void holdClimbPose(ClimbPath path, double progress) {
+        Point3D targetPosition = new Point3D();
+        RotationMatrix targetOrientation = new RotationMatrix();
+        path.getPose(progress, targetPosition, targetOrientation);
+
+        Point3D move = targetPosition.subtract(vehicleOn.position);
+        if (move.length() > MANTLE_MAX_MOVE) {
+            move.scale(MANTLE_MAX_MOVE / move.length());
+        }
+
+        //Turns are applied in our own frame, so take our orientation back off the one we want.  If that's
+        //more than we can turn in a tick, turn part of the way about the same axis.  This isn't done with
+        //RotationMatrix.interploate, as that goes wrong for vehicles facing about yaw 180, which is half of all walls.
+        RotationMatrix turn = new RotationMatrix().multiplyTranspose(vehicleOn.orientation).multiply(targetOrientation);
+        double angle = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, (turn.m00 + turn.m11 + turn.m22 - 1) / 2D))));
+        if (angle > MANTLE_MAX_TURN) {
+            turn.setToAxisAngle(getRotationAxis(turn, angle), MANTLE_MAX_TURN);
+        }
+        vehicleOn.motion.set(move).scale(1D / vehicleOn.speedFactor);
+        vehicleOn.rotation.angles.set(turn.convertToAngles());
+        vehicleOn.climbingWithGrapple = true;
+        vehicleOn.pitchHeldByGrapple = true;
+        vehicleOn.rollHeldByGrapple = true;
+    }
+
+    /**
+     * Returns the normalized axis a rotation turns about.
+     *
+     * @param angle how far it turns, in degrees.
+     */
+    private static Point3D getRotationAxis(RotationMatrix rotation, double angle) {
+        double sin = Math.sin(Math.toRadians(angle));
+        if (sin > 1.0E-3) {
+            return new Point3D(rotation.m21 - rotation.m12, rotation.m02 - rotation.m20, rotation.m10 - rotation.m01).scale(0.5 / sin).normalize();
+        }
+        //Turned about half way round, where the terms above vanish.  The matrix is then about 2*axis*axis - 1,
+        //so take the axis from its largest diagonal term and the row it's on.
+        double xx = (rotation.m00 + 1) / 2D;
+        double yy = (rotation.m11 + 1) / 2D;
+        double zz = (rotation.m22 + 1) / 2D;
+        Point3D axis;
+        if (xx >= yy && xx >= zz) {
+            double x = Math.sqrt(Math.max(xx, 1.0E-9));
+            axis = new Point3D(x, rotation.m01 / (2 * x), rotation.m02 / (2 * x));
+        } else if (yy >= zz) {
+            double y = Math.sqrt(Math.max(yy, 1.0E-9));
+            axis = new Point3D(rotation.m01 / (2 * y), y, rotation.m12 / (2 * y));
+        } else {
+            double z = Math.sqrt(Math.max(zz, 1.0E-9));
+            axis = new Point3D(rotation.m02 / (2 * z), rotation.m12 / (2 * z), z);
+        }
+        return axis.normalize();
+    }
+
+    /**Tells whoever is driving how the mantle is going.  Server only.**/
+    private void sendMantleMessage(LanguageSystem.LanguageEntry message) {
+        IWrapperEntity controller = getController();
+        if (controller instanceof IWrapperPlayer) {
+            IWrapperPlayer player = (IWrapperPlayer) controller;
+            player.sendPacket(new PacketPlayerChatMessage(player, message));
+        }
+    }
+
+    private boolean isDrivingBackwards() {
+        if (vehicleOn.throttleVar.currentValue < MANTLE_THROTTLE) {
+            return false;
+        }
+        if (vehicleOn.reverseThrustVar.isActive) {
+            return true;
+        }
+        for (PartEngine engine : vehicleOn.engines) {
+            if (engine.currentGearVar.currentValue < 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if a block's collision box is at the point.
+     */
+    private boolean isSolid(Point3D point) {
+        return world.checkForCollisions(new BoundingBox(point, MANTLE_PROBE_RADIUS, MANTLE_PROBE_RADIUS, MANTLE_PROBE_RADIUS), new Point3D(), true, false);
+    }
+
+    /**
+     * The path a vehicle follows up a wall, worked out once from the shape of the wall when the climb starts.
+     * <p>
+     * It's built around the plane between the bottoms of the wheels, seen side-on in the upright plane square
+     * onto the wall: u runs along the ground into the wall, and y is height.  The plane's front edge is the
+     * bottom of the wheels at the end facing the wall, and its back edge is the bottom of the others.  The
+     * wall's shape is how high the blocks go at each u, taking the highest across the vehicle's width.  The
+     * vehicle's outline, its wheels and the collision boxes that hit blocks, is kept out of that shape.  The
+     * climb goes in three stages:
+     * -Up the face: the front edge is pitched up against the wall while the back edge slides along the ground
+     * behind it, so the plane forms a triangle with the wall and the floor.  If the plane is shorter than the
+     * wall, it ends up upright, flat against the face, and slides straight up it.
+     * -Over the lip: once the front edge is up level with the top, the plane rests on the lip and slides over it,
+     * tipping forwards about it as it goes.  It's flat by the time its middle passes the lip.
+     * -Onto the top: the flat plane slides on along the top until the back wheels are up there too.
+     * How far the plane's edges have moved is the progress, and the vehicle's place and pitch at each progress
+     * come straight from the plane.  The vehicle stays square onto the wall the whole way, with no roll.
+     * <p>
+     * Overhangs are taken as steps in the face, as if it were the ground.  One that sticks out from the face
+     * below it no further than the front wheels' climbHeight, the plane steps out over on its way up, as the
+     * wheels would drive up a step on flat ground.  One that sticks out further stops the path where the vehicle
+     * meets its underside, and the path is blocked: it never gets to the lip.
+     * <p>
+     * Both sides build the same path from the mantle variables and the hook, so only the progress needs syncing.
+     */
+    private static class ClimbPath {
+        /**Spacing of the poses worked out along the path, in blocks.**/
+        private static final double SAMPLE = MANTLE_STEP / 2D;
+        /**Spacing of the plane's pitch while it's pitched up the face, in degrees.**/
+        private static final double TILT_STEP = 0.5;
+        /**How far into the wall's shape the outline can be and still count as clear of it, in blocks.**/
+        private static final double CLEARANCE = 1.0E-3;
+        /**Most steps the plane slides to rest against the wall for each pose, so an odd wall can't search forever.**/
+        private static final int MAX_SLIDE_STEPS = 256;
+        /**Points round each wheel's rim in the outline.**/
+        private static final int RIM_POINTS = 24;
+        /**Spacing of the lines across the vehicle's width the wall's shape is taken along, in blocks.**/
+        private static final double TRACK_STEP = 0.5;
+        /**How many rows apart the face is checked going up it.  The rows between are only checked where it changes.**/
+        private static final int FACE_ROW_SKIP = 4;
+        /**How many columns apart the face is looked for going in.  The columns between are only checked before a hit.**/
+        private static final int FACE_COLUMN_SKIP = 2;
+
+        private final Point3D origin;
+        private final Point3D normal;
+        private final double yaw;
+        private final double side;
+        /**The middle of the plane's front edge, in our own frame.**/
+        private final Point3D frontLocal;
+        private final Point3D launcherLocal;
+        /**Angle the plane points up at when the vehicle is level, in degrees.**/
+        private final double planeAngle;
+        /**Progress at each pose, rising along the path.**/
+        private final double[] progress;
+        //The plane's front edge and pitch at each pose.
+        private final double[] frontU;
+        private final double[] frontY;
+        private final double[] tilt;
+        /**How far each pose is lifted so the outline clears steps the plane slides over.**/
+        private final double[] lift;
+        /**Height of the top of the wall where the hook is.**/
+        final double top;
+        /**Progress at which the front edge reaches the top, so going on would take it over the lip.**/
+        final double lipAt;
+        /**Progress at which the vehicle is flat on top, or as far as it gets if it's blocked.**/
+        final double completeAt;
+        /**True if an overhang too big for the wheels stops the path short of the top.**/
+        final boolean blocked;
+        /**See {@link #getClosestAhead}.**/
+        private double[] closestAhead;
+        private Point3D closestAheadAnchor;
+
+        private ClimbPath(Point3D origin, Point3D normal, double yaw, double side, Point3D frontLocal, Point3D launcherLocal, double planeAngle, List<double[]> poses, double[] progress, Outline outline, double top, double lipAt, boolean blocked) {
+            this.blocked = blocked;
+            this.origin = origin;
+            this.normal = normal;
+            this.yaw = yaw;
+            this.side = side;
+            this.frontLocal = frontLocal;
+            this.launcherLocal = launcherLocal;
+            this.planeAngle = planeAngle;
+            this.top = top;
+            this.lipAt = lipAt;
+            this.progress = progress;
+            this.completeAt = progress[progress.length - 1];
+            this.frontU = new double[poses.size()];
+            this.frontY = new double[poses.size()];
+            this.tilt = new double[poses.size()];
+            this.lift = new double[poses.size()];
+            for (int i = 0; i < poses.size(); ++i) {
+                double[] pose = poses.get(i);
+                frontU[i] = pose[0];
+                frontY[i] = pose[1];
+                tilt[i] = pose[2];
+                lift[i] = Math.max(0, outline.getDepth(pose[2], pose[0], pose[1]));
+            }
+            //Ease the lift in going forwards, and out going back, so the vehicle rides up steps rather than hopping.
+            for (int i = 1; i < lift.length; ++i) {
+                lift[i] = Math.max(lift[i], lift[i - 1] - (progress[i] - progress[i - 1]));
+            }
+            for (int i = lift.length - 2; i >= 0; --i) {
+                lift[i] = Math.max(lift[i], lift[i + 1] - (progress[i + 1] - progress[i]));
+            }
+        }
+
+        /**
+         * Builds the path from the grapple's mantle variables and hook.  Returns null if there's no wall to
+         * climb there, or it's too long a way.
+         */
+        static ClimbPath build(PartGrapple grapple) {
+            //Split the wheels about the end facing the wall, which isn't always the launcher's.
+            if (grapple.mantleSideVar.currentValue == 0) {
+                return null;
+            }
+            WheelSplit wheels = grapple.new WheelSplit(grapple.mantleSideVar.currentValue);
+            if (wheels.launcherEnd.isEmpty() || wheels.farEnd.isEmpty()) {
+                return null;
+            }
+            double side = wheels.side;
+            double yaw = grapple.mantleYawVar.currentValue;
+            Point3D normal = new Point3D(Math.sin(Math.toRadians(yaw)), 0, Math.cos(Math.toRadians(yaw)));
+            Point3D across = new Point3D(normal.z, 0, -normal.x).scale(side);
+            Point3D origin = new Point3D(grapple.mantleOriginXVar.currentValue, 0, grapple.mantleOriginZVar.currentValue);
+            double base = grapple.mantleBaseVar.currentValue;
+            Point3D anchor = grapple.getAnchor();
+
+            //The plane between the bottoms of the wheels, in our own frame, which doesn't change as we move.
+            //Forwards along it is towards the wall, which is backwards for us when our back faces it.
+            Point3D frontLocal = wheels.getLocalCenter(wheels.launcherEnd);
+            frontLocal.y = wheels.getLocalBottom(wheels.launcherEnd);
+            Point3D rearLocal = wheels.getLocalCenter(wheels.farEnd);
+            rearLocal.y = wheels.getLocalBottom(wheels.farEnd);
+            double planeRun = (frontLocal.z - rearLocal.z) * side;
+            double planeRise = frontLocal.y - rearLocal.y;
+            double planeLength = Math.hypot(planeRun, planeRise);
+            if (planeLength < MANTLE_STEP) {
+                return null;
+            }
+
+            //The vehicle's outline, and how far it spans across its width.
+            Outline outline = new Outline(frontLocal, planeRun / planeLength, planeRise / planeLength, side);
+            double minX = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE;
+            List<APart> allWheels = new ArrayList<>(wheels.launcherEnd);
+            allWheels.addAll(wheels.farEnd);
+            for (APart wheel : allWheels) {
+                Point3D center = grapple.toVehicleLocal(wheel.position);
+                outline.addWheel(center, wheel.getHeight() / 2D);
+                minX = Math.min(minX, center.x);
+                maxX = Math.max(maxX, center.x);
+            }
+            Point3D heading = new Point3D(grapple.vehicleOn.headingVector.x, 0, grapple.vehicleOn.headingVector.z);
+            if (heading.length() > 1.0E-3) {
+                heading.normalize();
+                for (BoundingBox box : grapple.vehicleOn.allBlockCollisionBoxes) {
+                    //Boxes don't turn with us, so take how far they reach along and across our heading.
+                    Point3D center = grapple.toVehicleLocal(box.globalCenter);
+                    double depth = Math.abs(heading.x) * box.widthRadius + Math.abs(heading.z) * box.depthRadius;
+                    double width = Math.abs(heading.z) * box.widthRadius + Math.abs(heading.x) * box.depthRadius;
+                    outline.addBox(center, depth, box.heightRadius);
+                    minX = Math.min(minX, center.x - width);
+                    maxX = Math.max(maxX, center.x + width);
+                }
+            }
+            //The wall's shape is taken along lines spaced evenly across that span, so all of it clears the wall.
+            List<Double> tracks = new ArrayList<>();
+            for (double x = minX;; x = Math.min(maxX, x + TRACK_STEP)) {
+                tracks.add(x - frontLocal.x);
+                if (x >= maxX) {
+                    break;
+                }
+            }
+
+            //The stretch of wall to look at: from behind the vehicle to past the hook by a vehicle's length.
+            double reach = outline.getReach();
+            double uStart = -(reach + MANTLE_PATH_MARGIN);
+            double uAnchor = anchor.copy().subtract(origin).dotProduct(normal, false);
+            //The hook can be short of the front wheels, on a top that sticks out over the face, but not behind the back ones.
+            double uEnd = Math.max(0, uAnchor) + reach + MANTLE_PATH_MARGIN;
+            if (uAnchor <= -planeRun || uEnd - uStart > MANTLE_MAX_PATH) {
+                return null;
+            }
+            double ceiling = anchor.y + MANTLE_PATH_MARGIN;
+            int count = (int) Math.ceil((uEnd - uStart) / MANTLE_STEP) + 1;
+            double[] heights = new double[count];
+            for (int i = 0; i < count; ++i) {
+                Point3D column = normal.copy().scale(uStart + i * MANTLE_STEP).add(origin);
+                heights[i] = -Double.MAX_VALUE;
+                for (double track : tracks) {
+                    heights[i] = Math.max(heights[i], grapple.getSurfaceHeight(across.copy().scale(track).add(column), base, ceiling));
+                }
+            }
+            //The top is the top of whatever the hook is in.  Not the heightmap there, as that's the ground under
+            //the hook if it's on a ledge sticking out.
+            int anchorColumn = Math.max(0, Math.min(count - 1, (int) Math.round((uAnchor - uStart) / MANTLE_STEP) + 1));
+            double top = grapple.getSurfaceHeight(normal.copy().scale(uStart + anchorColumn * MANTLE_STEP).add(origin).add(across.copy().scale(anchor.copy().subtract(origin).dotProduct(across, false))), anchor.y - MANTLE_STEP, ceiling);
+
+            //Find the face: the first rise ahead of the back wheels too tall for the front ones to roll up, and the
+            //lip: where it reaches the top.  Start from the back wheels, as the line can drag the front ones into
+            //the wall, where the ground under them would be the wall.  The climb backs them out of it.  Under a
+            //ledge sticking out at the top, the ground never gets up to the top, so the lip is where the hook is.
+            int startColumn = Math.max(0, (int) Math.round((-planeRun - uStart) / MANTLE_STEP));
+            double floor = heights[startColumn];
+            double frontRadius = wheels.getLargestRadius(wheels.launcherEnd);
+            int faceColumn = -1;
+            int lipColumn = -1;
+            for (int i = startColumn; i < count && lipColumn < 0; ++i) {
+                if (faceColumn < 0 && heights[i] > floor + frontRadius) {
+                    faceColumn = i;
+                }
+                if (faceColumn >= 0 && heights[i] >= top - MANTLE_STEP) {
+                    lipColumn = i;
+                }
+            }
+            if (faceColumn < 0 || top <= floor + frontRadius) {
+                return null;
+            }
+            if (lipColumn < 0) {
+                lipColumn = Math.max(faceColumn, anchorColumn);
+            }
+            double uFace = uStart + (faceColumn - 0.5) * MANTLE_STEP;
+            outline.setWall(heights, uStart, uFace);
+            double uLip = uStart + (lipColumn - 0.5) * MANTLE_STEP;
+
+            //The heightmap only sees the tops of the blocks, so it misses anything sticking out from the face above
+            //the ground.  So also find how far out the face reaches at each height above where the front wheels
+            //would roll up it.  An overhang that sticks out from the face below it no more than the wheels could
+            //drive up, the vehicle steps out over, as it would a step on flat ground.  One that sticks out further
+            //stops the climb under it: everything from its underside up is taken as solid.
+            double climbHeight = Double.MAX_VALUE;
+            for (APart wheel : wheels.launcherEnd) {
+                climbHeight = Math.min(climbHeight, ((PartGroundDevice) wheel).definition.ground.climbHeight);
+            }
+            double rowStart = floor + frontRadius;
+            int rows = Math.max(0, (int) Math.ceil((top - rowStart) / MANTLE_STEP));
+            //Rows are checked FACE_ROW_SKIP apart, and the ones between only where those two differ, as faces are mostly whole blocks.
+            int[] faceColumns = new int[rows];
+            int lastRow = -1;
+            for (int row = 0; row < rows; row = row == rows - 1 ? rows : Math.min(rows - 1, row + FACE_ROW_SKIP)) {
+                faceColumns[row] = grapple.findFaceColumn(origin, normal, across, tracks, uStart, startColumn, count, rowStart + (row + 0.5) * MANTLE_STEP);
+                for (int between = lastRow + 1; between < row; ++between) {
+                    faceColumns[between] = faceColumns[row] == faceColumns[lastRow] ? faceColumns[row] : grapple.findFaceColumn(origin, normal, across, tracks, uStart, startColumn, count, rowStart + (between + 0.5) * MANTLE_STEP);
+                }
+                lastRow = row;
+            }
+            double[] faceU = new double[rows];
+            boolean blocked = false;
+            double faceBelow = uFace;
+            for (int row = 0; row < rows; ++row) {
+                faceU[row] = faceColumns[row] < 0 ? Double.MAX_VALUE : uStart + (faceColumns[row] - 0.5) * MANTLE_STEP;
+                if (blocked || faceU[row] < faceBelow - climbHeight - CLEARANCE) {
+                    blocked = true;
+                    faceU[row] = -Double.MAX_VALUE;
+                } else if (faceColumns[row] >= 0) {
+                    faceBelow = faceU[row];
+                }
+            }
+            outline.setFace(faceU, rowStart);
+
+            //Up the face.  Pitch the plane up a bit at a time, with its back edge resting on the ground and
+            //its front pushed up to the wall, until its front edge is level with the top, or it's upright.
+            //Wherever the plane can't get clear of the face, it's stuck under an overhang it can't get past, and the
+            //path stops there.
+            List<double[]> poses = new ArrayList<>();
+            double fu = 0;
+            boolean atLip = false;
+            boolean stuck = false;
+            for (double tilt = 0;; tilt = Math.min(90, tilt + TILT_STEP)) {
+                //Slide in as far as we can while still resting on the ground, but never with the front edge past the face.
+                double pitch = tilt;
+                fu = Outline.slide(fu, u -> {
+                    if (u > outline.uFace) {
+                        return false;
+                    }
+                    double rest = outline.getRestHeight(pitch, u);
+                    return !Double.isNaN(rest) && !outline.hitsFace(pitch, u, rest);
+                });
+                if (Double.isNaN(fu)) {
+                    stuck = true;
+                    break;
+                }
+                double fy = outline.getRestHeight(tilt, fu);
+                if (fy >= top) {
+                    //Stop where the front edge gets to the top, between this pitch and the last.
+                    double[] last = poses.isEmpty() ? new double[] {fu, top, tilt} : poses.get(poses.size() - 1);
+                    double t = fy > last[1] ? (top - last[1]) / (fy - last[1]) : 1;
+                    poses.add(new double[] {last[0] + (fu - last[0]) * t, top, last[2] + (tilt - last[2]) * t});
+                    atLip = true;
+                    break;
+                }
+                poses.add(new double[] {fu, fy, tilt});
+                if (tilt >= 90) {
+                    break;
+                }
+            }
+
+            //Upright, and still short of the top.  Slide straight up the face, moving in over any steps on it, and
+            //out over any overhangs.
+            if (!atLip && !stuck) {
+                double fy = poses.get(poses.size() - 1)[1];
+                while (fy < top) {
+                    fy = Math.min(top, fy + SAMPLE);
+                    double height = fy;
+                    fu = Outline.slide(fu, u -> outline.getDepth(90, u, height) <= CLEARANCE && !outline.hitsFace(90, u, height));
+                    if (Double.isNaN(fu)) {
+                        stuck = true;
+                        break;
+                    }
+                    poses.add(new double[] {fu, fy, 90});
+                }
+            }
+            if (stuck && !blocked) {
+                //Not an overhang, just a wall the plane doesn't fit, so there's no way up.
+                return null;
+            }
+
+            //Over the lip and onto the top.  The plane rests on the lip where its front edge got up to it, and
+            //slides over, tipping forwards until it's flat by the time its middle is over.  Then it slides
+            //on until the back wheels are past the lip by their size.  Not if an overhang stopped us.
+            int lipPose = poses.size() - 1;
+            if (stuck && lipPose < 1) {
+                //Blocked before it got anywhere.
+                return null;
+            }
+            if (!stuck) {
+                double pivotU = poses.get(lipPose)[0];
+                double lipTilt = poses.get(lipPose)[2];
+                double end = Math.max(planeLength, planeLength + uLip - pivotU + wheels.getLargestRadius(wheels.farEnd));
+                for (double along = SAMPLE;; along = Math.min(end, along + SAMPLE)) {
+                    double tipped = Math.min(1, along / (planeLength / 2D));
+                    double tilt = lipTilt * (1 - tipped * tipped * (3 - 2 * tipped));
+                    poses.add(new double[] {pivotU + along * Math.cos(Math.toRadians(tilt)), top + along * Math.sin(Math.toRadians(tilt)), tilt});
+                    if (along >= end) {
+                        break;
+                    }
+                }
+            }
+
+            //The progress is how far the plane has moved: whichever of its edges moved further.
+            double[] progress = new double[poses.size()];
+            for (int i = 1; i < poses.size(); ++i) {
+                double[] from = poses.get(i - 1);
+                double[] to = poses.get(i);
+                double[] backFrom = getBackEdge(from, planeLength);
+                double[] backTo = getBackEdge(to, planeLength);
+                double frontMove = Math.hypot(to[0] - from[0], to[1] - from[1]);
+                double backMove = Math.hypot(backTo[0] - backFrom[0], backTo[1] - backFrom[1]);
+                progress[i] = progress[i - 1] + Math.max(frontMove, backMove);
+            }
+            if (progress[progress.length - 1] < SAMPLE) {
+                return null;
+            }
+            return new ClimbPath(origin, normal, yaw, side, frontLocal, grapple.toVehicleLocal(grapple.position), Math.toDegrees(Math.atan2(planeRise, planeRun)), poses, progress, outline, top, progress[lipPose], stuck);
+        }
+
+        /**Returns {u, y} of the plane's back edge for a {front edge u, front edge y, pitch} pose.**/
+        private static double[] getBackEdge(double[] pose, double planeLength) {
+            return new double[] {pose[0] - planeLength * Math.cos(Math.toRadians(pose[2])), pose[1] - planeLength * Math.sin(Math.toRadians(pose[2]))};
+        }
+
+        /**
+         * Sets where the vehicle is and how it's turned at the progress.
+         */
+        void getPose(double progress, Point3D position, RotationMatrix orientation) {
+            //Find the poses either side of the progress.  Poses can share a progress, so guard the fraction.
+            progress = Math.max(0, Math.min(completeAt, progress));
+            int i = Arrays.binarySearch(this.progress, progress);
+            i = Math.max(0, Math.min(frontU.length - 2, i >= 0 ? i : -i - 2));
+            double span = this.progress[i + 1] - this.progress[i];
+            double fraction = span > 0 ? Math.max(0, Math.min(1, (progress - this.progress[i]) / span)) : 0;
+            double fu = frontU[i] + (frontU[i + 1] - frontU[i]) * fraction;
+            double fy = frontY[i] + (frontY[i + 1] - frontY[i]) * fraction;
+            double planeTilt = tilt[i] + (tilt[i + 1] - tilt[i]) * fraction;
+
+            //How far the end facing the wall points up.  Positive pitch is nose down, and with our back to
+            //the wall we face away from it, so our nose goes down as the back goes up.  Never quite upright: our
+            //orientation is rebuilt from its pitch, yaw and roll angles each tick, and those can't tell yaw from
+            //roll when exactly upright, so the rebuild spins us about our nose.
+            double pitchUp = Math.min(MANTLE_MAX_PITCH, planeTilt - planeAngle);
+            orientation.setToAngles(side > 0 ? new Point3D(-pitchUp, yaw, 0) : new Point3D(pitchUp, yaw + 180, 0));
+            position.set(normal).scale(fu).add(origin).add(0, fy, 0).subtract(frontLocal.copy().rotate(orientation));
+            position.y += lift[i] + (lift[i + 1] - lift[i]) * fraction;
+        }
+
+        /**
+         * Returns, for each {@link #SAMPLE} of progress, the shortest the line is from there to the end of the
+         * path.  Worked out the first time it's asked for, as the hook doesn't move while we're on the path.
+         */
+        private double[] getClosestAhead(Point3D anchor) {
+            if (closestAhead == null || !anchor.equals(closestAheadAnchor)) {
+                closestAheadAnchor = anchor.copy();
+                closestAhead = new double[(int) Math.ceil(completeAt / SAMPLE) + 1];
+                double closest = Double.MAX_VALUE;
+                for (int i = closestAhead.length - 1; i >= 0; --i) {
+                    closest = Math.min(closest, getLineLength(Math.min(completeAt, i * SAMPLE), anchor));
+                    closestAhead[i] = closest;
+                }
+            }
+            return closestAhead;
+        }
+
+        /**Progress at which the front edge reaches the top of the wall, so going on would take it over the lip.**/
+        double getLipProgress() {
+            return lipAt;
+        }
+
+        /**How far the launcher is from the hook at the progress.**/
+        double getLineLength(double progress, Point3D anchor) {
+            Point3D position = new Point3D();
+            RotationMatrix orientation = new RotationMatrix();
+            getPose(progress, position, orientation);
+            return launcherLocal.copy().rotate(orientation).add(position).distanceTo(anchor);
+        }
+
+        /**
+         * Returns the progress, starting from the passed-in one, at which the launcher is the line's length
+         * from the hook.  Moves on while the line is too long for where we are, and back while it's too short.
+         * The line can pull us on as long as somewhere further on, before the end, the launcher is closer to the
+         * hook than here.  It can get further for a bit, as stepping out over a bulge in the face moves us out
+         * from the wall, but the line carries us over that.  Past the closest point left, the line would have to
+         * get longer, so we stop there, short of the line length.
+         */
+        double getProgressForLine(double progress, double rope, Point3D anchor, double end) {
+            double length = getLineLength(progress, anchor);
+            if (length > rope) {
+                double[] closestAhead = getClosestAhead(anchor);
+                while (progress < end && length > rope) {
+                    //The shortest the line gets from the next sample on.
+                    int ahead = Math.min(closestAhead.length - 1, (int) Math.floor(progress / SAMPLE) + 1);
+                    if (closestAhead[ahead] >= length - 1.0E-6) {
+                        break;
+                    }
+                    progress = Math.min(end, progress + SAMPLE);
+                    length = getLineLength(progress, anchor);
+                }
+            } else {
+                while (progress > 0 && getLineLength(Math.max(0, progress - SAMPLE), anchor) <= rope) {
+                    progress = Math.max(0, progress - SAMPLE);
+                }
+            }
+            return progress;
         }
     }
 
     /**
-     * Hauls the vehicle over the top of a wall.  Runs on both client and server.  The mantle moves the
-     * vehicle itself along a set path, so it looks the same every time and costs next to nothing a tick:
-     * -Pause: hang at the lip for {@link #MANTLE_PAUSE_TICKS}.
-     * -Lift: rise straight up while tilting towards the hook, pivoting on the launcher-end wheels,
-     * until they clear the top.  The tilt is spread over the height left, so the vehicle reaches
-     * {@link #MANTLE_ROLL_PITCH} just as the wheels clear the lip.
-     * -Roll: move towards the hook with the launcher-end wheels skimming the top, tilting down to
-     * level over the distance left, so the far wheels come up over the lip as the vehicle levels out.
-     *
-     * Lift and roll only move while reel is held.  Letting go holds the vehicle where it is, and slack
-     * drops out of the mantle and back to the line.  Only the server changes phase; clients follow.
+     * The vehicle's side-on outline, as points measured from the front edge of the plane between the bottoms of
+     * its wheels: how far along the plane towards the wall, and how far up off it.  Placed by where the plane's
+     * front edge is and how far the plane is pitched up, against the wall's shape.  See {@link ClimbPath}.
      */
-    private void updateMantle() {
-        boolean server = !world.isClient();
-        //Nothing else moves the vehicle during the mantle, so cancel gravity, tyres and steering.
-        vehicleOn.motion.set(0, 0, 0);
-        vehicleOn.rotation.angles.set(0, 0, 0);
-        vehicleOn.pitchHeldByGrapple = true;
+    private static class Outline {
+        private final List<double[]> points = new ArrayList<>();
+        private final Point3D frontLocal;
+        //The plane's direction in our own frame, forwards being towards the wall, and up.
+        private final double alongForward;
+        private final double alongUp;
+        private final double side;
+        private double[] heights;
+        private double uStart;
+        /**Where the face of the wall is.  Points short of it are over the ground, and the rest over the wall.**/
+        private double uFace;
+        /**How far out the face reaches in each row of heights going up from rowStart.  See {@link #setFace}.**/
+        private double[] faceU = new double[0];
+        private double rowStart;
 
-        if (slackVar.isActive) {
-            if (server) {
-                setMantle(MANTLE_NONE);
-            }
-            return;
-        }
-        int phase = getMantle();
-        if (phase == MANTLE_PAUSE) {
-            if (server && ++mantlePauseTicks >= MANTLE_PAUSE_TICKS) {
-                setMantle(MANTLE_LIFT);
-            }
-            return;
-        }
-        if (!reelVar.isActive) {
-            return;
+        Outline(Point3D frontLocal, double alongForward, double alongUp, double side) {
+            this.frontLocal = frontLocal;
+            this.alongForward = alongForward;
+            this.alongUp = alongUp;
+            this.side = side;
         }
 
-        WheelSplit wheels = new WheelSplit();
-        if (wheels.launcherEnd.isEmpty() || wheels.farEnd.isEmpty()) {
-            if (server) {
-                setMantle(MANTLE_NONE);
-            }
-            return;
+        /**Adds a point in our own frame.**/
+        private void addPoint(double z, double y) {
+            double forward = (z - frontLocal.z) * side;
+            double up = y - frontLocal.y;
+            points.add(new double[] {forward * alongForward + up * alongUp, up * alongForward - forward * alongUp});
         }
-        double lip = mantleLipVar.currentValue;
-        double wheelBottom = wheels.getLauncherEndBottom();
-        //How far the launcher end points up from level, in degrees.
-        double pitchUp = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, vehicleOn.headingVector.y * wheels.side))));
 
-        Point3D move = new Point3D();
-        double tilt;
-        if (phase == MANTLE_LIFT) {
-            double remaining = lip + MANTLE_CLEARANCE - wheelBottom;
-            if (remaining <= 0) {
-                if (server) {
-                    setMantle(MANTLE_ROLL);
+        /**Adds the rim of a wheel, from its middle in our own frame.**/
+        void addWheel(Point3D center, double radius) {
+            for (int i = 0; i < ClimbPath.RIM_POINTS; ++i) {
+                double angle = 2 * Math.PI * i / ClimbPath.RIM_POINTS;
+                addPoint(center.z + radius * Math.cos(angle), center.y + radius * Math.sin(angle));
+            }
+        }
+
+        /**Adds the edges of a collision box, from its middle in our own frame.**/
+        void addBox(Point3D center, double depthRadius, double heightRadius) {
+            for (double z = -depthRadius;; z = Math.min(depthRadius, z + MANTLE_UNDERSIDE_STEP)) {
+                addPoint(center.z + z, center.y - heightRadius);
+                addPoint(center.z + z, center.y + heightRadius);
+                if (z >= depthRadius) {
+                    break;
                 }
-                return;
             }
-            double rise = Math.min(MANTLE_SPEED, remaining);
-            move.y = rise;
-            tilt = Math.max(0, pitchUp - MANTLE_ROLL_PITCH) * rise / remaining;
-        } else {
-            double yaw = Math.toRadians(mantleYawVar.currentValue);
-            Point3D direction = new Point3D(Math.sin(yaw), 0, Math.cos(yaw));
-            Point3D edge = new Point3D(mantleEdgeXVar.currentValue, 0, mantleEdgeZVar.currentValue);
-            //Distance left until every far wheel is a radius past the wall face, so over the top.
-            double remaining = -Double.MAX_VALUE;
-            for (APart wheel : wheels.farEnd) {
-                Point3D flatWheel = new Point3D(wheel.position.x, 0, wheel.position.z);
-                remaining = Math.max(remaining, edge.copy().subtract(flatWheel).dotProduct(direction, false) + wheel.getHeight() / 2D);
-            }
-            if (remaining <= 0) {
-                //Over the top.  The vehicle settles onto its wheels and the line takes over again.
-                if (server) {
-                    setMantle(MANTLE_NONE);
+            for (double y = -heightRadius;; y = Math.min(heightRadius, y + MANTLE_UNDERSIDE_STEP)) {
+                addPoint(center.z - depthRadius, center.y + y);
+                addPoint(center.z + depthRadius, center.y + y);
+                if (y >= heightRadius) {
+                    break;
                 }
-                return;
             }
-            double travel = Math.min(MANTLE_SPEED, remaining);
-            move.set(direction).scale(travel);
-            move.y = Math.max(-MANTLE_SPEED, Math.min(MANTLE_SPEED, lip + MANTLE_CLEARANCE - wheelBottom));
-            tilt = Math.max(0, pitchUp) * travel / remaining;
         }
-        //Cap the rate so a short distance left can't snap the vehicle round.  Positive tilt is nose down,
-        //so flip it when the launcher is at the back.
-        tilt = Math.min(tilt, MAX_TILT_RATE) * wheels.side;
 
-        //Pivot on the launcher-end wheels, so they follow the path above and the far end swings round them.
-        Point3D pivot = wheels.getLauncherEndCenter();
-        vehicleOn.rotation.angles.x = tilt;
-        Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(new RotationMatrix().setToAxisAngle(1, 0, 0, tilt)));
-        move.add(pivotShift.rotate(vehicleOn.orientation));
-        vehicleOn.motion.set(move).scale(1D / vehicleOn.speedFactor);
+        /**Furthest any point is from the plane's front edge.**/
+        double getReach() {
+            double reach = 0;
+            for (double[] point : points) {
+                reach = Math.max(reach, Math.hypot(point[0], point[1]));
+            }
+            return reach;
+        }
+
+        void setWall(double[] heights, double uStart, double uFace) {
+            this.heights = heights;
+            this.uStart = uStart;
+            this.uFace = uFace;
+        }
+
+        /**
+         * Sets how far out the face reaches in each row of heights, from rowStart up in rows {@link #MANTLE_STEP}
+         * apart.  Everything past that in the row is taken as solid.
+         */
+        void setFace(double[] faceU, double rowStart) {
+            this.faceU = faceU;
+            this.rowStart = rowStart;
+        }
+
+        /**Returns true if any of the outline is in the face with the plane at the pose.**/
+        boolean hitsFace(double tilt, double fu, double fy) {
+            double cos = Math.cos(Math.toRadians(tilt));
+            double sin = Math.sin(Math.toRadians(tilt));
+            for (double[] point : points) {
+                int row = (int) Math.floor((fy + point[0] * sin + point[1] * cos - rowStart) / MANTLE_STEP);
+                if (row >= 0 && row < faceU.length && fu + point[0] * cos - point[1] * sin > faceU[row] + ClimbPath.CLEARANCE) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private double getHeight(double u) {
+            int column = (int) Math.round((u - uStart) / MANTLE_STEP);
+            return heights[Math.max(0, Math.min(heights.length - 1, column))];
+        }
+
+        /**
+         * Returns how low the plane's front edge can be with the plane pitched up by the tilt and its front edge at
+         * fu, resting on the ground short of the wall.  NaN if the outline would be resting on the wall there instead.
+         */
+        double getRestHeight(double tilt, double fu) {
+            double cos = Math.cos(Math.toRadians(tilt));
+            double sin = Math.sin(Math.toRadians(tilt));
+            double groundRest = -Double.MAX_VALUE;
+            double wallRest = -Double.MAX_VALUE;
+            for (double[] point : points) {
+                double u = fu + point[0] * cos - point[1] * sin;
+                double rest = getHeight(u) - (point[0] * sin + point[1] * cos);
+                if (u < uFace) {
+                    groundRest = Math.max(groundRest, rest);
+                } else {
+                    wallRest = Math.max(wallRest, rest);
+                }
+            }
+            return wallRest <= groundRest + ClimbPath.CLEARANCE ? groundRest : Double.NaN;
+        }
+
+        /**Returns how far the outline dips into the wall's shape with the plane at the pose.  0 or less if it's clear.**/
+        double getDepth(double tilt, double fu, double fy) {
+            double cos = Math.cos(Math.toRadians(tilt));
+            double sin = Math.sin(Math.toRadians(tilt));
+            double depth = -Double.MAX_VALUE;
+            for (double[] point : points) {
+                depth = Math.max(depth, getHeight(fu + point[0] * cos - point[1] * sin) - (fy + point[0] * sin + point[1] * cos));
+            }
+            return depth;
+        }
+
+        /**
+         * Returns how far the plane's front edge can go towards the wall from fu, a step at a time, while the pose
+         * there is clear.  Backs off first if it isn't.  NaN if it can't get clear.
+         *
+         * @param clear whether the pose with the front edge at a u is clear.
+         */
+        static double slide(double fu, DoublePredicate clear) {
+            int steps = 0;
+            while (!clear.test(fu)) {
+                if (++steps > ClimbPath.MAX_SLIDE_STEPS) {
+                    return Double.NaN;
+                }
+                fu -= ClimbPath.SAMPLE;
+            }
+            while (++steps <= ClimbPath.MAX_SLIDE_STEPS && clear.test(fu + ClimbPath.SAMPLE)) {
+                fu += ClimbPath.SAMPLE;
+            }
+            return fu;
+        }
+    }
+
+    /**
+     * Returns the height of the top of the blocks at the point, looking up from base to ceiling.  If there's
+     * nothing there at base, as when the climb starts with the vehicle already partway up the wall, looks down
+     * for the ground, and returns {@link #MANTLE_GROUND_SEARCH} blocks below base if there's none.
+     */
+    private double getSurfaceHeight(Point3D column, double base, double ceiling) {
+        Point3D point = new Point3D(column.x, base, column.z);
+        if (!isSolid(point)) {
+            //Go down a block at a time to the first solid point, then back up in small steps for the exact height.
+            int blocksDown = 0;
+            while (!isSolid(point)) {
+                if (++blocksDown > MANTLE_GROUND_SEARCH) {
+                    return base - MANTLE_GROUND_SEARCH;
+                }
+                point.y -= 1;
+            }
+            while (isSolid(point)) {
+                point.y += MANTLE_STEP;
+            }
+            return point.y;
+        }
+        //Go up a block at a time to the first free point, then back down a block and up in small steps for the exact height.
+        while (isSolid(point) && point.y < ceiling) {
+            point.y += 1;
+        }
+        if (point.y >= ceiling) {
+            return ceiling;
+        }
+        point.y -= 1;
+        while (isSolid(point)) {
+            point.y += MANTLE_STEP;
+        }
+        return point.y;
+    }
+
+    /**
+     * Returns the first column of the climb path's wall, going in from startColumn, that's solid at the height on
+     * any of the tracks across the vehicle, or -1 if none is.  See {@link ClimbPath#build}.
+     */
+    private int findFaceColumn(Point3D origin, Point3D normal, Point3D across, List<Double> tracks, double uStart, int startColumn, int count, double y) {
+        for (int i = startColumn; i < count + ClimbPath.FACE_COLUMN_SKIP - 1; i += ClimbPath.FACE_COLUMN_SKIP) {
+            int column = Math.min(count - 1, i);
+            if (isColumnSolid(origin, normal, across, tracks, uStart + column * MANTLE_STEP, y)) {
+                //Back up over the ones skipped, for the first.
+                for (int skipped = Math.max(startColumn, column - ClimbPath.FACE_COLUMN_SKIP + 1); skipped < column; ++skipped) {
+                    if (isColumnSolid(origin, normal, across, tracks, uStart + skipped * MANTLE_STEP, y)) {
+                        return skipped;
+                    }
+                }
+                return column;
+            }
+        }
+        return -1;
+    }
+
+    private boolean isColumnSolid(Point3D origin, Point3D normal, Point3D across, List<Double> tracks, double u, double y) {
+        Point3D column = normal.copy().scale(u).add(origin);
+        for (double track : tracks) {
+            Point3D point = across.copy().scale(track).add(column);
+            point.y = y;
+            if (isSolid(point)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Point3D toVehicleLocal(Point3D worldPosition) {
         return worldPosition.copy().subtract(vehicleOn.position).reOrigin(vehicleOn.orientation);
-    }
-
-    /**Pitch of a local vector above the +Z axis, in degrees.**/
-    private static double getTiltAngle(Point3D local) {
-        return Math.toDegrees(Math.atan2(local.y, local.z));
-    }
-
-    /**Wraps an angle to -180 to 180 degrees.**/
-    private static double wrapAngle(double angle) {
-        return ((angle % 360) + 540) % 360 - 180;
     }
 
     private double clampRope(double rope) {
@@ -1162,8 +2121,27 @@ public class PartGrapple extends APart {
         return (int) mantleVar.currentValue;
     }
 
+    /**Sets the mantle phase.  Server only, synced to clients, which follow it.**/
     private void setMantle(int phase) {
+        if (phase != getMantle()) {
+            debugClimb("phase " + phase);
+        }
         mantleVar.setTo(phase, true);
+    }
+
+    /**
+     * In dev mode, tells whoever is driving what the climb is doing, or why it won't start.  Only says
+     * something when it changes, so it doesn't fill the chat every tick.  Server only.
+     */
+    private void debugClimb(String message) {
+        if (ConfigSystem.settings.general.devMode.value && !message.equals(lastClimbDebug)) {
+            lastClimbDebug = message;
+            IWrapperEntity controller = getController();
+            if (controller instanceof IWrapperPlayer) {
+                IWrapperPlayer player = (IWrapperPlayer) controller;
+                player.sendPacket(new PacketPlayerChatMessage(player, LanguageSystem.SYSTEM_DEBUG, "Grapple climb: " + message));
+            }
+        }
     }
 
     private int getState() {
@@ -1317,30 +2295,39 @@ public class PartGrapple extends APart {
     private class WheelSplit {
         final List<APart> launcherEnd = new ArrayList<>();
         final List<APart> farEnd = new ArrayList<>();
-        /**1 if the launcher is ahead of the middle of the wheels, -1 if behind.**/
+        /**1 if the launcher, or the end asked for, is ahead of the middle of the wheels, -1 if behind.**/
         final double side;
+        /**Middle of the wheels front to back, in the vehicle's frame.**/
+        final double centerZ;
 
         WheelSplit() {
+            this(0);
+        }
+
+        /**
+         * @param side 1 or -1 to split the wheels about that end instead of the launcher's, as the climb does
+         * with the end facing the wall.  0 for the launcher's end.
+         */
+        WheelSplit(double side) {
             List<APart> wheels = new ArrayList<>();
-            double centerZ = 0;
+            double totalZ = 0;
             for (APart other : vehicleOn.allParts) {
                 if (other instanceof PartGroundDevice && !other.placementDefinition.isSpare) {
                     wheels.add(other);
-                    centerZ += toVehicleLocal(other.position).z;
+                    totalZ += toVehicleLocal(other.position).z;
                 }
             }
-            if (!wheels.isEmpty()) {
-                centerZ /= wheels.size();
-            }
-            side = toVehicleLocal(position).z >= centerZ ? 1 : -1;
+            centerZ = wheels.isEmpty() ? 0 : totalZ / wheels.size();
+            this.side = side != 0 ? Math.signum(side) : (toVehicleLocal(position).z >= centerZ ? 1 : -1);
             for (APart wheel : wheels) {
-                ((toVehicleLocal(wheel.position).z - centerZ) * side > 0 ? launcherEnd : farEnd).add(wheel);
+                ((toVehicleLocal(wheel.position).z - centerZ) * this.side > 0 ? launcherEnd : farEnd).add(wheel);
             }
         }
 
-        APart getLowestLauncherEnd() {
-            APart lowest = launcherEnd.get(0);
-            for (APart wheel : launcherEnd) {
+        /**The wheel in the list whose bottom is lowest.  The list must not be empty.**/
+        APart getLowest(List<APart> wheels) {
+            APart lowest = wheels.get(0);
+            for (APart wheel : wheels) {
                 if (wheel.position.y - wheel.getHeight() / 2D < lowest.position.y - lowest.getHeight() / 2D) {
                     lowest = wheel;
                 }
@@ -1348,19 +2335,40 @@ public class PartGrapple extends APart {
             return lowest;
         }
 
-        /**World height of the bottom of the lowest launcher-end wheel.**/
-        double getLauncherEndBottom() {
-            APart lowest = getLowestLauncherEnd();
-            return lowest.position.y - lowest.getHeight() / 2D;
+        /**Radius of the biggest wheel in the list.**/
+        double getLargestRadius(List<APart> wheels) {
+            double radius = 0;
+            for (APart wheel : wheels) {
+                radius = Math.max(radius, wheel.getHeight() / 2D);
+            }
+            return radius;
         }
 
-        /**Middle of the launcher-end wheels, in the vehicle's frame.**/
-        Point3D getLauncherEndCenter() {
+        /**Middle of the wheels in the list, in the vehicle's frame.  The list must not be empty.**/
+        Point3D getLocalCenter(List<APart> wheels) {
             Point3D center = new Point3D();
-            for (APart wheel : launcherEnd) {
+            for (APart wheel : wheels) {
                 center.add(toVehicleLocal(wheel.position));
             }
-            return center.scale(1D / launcherEnd.size());
+            return center.scale(1D / wheels.size());
+        }
+
+        /**Height of the lowest wheel bottom in the list, in the vehicle's frame.  The list must not be empty.**/
+        double getLocalBottom(List<APart> wheels) {
+            double bottom = Double.MAX_VALUE;
+            for (APart wheel : wheels) {
+                bottom = Math.min(bottom, toVehicleLocal(wheel.position).y - wheel.getHeight() / 2D);
+            }
+            return bottom;
+        }
+
+        /**Middle of the wheels in the list, in world coordinates.  The list must not be empty.**/
+        Point3D getWorldCenter(List<APart> wheels) {
+            Point3D center = new Point3D();
+            for (APart wheel : wheels) {
+                center.add(wheel.position);
+            }
+            return center.scale(1D / wheels.size());
         }
     }
 

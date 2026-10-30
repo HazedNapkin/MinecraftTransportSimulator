@@ -226,6 +226,9 @@ public class LanguageSystem {
     public static final LanguageEntry DEATH_GRAPPLE_NULL = new LanguageEntry("death.grapple.null", "%s was harpooned");
     public static final LanguageEntry DEATH_GRAPPLE_PLAYER = new LanguageEntry("death.grapple.player", "%s was harpooned by %s");
 
+    public static final LanguageEntry DEATH_GRAPPLE_NULL = new LanguageEntry("death.grapple.null", "%s was harpooned");
+    public static final LanguageEntry DEATH_GRAPPLE_PLAYER = new LanguageEntry("death.grapple.player", "%s was harpooned by %s");
+
     public static final LanguageEntry DEATH_JETINTAKE_NULL = new LanguageEntry("death.jet_intake.null", "%s was sucked into a jet engine");
     public static final LanguageEntry DEATH_JETINTAKE_PLAYER = new LanguageEntry("death.jet_intake.player", "%s was sucked into %s's jet engine");
 
@@ -244,6 +247,12 @@ public class LanguageSystem {
     public static final LanguageEntry GUI_CONFIRM = new LanguageEntry("gui.confirm", "CONFIRM");
     public static final LanguageEntry GUI_MASTERCONFIG = new LanguageEntry("gui.masterconfig", "Open configuration screen");
     public static final LanguageEntry GUI_IMPORT = new LanguageEntry("gui.import", "Import Packs (Developers Only)");
+
+    public static final LanguageEntry GUI_PHONE_CALL = new LanguageEntry("gui.phone.call", "Call");
+    public static final LanguageEntry GUI_PHONE_STOP = new LanguageEntry("gui.phone.stop", "Stop");
+    public static final LanguageEntry GUI_PHONE_FAR = new LanguageEntry("gui.phone.far", "far");
+    public static final LanguageEntry GUI_PHONE_EMPTY = new LanguageEntry("gui.phone.empty", "No vehicles registered.  Sneak-use a vehicle with the phone to add it.");
+    public static final LanguageEntry GUI_PHONE_HINT = new LanguageEntry("gui.phone.hint", "Sneak-use a vehicle to add it.");
 
     public static final LanguageEntry GUI_SIGNALCONTROLLER_SCAN = new LanguageEntry("gui.signalcontroller.scan", "Scan For Signals & Components");
     public static final LanguageEntry GUI_SIGNALCONTROLLER_SCANDISTANCE = new LanguageEntry("gui.signalcontroller.scandistance", "Radius: ");
@@ -385,6 +394,14 @@ public class LanguageSystem {
     public static final LanguageEntry INTERACT_MOUSEYOKE_DISABLED = new LanguageEntry("interact.mouseyoke.disabled", "Mouse Yoke disabled");
     public static final LanguageEntry INTERACT_ARCADEMODE_ENABLED = new LanguageEntry("interact.arcademode.enabled", "Arcade Mode enabled");
     public static final LanguageEntry INTERACT_ARCADEMODE_DISABLED = new LanguageEntry("interact.arcademode.disabled", "Arcade Mode disabled");
+    public static final LanguageEntry INTERACT_ARCADEMODE_VEHICLE_ENABLED = new LanguageEntry("interact.arcademode.vehicle.enabled", "Arcade flight enabled for this aircraft in this mode");
+    public static final LanguageEntry INTERACT_ARCADEMODE_VEHICLE_DISABLED = new LanguageEntry("interact.arcademode.vehicle.disabled", "Arcade flight disabled for this aircraft in this mode");
+    public static final LanguageEntry INTERACT_ARCADEMODE_SCHEME_ARCADE = new LanguageEntry("interact.arcademode.scheme.arcade", "arcade (mouse) flight");
+    public static final LanguageEntry INTERACT_ARCADEMODE_SCHEME_STANDARD = new LanguageEntry("interact.arcademode.scheme.standard", "standard controls");
+    public static final LanguageEntry INTERACT_ARCADEMODE_NOTICE_DEFAULT = new LanguageEntry("interact.arcademode.notice.default", "This aircraft defaults to %1$s. Press [%2$s] to fly with %3$s instead.");
+    public static final LanguageEntry INTERACT_ARCADEMODE_NOTICE_OVERRIDE = new LanguageEntry("interact.arcademode.notice.override", "This aircraft is set to %1$s from your saved choice. Press [%2$s] to fly with %3$s instead.");
+    public static final LanguageEntry INTERACT_ARCADEMODE_NOTICE_MODE_DEFAULT = new LanguageEntry("interact.arcademode.notice.mode.default", "This mode defaults to %1$s. Press [%2$s] to switch. Your choice is remembered separately for each mode.");
+    public static final LanguageEntry INTERACT_ARCADEMODE_NOTICE_MODE_OVERRIDE = new LanguageEntry("interact.arcademode.notice.mode.override", "This mode is set to %1$s from your saved choice. Press [%2$s] to switch. Your choice is remembered separately for each mode.");
     
     public static final LanguageEntry INTERACT_PARTREMOVE_HASPARTS = new LanguageEntry("interact.partremove.hasparts", "You must first remove all parts from this part to remove it!");
     public static final LanguageEntry INTERACT_PARTREMOVE_WRENCH = new LanguageEntry("interact.partremove.wrench", "This part requires a wrench to remove!");
@@ -418,6 +435,38 @@ public class LanguageSystem {
     public static final LanguageEntry INTERACT_REPAIR_TOOSOON = new LanguageEntry("interact.repair.toosoon", "You cannot repair this now.  Wait 10 seconds between repairs.");
     public static final LanguageEntry INTERACT_REPAIR_WRONGTYPE = new LanguageEntry("interact.repair.wrongtype", "This repair item does not work on this thing.");
 
+    public static final LanguageEntry INTERACT_PHONE_REGISTERED = new LanguageEntry("interact.phone.registered", "Registered %s.");
+    public static final LanguageEntry INTERACT_PHONE_NEEDKEY = new LanguageEntry("interact.phone.needkey", "You need this vehicle's key to register it.");
+    public static final LanguageEntry INTERACT_PHONE_NEEDKEYCALL = new LanguageEntry("interact.phone.needkeycall", "You need %s's key to call it.");
+    public static final LanguageEntry INTERACT_PHONE_FULL = new LanguageEntry("interact.phone.full", "This phone is full.  Remove a vehicle first.");
+    public static final LanguageEntry INTERACT_PHONE_REMOVED = new LanguageEntry("interact.phone.removed", "Removed %s from the phone.");
+    public static final LanguageEntry INTERACT_PHONE_CANCELLED = new LanguageEntry("interact.phone.cancelled", "Cancelled the call to %s.");
+    public static final LanguageEntry INTERACT_PHONE_NOTCALLED = new LanguageEntry("interact.phone.notcalled", "%s isn't on its way.");
+    public static final LanguageEntry INTERACT_PHONE_CALLING = new LanguageEntry("interact.phone.calling", "Calling %s...");
+    public static final LanguageEntry INTERACT_PHONE_NOTFOUND = new LanguageEntry("interact.phone.notfound", "Can't find %s in this dimension.");
+    public static final LanguageEntry INTERACT_PHONE_NOANSWER = new LanguageEntry("interact.phone.noanswer", "No answer from %s.  It may have been picked up or destroyed.");
+    public static final LanguageEntry INTERACT_PHONE_LOSTCONTACT = new LanguageEntry("interact.phone.lostcontact", "Lost contact with %s.");
+    public static final LanguageEntry INTERACT_PHONE_INUSE = new LanguageEntry("interact.phone.inuse", "%s is in use.");
+    public static final LanguageEntry INTERACT_PHONE_WRECKED = new LanguageEntry("interact.phone.wrecked", "%s is wrecked.");
+    public static final LanguageEntry INTERACT_PHONE_NOENGINE = new LanguageEntry("interact.phone.noengine", "%s has no working engine.");
+    public static final LanguageEntry INTERACT_PHONE_NOFUEL = new LanguageEntry("interact.phone.nofuel", "%s is out of fuel.");
+    public static final LanguageEntry INTERACT_PHONE_INDOORS = new LanguageEntry("interact.phone.indoors", "%s can't reach you indoors.");
+    public static final LanguageEntry INTERACT_PHONE_ONITSWAY = new LanguageEntry("interact.phone.onitsway", "%s is on its way.");
+    public static final LanguageEntry INTERACT_PHONE_ARRIVED = new LanguageEntry("interact.phone.arrived", "%s has arrived.");
+    public static final LanguageEntry INTERACT_PHONE_CLOSEST = new LanguageEntry("interact.phone.closest", "%s got as close as it could.");
+    public static final LanguageEntry INTERACT_PHONE_NOWAYFROMHERE = new LanguageEntry("interact.phone.nowayfromhere", "%s can't find a way to you from where it is.");
+    public static final LanguageEntry INTERACT_PHONE_NOWAYCLOSEST = new LanguageEntry("interact.phone.nowayclosest", "%s can't find a way to you.  It's getting as close as it can.");
+    public static final LanguageEntry INTERACT_PHONE_NOWAYTELEPORT = new LanguageEntry("interact.phone.nowayteleport", "%s couldn't find a way through, so it came straight to you.");
+    public static final LanguageEntry INTERACT_PHONE_NOROOMCLOSEST = new LanguageEntry("interact.phone.noroomclosest", "There's no room for %s next to you.  It's getting as close as it can.");
+    public static final LanguageEntry INTERACT_PHONE_PARKEDCLOSEST = new LanguageEntry("interact.phone.parkedclosest", "Parked %s as close as it fits.");
+    public static final LanguageEntry INTERACT_PHONE_NOROOM = new LanguageEntry("interact.phone.noroom", "There's no room for %s in front of you.  Face somewhere open and call it again.");
+    public static final LanguageEntry INTERACT_PHONE_STUCKTELEPORT = new LanguageEntry("interact.phone.stuckteleport", "%s got stuck, so it came straight to you.");
+    public static final LanguageEntry INTERACT_PHONE_STUCK = new LanguageEntry("interact.phone.stuck", "%s got stuck and stopped as close as it could.");
+    public static final LanguageEntry INTERACT_PHONE_BROUGHT = new LanguageEntry("interact.phone.brought", "%s has been brought to you.");
+    public static final LanguageEntry INTERACT_PHONE_LANDED = new LanguageEntry("interact.phone.landed", "%s has landed.");
+    public static final LanguageEntry INTERACT_PHONE_HOVERING = new LanguageEntry("interact.phone.hovering", "No room to land.  %s is hovering above you.");
+    public static final LanguageEntry INTERACT_PHONE_HOVERINGSTUCK = new LanguageEntry("interact.phone.hoveringstuck", "%s couldn't reach you, and there's no room for it in front of you.  It's hovering where it is.");
+
     public static final LanguageEntry INTERACT_TRAILER_CONNECTED = new LanguageEntry("interact.trailer.connected", "Trailer connected.");
     public static final LanguageEntry INTERACT_TRAILER_DISCONNECTED = new LanguageEntry("interact.trailer.disconnected", "Trailer disconnected.");
     public static final LanguageEntry INTERACT_TRAILER_NOTFOUND = new LanguageEntry("interact.trailer.notfound", "No trailers were found anywhere near this vehicle.");
@@ -441,6 +490,8 @@ public class LanguageSystem {
     public static final LanguageEntry ITEMINFO_REPAIRPACK_ENGINE = new LanguageEntry("iteminfo.repairpack.engine", "This repair pack also removes all engine hours.");
     public static final LanguageEntry ITEMINFO_REPAIRPACK_UNTOTAL = new LanguageEntry("iteminfo.repairpack.untotal", "This repair pack is able to repair totaled vehicles as well.");
     public static final LanguageEntry ITEMINFO_Y2KBUTTON = new LanguageEntry("iteminfo.y2kbutton", "Use in a world to turn off all vehicle engines, engage their parking brakes, and turn off their lights.  Sneak-use to dump all vehicle positions in the chat.  \nOnly usable by admins.");
+
+    public static final LanguageEntry ITEMINFO_PHONE = new LanguageEntry("iteminfo.phone", "Sneak-use on a vehicle to register it.\nUse to open the phone and call a registered vehicle to you.");
 
     public static final LanguageEntry ITEMINFO_ENGINE_AUTOMATIC = new LanguageEntry("iteminfo.engine.automatic", "Transmission: Automatic");
     public static final LanguageEntry ITEMINFO_ENGINE_MANUAL = new LanguageEntry("iteminfo.engine.manual", "Transmission: Manual");

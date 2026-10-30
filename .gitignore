@@ -21,5 +21,12 @@ bin
 # don't want compiled jars in the repo
 out
 /Wiki
-/Batvehicles_MTS_Patch
 /BatmobilePack
+/MTS Official Pack-1.20.1-V29
+CLAUDE.md
+/Batvehicles_MTS_Patch
+buildAll.ps1
+buildAll.bat
+/.jdks
+build-all.bat
+build-all.ps1

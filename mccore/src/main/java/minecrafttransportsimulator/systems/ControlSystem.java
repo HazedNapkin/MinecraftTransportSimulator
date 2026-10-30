@@ -45,6 +45,8 @@ public final class ControlSystem {
 
     private static double throttleRequestLastCheck;
     private static double brakeRequestLastCheck;
+    /**True if a grapple winching us in has held the automatic brake off, and gas or brake hasn't been pressed since.**/
+    private static boolean autoBrakeHeldForReel;
 
     private static boolean mouseYokeEnabledLastCall;
     private static double mouseYokePosX = Double.NaN;
@@ -736,10 +738,18 @@ public final class ControlSystem {
                     }
 
                     //If we are going slow, and don't have gas or brake, automatically set the brake.
+                    //Not while a grapple is winching us in, as the brake would hold us against it.  Once it stops,
+                    //put the brake back on however fast the winch got us going, as it's what took it off.
                     //Otherwise send normal values if we are in neutral or forwards,
                     //and invert controls if we are in a reverse gear (and not using a shifter).
                     //Use only the first engine for this.
-                    if (throttleValue == 0 && brakeValue == 0 && powered.axialVelocity < PartEngine.MAX_SHIFT_SPEED) {
+                    boolean reeling = powered.isReelingGrapple();
+                    if (reeling) {
+                        autoBrakeHeldForReel = true;
+                    } else if (throttleValue != 0 || brakeValue != 0) {
+                        autoBrakeHeldForReel = false;
+                    }
+                    if (throttleValue == 0 && brakeValue == 0 && !reeling && (powered.axialVelocity < PartEngine.MAX_SHIFT_SPEED || autoBrakeHeldForReel)) {
                         throttleRequest = 0;
                         brakeRequest = EntityVehicleF_Physics.MAX_BRAKE;
                     } else if (powered.engines.get(0).currentGearVar.currentValue >= 0 || ConfigSystem.client.controlSettings.useShifter.value) {

@@ -729,6 +729,43 @@ public class EntityVehicleF_Physics extends AEntityVehicleE_Powered {
     }
 
     /**
+     * Returns true if this aircraft should be flown with arcade (mouse) flight.
+     * If arcadeFlightMode is 0, this follows the player's config.  Otherwise a positive
+     * value defaults to arcade and a negative one to standard controls, unless the player
+     * has saved an override for this aircraft and default with the arcade key.
+     * Only valid on the client.
+     */
+    public boolean isArcadeFlightActive() {
+        String overrideKey = getArcadeFlightOverrideKey();
+        if (overrideKey == null) {
+            return ConfigSystem.client.controlSettings.arcadeMode.value;
+        }
+        Map<String, Boolean> overrides = ConfigSystem.client.controlSettings.arcadeFlightOverrides;
+        Boolean override = overrides != null ? overrides.get(overrideKey) : null;
+        return override != null ? override : isArcadeFlightDefault();
+    }
+
+    /**
+     * Returns true if arcadeFlightMode currently defaults this aircraft to arcade flight.
+     * Only meaningful when arcadeFlightMode is non-zero.
+     */
+    public boolean isArcadeFlightDefault() {
+        return arcadeFlightModeVar.currentValue > 0;
+    }
+
+    /**
+     * Returns the key the player's arcade override for this aircraft's current default is
+     * saved under, or null if arcadeFlightMode is 0 and the player's config is used instead.
+     * Variants of the same aircraft share the key, so subName is left out.
+     */
+    public String getArcadeFlightOverrideKey() {
+        if (arcadeFlightModeVar.currentValue == 0) {
+            return null;
+        }
+        return definition.packID + ":" + definition.systemName + (isArcadeFlightDefault() ? "|arcade" : "|standard");
+    }
+
+    /**
      * Returns the force of gravity on us, in kg*m/ticks^2.  Blimps don't feel it while their ballast holds them up.
      */
     public double getGravitationalForce() {

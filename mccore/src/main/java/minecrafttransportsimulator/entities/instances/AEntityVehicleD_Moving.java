@@ -260,6 +260,8 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             //Grapples go after our own forces, so their lines can override tyre grip and steering.
             world.beginProfiling("Grapples", false);
             updateGrapples();
+            world.beginProfiling("Summoning", false);
+            VehicleSummonManager.onVehicleTick((EntityVehicleF_Physics) this);
             world.beginProfiling("TotalMovement", false);
             moveVehicle();
             if (ConfigSystem.settings.general.devMode.value && !grapples.isEmpty()) {

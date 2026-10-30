@@ -226,9 +226,6 @@ public class LanguageSystem {
     public static final LanguageEntry DEATH_GRAPPLE_NULL = new LanguageEntry("death.grapple.null", "%s was harpooned");
     public static final LanguageEntry DEATH_GRAPPLE_PLAYER = new LanguageEntry("death.grapple.player", "%s was harpooned by %s");
 
-    public static final LanguageEntry DEATH_GRAPPLE_NULL = new LanguageEntry("death.grapple.null", "%s was harpooned");
-    public static final LanguageEntry DEATH_GRAPPLE_PLAYER = new LanguageEntry("death.grapple.player", "%s was harpooned by %s");
-
     public static final LanguageEntry DEATH_JETINTAKE_NULL = new LanguageEntry("death.jet_intake.null", "%s was sucked into a jet engine");
     public static final LanguageEntry DEATH_JETINTAKE_PLAYER = new LanguageEntry("death.jet_intake.player", "%s was sucked into %s's jet engine");
 

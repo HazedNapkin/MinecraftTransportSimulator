@@ -99,6 +99,10 @@ public class PartGrapple extends APart {
     private static final double MIN_PULL_TURN = 1.0E-3;
     /**A hook closer than this to the middle of a hooked vehicle's wheels, front to back, turns it about all its grounded wheels.**/
     private static final double PULL_PIVOT_END_DISTANCE = 0.25;
+    /**Fraction of a tyre's lateral friction that holds against a line's sideways pull.  Brakes do most of the holding, so this only stops an unbraked vehicle sliding about like it's on ice.**/
+    private static final double LINE_TYRE_GRIP = 0.25;
+    /**A hook closer than this to the pivot, flat on the ground, is too close to swing the vehicle about it like a trailer.**/
+    private static final double MIN_SWING_ARM = 0.5;
     /**How often the server checks the anchor block still exists, in ticks.**/
     private static final int ANCHOR_CHECK_INTERVAL = 10;
 
@@ -828,9 +832,10 @@ public class PartGrapple extends APart {
 
     /**
      * Returns how much of the horizontal part of a force on the vehicle its grounded tyres and brakes hold against, in world coordinates.
-     * The tyres hold against the sideways part by their lateral friction and the weight on them.  The wheels
-     * roll freely along the heading unless the brakes are on, which then hold with the same force they stop
-     * the vehicle with.  The hold is never more than the force, so friction never pushes back past standing still.
+     * The brakes are what hold a vehicle on a line.  They hold against the pull in any direction, with the same force they stop
+     * the vehicle with.  The tyres hold against what's left of the sideways part by {@link #LINE_TYRE_GRIP} of their lateral
+     * friction and the weight on them, so an unbraked vehicle doesn't slide about like it's on ice.  The wheels roll freely
+     * along the heading unless the brakes are on.  The hold is never more than the force, so friction never pushes back past standing still.
      *
      * @param lift how much of the vehicle's weight the line takes, in kg*m/ticks^2.  The tyres and brakes grip less by that much.
      */
@@ -839,7 +844,9 @@ public class PartGrapple extends APart {
         Set<PartGroundDevice> grounded = vehicle.groundDeviceCollective.groundedGroundDevices;
         Point3D heading = new Point3D(vehicle.headingVector.x, 0, vehicle.headingVector.z);
         double weight = vehicle.getGravitationalForce();
-        if (grounded.isEmpty() || heading.length() < 1.0E-3 || weight <= 0) {
+        Point3D flat = new Point3D(force.x, 0, force.z);
+        double flatForce = flat.length();
+        if (grounded.isEmpty() || heading.length() < 1.0E-3 || weight <= 0 || flatForce < 1.0E-9) {
             return hold;
         }
         heading.normalize();
@@ -853,10 +860,9 @@ public class PartGrapple extends APart {
             lateralGrip += groundDevice.lateralFrictionVar.currentValue * load / grounded.size();
             brakeGrip += vehicle.getWheelBrakingForce(groundDevice) * load / weight;
         }
-        double along = force.dotProduct(heading, false);
-        double across = force.dotProduct(side, false);
-        hold.addScaled(heading, Math.signum(along) * Math.min(Math.abs(along), brakeGrip));
-        hold.addScaled(side, Math.signum(across) * Math.min(Math.abs(across), lateralGrip));
+        hold.addScaled(flat, Math.min(flatForce, brakeGrip) / flatForce);
+        double across = flat.subtract(hold).dotProduct(side, false);
+        hold.addScaled(side, Math.signum(across) * Math.min(Math.abs(across), lateralGrip * LINE_TYRE_GRIP));
         return hold;
     }
 
@@ -868,17 +874,17 @@ public class PartGrapple extends APart {
         if (pull.motion != null) {
             vehicle.motion.add(pull.motion);
         }
-        turnFromLine(vehicle, pull.point, pull.force, pull.pivot, vehicle.getBoxesOutsideBlocks(vehicle.getBoxesForWallChecks()));
+        turnFromLine(vehicle, pull.point, pull.force, pull.pivot, pull.motion != null, vehicle.getBoxesOutsideBlocks(vehicle.getBoxesForWallChecks()));
     }
 
     /**
-     * Turns the vehicle with the torque a line puts on it, so the point the line is on swings round
-     * towards the line's other end.  The same on both ends of the line.  The turn is
-     * the torque over the vehicle's moments, the same as its own physics:
-     * -On the ground, it turns about the grounded wheels at the far end from the hook, or about the
-     * hookup for a trailer.  Its weight resists lifting it.  Its tyres' lateral friction and its brakes
-     * resist twisting it, so a light tug won't turn a heavy or braked vehicle.  The tyres and brakes can
-     * only push back so hard, so a pull past their grip drags the vehicle along rather than tipping it further.
+     * Turns the vehicle so the point the line is on swings round towards the line's other end.  The same on both ends of the line.
+     * -On the ground, it turns about the grounded wheels at the far end from the hook, or about the hookup for a trailer.
+     * With the brakes off, it swings about that like a trailer about its hitch.  See {@link #swingFromLine}.  With the
+     * brakes on, the line has to twist it against them: the turn is the torque over the vehicle's moments, the same as its
+     * own physics, less what the brakes resist, so a light tug won't turn a braked vehicle.  Either way, the line can lift
+     * it up off its wheels against its weight.  The tyres and brakes can only push back so hard, so a pull past their grip
+     * drags the vehicle along rather than tipping it further.
      * -In the air, it turns about its middle until it hangs from the hook.
      * <p>
      * It never turns past pointing the hook along the line, so it can't swing back and forth.  It never
@@ -887,9 +893,10 @@ public class PartGrapple extends APart {
      * @param point where the line is on the vehicle, in world coordinates.
      * @param lineForce the line's tension, in kg*m/ticks^2.
      * @param pivotPoint what the vehicle turns about, in world coordinates, or null to work it out from the wheels.
+     * @param takesMotion true if the vehicle was given the line's motion this tick, rather than only turning about a hookup.
      * @param freeBoxes the vehicle's boxes that aren't already inside a block, to check the turn against.
      */
-    private static void turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, List<BoundingBox> freeBoxes) {
+    private static void turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, boolean takesMotion, List<BoundingBox> freeBoxes) {
         if (vehicle.lockedOnRoad) {
             //The road sets our heading.
             return;
@@ -913,9 +920,12 @@ public class PartGrapple extends APart {
         Set<PartGroundDevice> grounded = vehicle.groundDeviceCollective.groundedGroundDevices;
         double weight = vehicle.getGravitationalForce();
 
+        //Only a pivot at an end can be swung about like a trailer.  A hook about the middle twists us instead.
         Point3D pivot;
+        boolean swing = false;
         if (pivotPoint != null) {
             pivot = toLocal(vehicle, pivotPoint);
+            swing = !grounded.isEmpty();
         } else if (!grounded.isEmpty()) {
             //Turn about the grounded wheels at the far end from the hook.  With the hook about the
             //middle, or nothing grounded at the far end, turn about all of them.
@@ -932,28 +942,26 @@ public class PartGrapple extends APart {
                 }
             }
             pivot = farEndWheels > 0 ? farEnd.scale(1D / farEndWheels) : allWheels.scale(1D / grounded.size());
+            swing = farEndWheels > 0;
         } else {
             pivot = center;
         }
 
-        //Twisting slides each grounded wheel square to its arm from the pivot.  The tyre resists the
-        //sideways part of that by its lateral friction, and the brakes resist the rolling part.  The
-        //further a wheel is from the pivot, the more it resists.  The line lightens us when it lifts us,
-        //so the tyres and brakes grip less.
+        //Twisting slides each grounded wheel square to its arm from the pivot.  The brakes resist that in any
+        //direction, and the further a wheel is from the pivot, the more it resists.  Any brakes on, and the line
+        //has to twist us against them rather than swing us.  The line lightens us when it lifts us, so the brakes grip less.
         Point3D force = lineForce.copy();
         double lift = Math.max(0, force.y);
         double twistResistance = 0;
         if (!grounded.isEmpty() && weight > 0) {
             double load = Math.max(0, weight - lift);
             for (PartGroundDevice groundDevice : grounded) {
-                Point3D wheelArm = toLocal(vehicle, groundDevice.position).subtract(pivot);
-                wheelArm.addScaled(up, -wheelArm.dotProduct(up, false));
-                double armLength = wheelArm.length();
-                if (armLength > 1.0E-3) {
-                    Point3D slide = up.crossProduct(wheelArm).scale(1D / armLength);
-                    double sideways = groundDevice.lateralFrictionVar.currentValue * load / grounded.size() * Math.abs(slide.x);
-                    double rolling = vehicle.getWheelBrakingForce(groundDevice) * load / weight * Math.abs(slide.z);
-                    twistResistance += (sideways + rolling) * armLength;
+                double braking = vehicle.getWheelBrakingForce(groundDevice) * load / weight;
+                if (braking > 0) {
+                    swing = false;
+                    Point3D wheelArm = toLocal(vehicle, groundDevice.position).subtract(pivot);
+                    wheelArm.addScaled(up, -wheelArm.dotProduct(up, false));
+                    twistResistance += braking * wheelArm.length();
                 }
             }
 
@@ -968,16 +976,16 @@ public class PartGrapple extends APart {
         Point3D fullForceLocal = lineForce.copy().reOrigin(vehicle.orientation);
 
         //Torque from the line on the hook, and from our weight on our middle.  Tipping only comes from what
-        //the ground holds, but twisting comes from the whole line force, as the tyres resisting it are
+        //the ground holds, but twisting comes from the whole line force, as the brakes resisting it are
         //already counted in twistResistance.  Capping both left a strong sideways pull just sliding us.
         Point3D arm = hook.copy().subtract(pivot);
         Point3D lineTorque = arm.crossProduct(forceLocal);
         lineTorque.addScaled(up, arm.crossProduct(fullForceLocal).dotProduct(up, false) - lineTorque.dotProduct(up, false));
         Point3D torque = lineTorque.copy().add(center.copy().subtract(pivot).crossProduct(up.copy().scale(-weight)));
         if (!grounded.isEmpty()) {
-            //The tyres stop us twisting until the line beats their friction.
+            //Swinging does our twist.  Otherwise the brakes stop us twisting until the line beats them.
             double twist = torque.dotProduct(up, false);
-            double twistLeft = Math.signum(twist) * Math.max(0, Math.abs(twist) - twistResistance);
+            double twistLeft = swing ? 0 : Math.signum(twist) * Math.max(0, Math.abs(twist) - twistResistance);
             torque.addScaled(up, twistLeft - twist);
         }
 
@@ -985,8 +993,18 @@ public class PartGrapple extends APart {
         vehicle.pitchHeldByGrapple = true;
         vehicle.rollHeldByGrapple = true;
 
-        //Turn by the torque over our moments, the same as our own physics does.  A moment can be 0 when a
-        //pack leaves emptyMass out, which would turn us infinitely, so we don't turn about that axis.
+        turnFromTorque(vehicle, torque, lineTorque, arm, fullForceLocal, pivot, up, freeBoxes);
+        if (swing) {
+            swingFromLine(vehicle, hook, pivot, up, lineForce, takesMotion, freeBoxes);
+        }
+    }
+
+    /**
+     * Turns the vehicle about the pivot by the torque over its moments, the same as its own physics does.
+     * See {@link #turnFromLine}.  All points and vectors are in the vehicle's own frame.
+     */
+    private static void turnFromTorque(EntityVehicleF_Physics vehicle, Point3D torque, Point3D lineTorque, Point3D arm, Point3D fullForceLocal, Point3D pivot, Point3D up, List<BoundingBox> freeBoxes) {
+        //A moment can be 0 when a pack leaves emptyMass out, which would turn us infinitely, so we don't turn about that axis.
         Point3D turn = new Point3D(getTurnRate(torque.x, vehicle.momentPitch), getTurnRate(torque.y, vehicle.momentYaw), getTurnRate(torque.z, vehicle.momentRoll));
         double angle = turn.length();
         if (!(angle > MIN_PULL_TURN) || Double.isInfinite(angle)) {
@@ -1001,7 +1019,7 @@ public class PartGrapple extends APart {
         }
 
         //Lifting or tipping can't push a grounded wheel into the ground.  If it would, keep just the twist.
-        if (pushesWheelIntoGround(vehicle, grounded, pivot, axis, angle)) {
+        if (pushesWheelIntoGround(vehicle, vehicle.groundDeviceCollective.groundedGroundDevices, pivot, axis, angle)) {
             double twist = axis.dotProduct(up, false) * angle;
             if (!(Math.abs(twist) > MIN_PULL_TURN)) {
                 return;
@@ -1012,13 +1030,83 @@ public class PartGrapple extends APart {
 
         angle = vehicle.limitTurnToWalls(freeBoxes, pivot, axis, angle);
         if (angle != 0) {
-            RotationMatrix turnMatrix = new RotationMatrix().setToAxisAngle(axis, angle);
-            //Vehicles turn about their origin, so shift the origin to keep the pivot where it is.
-            Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(turnMatrix)).rotate(vehicle.orientation).scale(1D / vehicle.speedFactor);
-            vehicle.motion.add(pivotShift);
-            vehicle.grappleTurnMotion.add(pivotShift);
-            vehicle.rotation.angles.add(turnMatrix.convertToAngles());
+            applyTurn(vehicle, pivot, axis, angle);
         }
+    }
+
+    /**
+     * Swings a grounded, unbraked vehicle about its pivot like a trailer about its hitch.  A trailer turns to point at
+     * where its hitch has moved to, and the hook is the hitch here: the vehicle turns so its arm from the pivot to the
+     * hook points at where the hook is going this tick.  Its wheels roll rather than slide, so the sideways part of the
+     * hook's move goes into the turn, and what's left moves the vehicle along its new arm.  All points and vectors are
+     * in the vehicle's own frame, except the line's tension.
+     *
+     * @param lineForce the line's tension, in kg*m/ticks^2, in world coordinates.
+     * @param takesMotion true if the vehicle was given the line's motion this tick, so its motion carries the hook, and the
+     * part of that the turn takes up comes off it.  Otherwise it only swings about a hookup, and the hook goes where the line pulls the chain.
+     */
+    private static void swingFromLine(EntityVehicleF_Physics vehicle, Point3D hook, Point3D pivot, Point3D up, Point3D lineForce, boolean takesMotion, List<BoundingBox> freeBoxes) {
+        Point3D arm = hook.copy().subtract(pivot);
+        arm.addScaled(up, -arm.dotProduct(up, false));
+        if (arm.length() < MIN_SWING_ARM) {
+            return;
+        }
+
+        //Where the hook goes this tick, flat on the ground.  Motion gets scaled by speedFactor when applied.
+        Point3D hookMove;
+        if (takesMotion) {
+            hookMove = vehicle.motion.copy().scale(vehicle.speedFactor);
+        } else {
+            EntityVehicleF_Physics lead = getTowChainLead(vehicle);
+            if (!(lead.currentMass > 0)) {
+                return;
+            }
+            hookMove = lineForce.copy().scale(vehicle.speedFactor / lead.currentMass);
+        }
+        hookMove = hookMove.reOrigin(vehicle.orientation);
+        hookMove.addScaled(up, -hookMove.dotProduct(up, false));
+        Point3D target = arm.copy().add(hookMove);
+        double twist = arm.crossProduct(target).dotProduct(up, false);
+        if (target.length() < 1.0E-6 || twist == 0) {
+            return;
+        }
+
+        //Turn the arm onto the target, the same as trailers turn onto their hitch.
+        Point3D axis = up.copy().scale(Math.signum(twist));
+        double angle = Math.toDegrees(Math.acos(arm.copy().normalize().dotProduct(target.copy().normalize(), true)));
+        angle = Math.min(angle, MAX_PULL_TURN);
+        Point3D lineLocal = lineForce.copy().reOrigin(vehicle.orientation);
+        lineLocal.addScaled(up, -lineLocal.dotProduct(up, false));
+        if (lineLocal.length() > 1.0E-6 && arm.crossProduct(lineLocal).dotProduct(axis, false) > 0) {
+            //Our own motion can carry the hook further round than the line, so don't turn past pointing the hook along it.
+            angle = Math.min(angle, Math.toDegrees(Math.acos(arm.copy().normalize().dotProduct(lineLocal.normalize(), true))));
+        }
+        if (!(angle > MIN_PULL_TURN)) {
+            return;
+        }
+        angle = vehicle.limitTurnToWalls(freeBoxes, pivot, axis, angle);
+        if (angle != 0) {
+            RotationMatrix turnMatrix = applyTurn(vehicle, pivot, axis, angle);
+            if (takesMotion) {
+                //The turn has carried the hook sideways, so our wheels don't slide it there too.
+                //This stays off our motion for good, as the wheels rolled rather than slid.
+                Point3D swung = arm.copy().rotate(turnMatrix).subtract(arm);
+                vehicle.motion.subtract(swung.rotate(vehicle.orientation).scale(1D / vehicle.speedFactor));
+            }
+        }
+    }
+
+    /**
+     * Turns the vehicle about the pivot, in its own frame, by the angle in degrees, and returns the turn.
+     */
+    private static RotationMatrix applyTurn(EntityVehicleF_Physics vehicle, Point3D pivot, Point3D axis, double angle) {
+        RotationMatrix turnMatrix = new RotationMatrix().setToAxisAngle(axis, angle);
+        //Vehicles turn about their origin, so shift the origin to keep the pivot where it is.
+        Point3D pivotShift = pivot.copy().subtract(pivot.copy().rotate(turnMatrix)).rotate(vehicle.orientation).scale(1D / vehicle.speedFactor);
+        vehicle.motion.add(pivotShift);
+        vehicle.grappleTurnMotion.add(pivotShift);
+        vehicle.rotation.angles.add(turnMatrix.convertToAngles());
+        return turnMatrix;
     }
 
     /**
@@ -1083,7 +1171,7 @@ public class PartGrapple extends APart {
             return;
         }
 
-        turnFromLine(vehicleOn, position, pull[1], null, freeBoxes);
+        turnFromLine(vehicleOn, position, pull[1], null, true, freeBoxes);
         //Turning moves our origin to keep the pivot still, so check that against the walls too.
         vehicleOn.clampMotionToWalls(freeBoxes);
     }

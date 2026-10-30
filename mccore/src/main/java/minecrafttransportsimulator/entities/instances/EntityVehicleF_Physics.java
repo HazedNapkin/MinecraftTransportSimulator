@@ -2,7 +2,6 @@ package minecrafttransportsimulator.entities.instances;
 
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import minecrafttransportsimulator.baseclasses.BoundingBox;
@@ -101,9 +100,6 @@ public class EntityVehicleF_Physics extends AEntityVehicleE_Powered {
     public final ComputedVariable blimpLevelFactorVar;
     public final ComputedVariable blimpLevelMaxRateVar;
     public static final double BLIMP_LEVEL_SNAP_ANGLE = 0.01;
-    public final ComputedVariable arcadeFlightModeVar;
-    public final ComputedVariable summonFlyInVar;
-    public final ComputedVariable summonDistanceVar;
     public final ComputedVariable gravityFactorVar;
     public final ComputedVariable axleRatioVar;
 
@@ -172,9 +168,6 @@ public class EntityVehicleF_Physics extends AEntityVehicleE_Powered {
         addVariable(this.blimpSkidSteerVar = new ComputedVariable(this, "blimpSkidSteer"));
         addVariable(this.blimpLevelFactorVar = new ComputedVariable(this, "blimpLevelFactor"));
         addVariable(this.blimpLevelMaxRateVar = new ComputedVariable(this, "blimpLevelMaxRate"));
-        addVariable(this.arcadeFlightModeVar = new ComputedVariable(this, "arcadeFlightMode"));
-        addVariable(this.summonFlyInVar = new ComputedVariable(this, "summonFlyIn"));
-        addVariable(this.summonDistanceVar = new ComputedVariable(this, "summonDistance"));
         addVariable(this.gravityFactorVar = new ComputedVariable(this, "gravityFactor"));
         addVariable(this.axleRatioVar = new ComputedVariable(this, "axleRatio"));
     }
@@ -274,9 +267,6 @@ public class EntityVehicleF_Physics extends AEntityVehicleE_Powered {
         blimpSkidSteerVar.setTo(definition.motorized.blimpSkidSteer, false);
         blimpLevelFactorVar.setTo(definition.motorized.blimpLevelFactor, false);
         blimpLevelMaxRateVar.setTo(definition.motorized.blimpLevelMaxRate, false);
-        arcadeFlightModeVar.setTo(definition.motorized.arcadeFlightMode, false);
-        summonFlyInVar.setActive(definition.motorized.summonFlyIn, false);
-        summonDistanceVar.setTo(definition.motorized.summonDistance, false);
         if (definition.motorized.gravityFactor != 0) {
             gravityFactorVar.setTo(definition.motorized.gravityFactor,false);
         } else if (!definition.motorized.isAircraft) {

@@ -96,7 +96,6 @@ public class PartEngine extends APart {
     private final ComputedVariable forceShiftVar;
     public final ComputedVariable isAutomaticVar;
     private final ComputedVariable wearFactorVar;
-    public final ComputedVariable noEngineWearVar;
     private final ComputedVariable winddownRateVar;
     private final ComputedVariable jetPowerFactorVar;
     private final ComputedVariable bypassRatioVar;
@@ -162,7 +161,6 @@ public class PartEngine extends APart {
         addVariable(this.forceShiftVar = new ComputedVariable(this, "forceShift"));
         addVariable(this.isAutomaticVar = new ComputedVariable(this, "isAutomatic"));
         addVariable(this.wearFactorVar = new ComputedVariable(this, "engineWearFactor"));
-        addVariable(this.noEngineWearVar = new ComputedVariable(this, "noEngineWear"));
         addVariable(this.winddownRateVar = new ComputedVariable(this, "engineWinddownRate"));
         addVariable(this.jetPowerFactorVar = new ComputedVariable(this, "jetPowerFactor"));
         addVariable(this.bypassRatioVar = new ComputedVariable(this, "bypassRatio"));
@@ -220,7 +218,7 @@ public class PartEngine extends APart {
                     }
                 }
             }
-            if ((vehicleOn == null || !vehicleOn.isCreative) && !noEngineWearVar.isActive) {
+            if (vehicleOn == null || !vehicleOn.isCreative) {
                 double hoursApplied = damage.amount * ConfigSystem.settings.general.engineHoursFactor.value;
                 if (damage.isExplosion) {
                     hoursApplied *= 10;
@@ -240,11 +238,6 @@ public class PartEngine extends APart {
         //Reset states.
         backfired = false;
         badShift = false;
-
-        //If the engine doesn't wear, clear any hours it has.  This handles engines that had hours before wear was disabled.
-        if (noEngineWearVar.isActive && hoursVar.currentValue != 0) {
-            hoursVar.setTo(0, false);
-        }
 
         //If the engine is running, but the magneto is off, turn the engine off.
         if (running && !magnetoVar.isActive) {
@@ -808,7 +801,6 @@ public class PartEngine extends APart {
         forceShiftVar.setActive(definition.engine.forceShift, false);
         isAutomaticVar.setActive(definition.engine.isAutomatic, false);
         wearFactorVar.setTo(definition.engine.engineWearFactor, false);
-        noEngineWearVar.setActive(definition.engine.noEngineWear, false);
         winddownRateVar.setTo(definition.engine.engineWinddownRate, false);
         jetPowerFactorVar.setTo(definition.engine.jetPowerFactor, false);
         bypassRatioVar.setTo(definition.engine.bypassRatio, false);
@@ -1141,9 +1133,7 @@ public class PartEngine extends APart {
     }
 
     public double getTotalWearFactor() {
-        if (noEngineWearVar.isActive) {
-            return 0;
-        } else if (superchargerEfficiencyVar.currentValue > 1.0F) {
+        if (superchargerEfficiencyVar.currentValue > 1.0F) {
             return wearFactorVar.currentValue * superchargerEfficiencyVar.currentValue * ConfigSystem.settings.general.engineHoursFactor.value;
         } else {
             return wearFactorVar.currentValue * ConfigSystem.settings.general.engineHoursFactor.value;

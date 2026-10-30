@@ -194,18 +194,6 @@ public class JSONVehicle extends AJSONPartProvider {
         public float blimpLevelFactor;
 
         @ModifiableValue
-        @JSONDescription("Sets this aircraft's default flight controls in its current mode, instead of the player's arcade flight setting.  1 defaults to arcade (mouse) flight, -1 defaults to standard controls, and 0 (the default) follows the player's setting.  Players can override the default for this aircraft and mode with the arcade key, and their choice is remembered on their client.  Make this a variableModifier to set a different default per mode, like arcade in normal flight and standard in a hover mode.")
-        public float arcadeFlightMode;
-
-        @ModifiableValue
-        @JSONDescription("If true, this aircraft flies itself over to the player when called with a vehicle phone, then lands beside them.  The summon flight moves it directly, so it doesn't need to be able to hover by itself.  If false (the default), aircraft are placed on the ground near the player instead.  Only used for aircraft.")
-        public boolean summonFlyIn;
-
-        @ModifiableValue
-        @JSONDescription("How far from the player this vehicle arrives when called with a vehicle phone, in blocks, before driving or flying the rest of the way.  0 (the default) uses 30.")
-        public float summonDistance;
-
-        @ModifiableValue
         @JSONDescription("The most blimpLevelFactor may rotate this vehicle, in degrees per tick, so large tilts level at a steady rate instead of snapping.  0 (the default) means no limit.")
         public float blimpLevelMaxRate;
 

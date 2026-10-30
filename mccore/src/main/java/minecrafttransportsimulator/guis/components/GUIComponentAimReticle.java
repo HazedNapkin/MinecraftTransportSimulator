@@ -168,8 +168,10 @@ public class GUIComponentAimReticle extends AGUIComponent {
     }
 
     private static boolean shouldRenderArcadeAircraftReticle() {
-        PartSeat seat = getControlledAircraftSeat();
-        return seat != null && seat.vehicleOn.isArcadeFlightActive();
+        if (!ConfigSystem.client.controlSettings.arcadeMode.value) {
+            return false;
+        }
+        return getControlledAircraftSeat() != null;
     }
 
     private static PartSeat getControlledAircraftSeat() {

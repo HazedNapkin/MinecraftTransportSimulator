@@ -704,8 +704,12 @@ public class JSONPart extends AJSONPartProvider {
         public float reelSpeed;
 
         @ModifiableValue
-        @JSONDescription("The most the winch can pull with while reeling the line in, in kN.  Driving away from the hook harder than this, such as reversing on full throttle, drags line back out of the winch, and anything less slows how fast it reels you in.  It doesn't limit the line while it isn't being reeled in, so a vehicle hanging from the line or parked on it stays put.  0 (default) makes it twice the weight of the vehicle the grapple is on, enough to hoist that vehicle up the line.")
+        @JSONDescription("The most the winch can pull with while reeling the line in, in kN.  The line holds up to breakForce, so driving away from the hook can't pull line out of the winch, but driving away harder than this, such as reversing on full throttle, stalls the winch so it stops reeling in, and anything less slows how fast it reels you in.  On a hooked vehicle, the line then drags that vehicle after you instead.  0 (default) makes it twice the weight of the vehicle the grapple is on, enough to hoist that vehicle up the line.")
         public float winchForce;
+
+        @ModifiableValue
+        @JSONDescription("The tension the line snaps at, in kN.  It has to be pulled past this for a few ticks in a row to snap, so a single jolt, such as hitting the end of the line, doesn't break it, but driving away from the hook harder than this, or hanging something too heavy off it, does.  0 (default) makes it 5 times winchForce.")
+        public float breakForce;
 
         @ModifiableValue
         @JSONDescription("The shortest the winch can reel the line, in blocks.  Short lines let the vehicle be pulled right up over the top of a wall when the hook is just past the edge.  Defaults to 0, which lets the line be reeled all the way in.")
@@ -736,7 +740,7 @@ public class JSONPart extends AJSONPartProvider {
         public boolean disableVehicleAttach;
 
         @ModifiableValue
-        @JSONDescription("Normally, once a wheel or block collision box at the end of the vehicle facing the hook is reeled up against a wall too tall for its wheels to drive up by their climbHeight, with the hook up on it above that height, the vehicle squares up to the wall and climbs it as the line is reeled in.  The plane between the bottoms of its wheels pitches up the face while its far end slides along the ground, then slides up the face once upright, stepping out over any overhang that sticks out no further than the wheels could drive up.  A bigger overhang stops it underneath, where letting the line out or reversing takes it back down.  Once the line is all the way in near the top, holding reel tips it over the lip onto the top, where it's held until the grapple is released.  Driving backwards from there takes it back down.  If true, the vehicle still climbs the wall, but can't be pulled over the edge, and stops with its front wheels at the top. Defaults to false.")
+        @JSONDescription("Normally, once a wheel or block collision box at the end of the vehicle facing the hook is reeled up against a wall too tall for its wheels to drive up by their climbHeight, with the hook up on it above that height, the vehicle squares up to the wall and climbs it as the line is reeled in.  The plane between the bottoms of its wheels pitches up the face while its far end slides along the ground, then slides up the face once upright, stepping out over any overhang that sticks out no further than the wheels could drive up.  A bigger overhang stops it underneath, where letting the line out or reversing takes it back down.  Once the line is all the way in near the top, holding reel tips it over the lip onto the top, where it's held until the grapple is released.  Only if the vehicle fits on top, though: with a block in the way up there, such as when the hook is in the face of a taller wall, it stops with its front wheels at the top instead.  Driving backwards from there takes it back down.  If true, the vehicle still climbs the wall, but can't be pulled over the edge, and stops with its front wheels at the top. Defaults to false.")
         public boolean disableMantle;
 
         @JSONDescription("The point the launcher body turns about for grapple_body_yaw and grapple_body_pitch, in part coordinates.  This must match the centerPoint of the animations that use those variables, so the cable lines up with the turned barrel.  Defaults to the part's origin.")

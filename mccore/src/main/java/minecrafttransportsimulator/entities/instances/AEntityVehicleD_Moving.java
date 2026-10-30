@@ -399,6 +399,25 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     }
 
     /**
+     * Returns true if a grapple on us is winching its line in.
+     */
+    public boolean isReelingGrapple() {
+        for (PartGrapple grapple : grapples) {
+            if (grapple.isReeling()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Client side: returns how far the server has moved us that we haven't caught up to yet, in blocks.  Temporary, for grapple hook drift logging.
+     */
+    public Point3D getServerCorrectionBacklog() {
+        return serverDeltaM.copy().subtract(clientDeltaM);
+    }
+
+    /**
      * In dev mode, logs how we actually moved and turned this tick, on both sides, while a grapple line is
      * attached and for {@link #GRAPPLE_LOG_AFTER_TICKS} after, so judder after a release shows up too.
      * The move and turn are measured from where we were at the start of the tick, so they include

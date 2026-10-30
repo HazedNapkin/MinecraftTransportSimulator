@@ -17,6 +17,7 @@ import minecrafttransportsimulator.baseclasses.EntityInteractResult;
 import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.baseclasses.TowingConnection;
+import minecrafttransportsimulator.entities.components.AEntityA_Base;
 import minecrafttransportsimulator.entities.components.AEntityB_Existing;
 import minecrafttransportsimulator.entities.components.AEntityF_Multipart;
 import minecrafttransportsimulator.entities.instances.PartGrapple.LinePull;
@@ -28,6 +29,7 @@ import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
 import minecrafttransportsimulator.packets.instances.PacketPartGrapple;
+import minecrafttransportsimulator.packets.instances.PacketPartGrappleHook;
 import minecrafttransportsimulator.packets.instances.PacketPlayerChatMessage;
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
@@ -103,8 +105,16 @@ public class PartGrapple extends APart {
     private static final double LINE_TYRE_GRIP = 0.25;
     /**A hook closer than this to the pivot, flat on the ground, is too close to swing the vehicle about it like a trailer.**/
     private static final double MIN_SWING_ARM = 0.5;
+    private static final String HOOKED_MULTIPART_TAG = "grapple_hooked_multipart";
+    private static final String HOOK_OFFSET_TAG = "grapple_hook_offset";
+    /**How often dev mode logs where the hook sits on a hooked vehicle, in ticks.  See logServerHookDrift.  Temporary.**/
+    private static final int HOOK_DRIFT_LOG_INTERVAL = 10;
     /**Converts kN to the kg*m/ticks^2 the vehicle physics uses, at 20 ticks a second.**/
     private static final double KN_TO_TICK_FORCE = 1000D / 400D;
+    /**How many times the winch force the line snaps at when breakForce is left at 0.**/
+    private static final double DEFAULT_BREAK_WINCH_MULTIPLE = 5;
+    /**How many ticks in a row the line has to be held past its break force before it snaps, so a single jolt doesn't break it.**/
+    private static final int BREAK_TICKS = 5;
     /**How many times the vehicle's weight the winch pulls with while reeling when winchForce is left at 0.**/
     private static final double DEFAULT_WINCH_WEIGHTS = 2;
     /**Gravity in m/ticks^2, the same as {@link EntityVehicleF_Physics#getGravitationalForce()} uses.**/
@@ -130,6 +140,10 @@ public class PartGrapple extends APart {
     private static final double MANTLE_CONTACT = 0.25;
     /**How far round the wall the path looks, and how far up above the hook, in blocks.**/
     private static final double MANTLE_PATH_MARGIN = 2;
+    /**How far our collision boxes are shrunk and lifted when checking they fit on top of a wall, so the top they rest on doesn't count as in the way.  Also how far above and below the plane between the wheels is checked for air and a block to rest on.**/
+    private static final double MANTLE_ROOM_MARGIN = 0.1;
+    /**How far apart the points checked for room on top of a wall are, along and up from the plane between the wheels.**/
+    private static final double MANTLE_ROOM_STEP = 0.25;
     /**Longest path a climb can have, in blocks along the wall, so a bad hook can't search half the world.**/
     private static final double MANTLE_MAX_PATH = 48;
     /**Spacing of the points checked along the underside of each collision box, in blocks.**/
@@ -152,6 +166,7 @@ public class PartGrapple extends APart {
     private final ComputedVariable hookSpeedVar;
     private final ComputedVariable reelSpeedVar;
     private final ComputedVariable winchForceVar;
+    private final ComputedVariable breakForceVar;
     private final ComputedVariable minLengthVar;
     private final ComputedVariable maxAimAngleVar;
     private final ComputedVariable hookDamageVar;
@@ -195,8 +210,12 @@ public class PartGrapple extends APart {
     private final Point3D hookVelocity = new Point3D();
     private IWrapperEntity hookedEntity;
     private AEntityF_Multipart<?> hookedMultipart;
-    /**Where the hook sits on what it's stuck in.  World-aligned for entities, local for multiparts.**/
+    /**Where the hook sits on what it's stuck in.  World-aligned for entities, local for multiparts.  Clients get it for multiparts too.**/
     private final Point3D hookOffset = new Point3D();
+    /**The most tension it took to hold the line on either end this tick, in kg*m/ticks^2.  Checked against the break force next tick.  Server side.**/
+    private double tickHoldTension;
+    /**How many ticks in a row the line has been held past its break force.**/
+    private int overloadTicks;
     private int mantleHoldTicks;
     /**True once the driver's been told an overhang stops the climb, so they aren't told every tick.**/
     private boolean mantleBlockedSent;
@@ -204,6 +223,12 @@ public class PartGrapple extends APart {
     //The climb path, built on each side from the mantle variables when it's first needed.
     private ClimbPath climbPath;
     private double[] climbPathKey;
+
+    /**The vehicle or placed part the hook is stuck in, on both sides, so clients can draw the hook on their own copy of it.**/
+    private UUID hookedMultipartID;
+    /**Client side: our copy of the multipart the hook is stuck in, looked up from hookedMultipartID when first needed.**/
+    private AEntityF_Multipart<?> clientHookedMultipart;
+    private final RotationMatrix hookedRenderOrientation = new RotationMatrix();
 
     //Client-only hook positions for the last two ticks, so the render can interpolate.
     private Point3D prevRenderAnchor;
@@ -223,10 +248,19 @@ public class PartGrapple extends APart {
 
     public PartGrapple(AEntityF_Multipart<?> entityOn, IWrapperPlayer placingPlayer, JSONPartDefinition placementDefinition, ItemPartGrapple item, IWrapperNBT data) {
         super(entityOn, placingPlayer, placementDefinition, item, data);
+        //Saved so clients that load us while hooked know what we're hooked to.  The server drops the hook on reload anyway.
+        //New parts, such as default ones on a vehicle being placed, have no data.
+        if (data != null) {
+            hookedMultipartID = data.getUUID(HOOKED_MULTIPART_TAG);
+            if (hookedMultipartID != null) {
+                hookOffset.set(data.getPoint3d(HOOK_OFFSET_TAG));
+            }
+        }
         addVariable(this.rangeVar = new ComputedVariable(this, "range"));
         addVariable(this.hookSpeedVar = new ComputedVariable(this, "hookSpeed"));
         addVariable(this.reelSpeedVar = new ComputedVariable(this, "reelSpeed"));
         addVariable(this.winchForceVar = new ComputedVariable(this, "winchForce"));
+        addVariable(this.breakForceVar = new ComputedVariable(this, "breakForce"));
         addVariable(this.minLengthVar = new ComputedVariable(this, "minLength"));
         addVariable(this.maxAimAngleVar = new ComputedVariable(this, "maxAimAngle"));
         addVariable(this.hookDamageVar = new ComputedVariable(this, "hookDamage"));
@@ -265,6 +299,7 @@ public class PartGrapple extends APart {
         hookSpeedVar.setTo(definition.grapple.hookSpeed, false);
         reelSpeedVar.setTo(definition.grapple.reelSpeed, false);
         winchForceVar.setTo(definition.grapple.winchForce, false);
+        breakForceVar.setTo(definition.grapple.breakForce, false);
         minLengthVar.setTo(definition.grapple.minLength, false);
         maxAimAngleVar.setTo(definition.grapple.maxAimAngle, false);
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
@@ -295,7 +330,29 @@ public class PartGrapple extends APart {
      * progress, line length against the launcher's distance from the hook, and the reel and slack inputs.  Temporary.
      */
     public String getDebugState() {
-        return String.format("[grapple state %d mantle %d progress %.3f rope %.2f distance %.2f share %.2f reel %b slack %b]", getState(), getMantle(), mantleProgressVar.currentValue, ropeVar.currentValue, isAttached() ? position.distanceTo(getAnchor()) : 0, selfShareVar.currentValue, reelVar.isActive, slackVar.isActive);
+        return String.format("[grapple state %d mantle %d progress %.3f rope %.2f distance %.2f share %.2f reel %b slack %b winch %.0f stretch %.3f brake %.0f break %.0f overload %d | throttle %.2f brakeInput %.2f backwards %b engines%s]", getState(), getMantle(), mantleProgressVar.currentValue, ropeVar.currentValue, isAttached() ? position.distanceTo(getAnchor()) : 0, selfShareVar.currentValue, reelVar.isActive, slackVar.isActive, getWinchLimit(), reelVar.isActive ? getWinchStretch() : 0, getBrakeHold(vehicleOn), getBreakForce(), overloadTicks,
+                vehicleOn.throttleVar.currentValue, vehicleOn.brakeVar.currentValue, isDrivingBackwards(), getEngineDebugState());
+    }
+
+    /**
+     * Returns each engine's gear and RPM, for debug logging.  Temporary, for chasing the engine revving while driving back down from a mantle.
+     */
+    private String getEngineDebugState() {
+        StringBuilder engines = new StringBuilder();
+        for (PartEngine engine : vehicleOn.engines) {
+            engines.append(String.format(" (gear %.0f rpm %.0f)", engine.currentGearVar.currentValue, engine.rpm));
+        }
+        return engines.toString();
+    }
+
+    @Override
+    public IWrapperNBT save(IWrapperNBT data) {
+        super.save(data);
+        if (hookedMultipartID != null) {
+            data.setUUID(HOOKED_MULTIPART_TAG, hookedMultipartID);
+            data.setPoint3d(HOOK_OFFSET_TAG, hookOffset);
+        }
+        return data;
     }
 
     /**
@@ -308,6 +365,7 @@ public class PartGrapple extends APart {
         } else {
             updateRenderAnchor();
             sendCameraAim();
+            logClientHookDrift();
         }
 
         //Both sides run the vehicle's side of the line so clients don't have to wait on server corrections.
@@ -321,7 +379,7 @@ public class PartGrapple extends APart {
                 mantling = getMantle() != MANTLE_NONE;
             }
             if (!mantling) {
-                applyLineForces(getAnchor(), ropeVar.currentValue, selfShareVar.currentValue);
+                applyLineForces(getLineAnchor(), ropeVar.currentValue, selfShareVar.currentValue);
             }
         }
     }
@@ -377,7 +435,8 @@ public class PartGrapple extends APart {
                     release();
                     return;
                 }
-                setAnchor(hookOffset.copy().rotate(hookedMultipart.orientation).add(hookedMultipart.position));
+                logServerHookDrift();
+                setAnchor(getHookPosition(hookedMultipart));
                 break;
             }
         }
@@ -385,6 +444,10 @@ public class PartGrapple extends APart {
         Point3D anchor = getAnchor();
         if (!anchor.isDistanceToCloserThan(position, rangeVar.currentValue * SNAP_FACTOR)) {
             //Pulled or teleported too far apart.  The line snaps.
+            release();
+            return;
+        }
+        if (isOverloaded()) {
             release();
             return;
         }
@@ -398,14 +461,20 @@ public class PartGrapple extends APart {
                 rope += reelSpeedVar.currentValue / 20D;
             }
             if (getMantle() == MANTLE_NONE) {
+                double distance = position.distanceTo(anchor);
                 //The line pulls no harder once it's stretched past MAX_PULL / STIFFNESS, so don't wind in any
                 //more than that while whatever's on the end is stuck.  Otherwise holding reel against a wall
                 //stores up line the vehicle then gets yanked by, and a climb that starts jumps up the wall to it.
-                rope = Math.max(rope, position.distanceTo(anchor) - MAX_PULL / STIFFNESS);
+                rope = Math.max(rope, distance - MAX_PULL / STIFFNESS);
+                if (reelVar.isActive) {
+                    //The winch only winds in what the far end keeps up with.  Past the stretch that reels at the reel speed, it
+                    //stalls rather than storing up line, which would yank us in the moment reel is let go.  It never lets line out.
+                    rope = Math.max(rope, Math.min(ropeVar.currentValue, distance - getWinchStretch()));
+                }
                 if (!slackVar.isActive && anchor.y > position.y && vehicleOn.groundDeviceCollective.groundedGroundDevices.isEmpty()) {
                     //Hanging off the hook, the winch takes in any slack, so we stay where we got to rather than
                     //dropping back down to where the line was when reel was let go.
-                    rope = Math.min(rope, position.distanceTo(anchor));
+                    rope = Math.min(rope, distance);
                 }
             }
             ropeVar.setTo(clampRope(rope), true);
@@ -610,6 +679,8 @@ public class PartGrapple extends APart {
             //Store the hit in the other entity's local coordinates, so the hook stays put as it turns.
             hookedMultipart = hit.multipart;
             hookOffset.set(hit.position).subtract(hit.multipart.position).reOrigin(hit.multipart.orientation);
+            hookedMultipartID = hit.multipart.uniqueUUID;
+            InterfaceManager.packetInterface.sendToAllClients(new PacketPartGrappleHook(this, hookedMultipartID, hookOffset));
             state = STATE_VEHICLE;
             if (hit.multipart instanceof EntityVehicleF_Physics) {
                 //Share the pull by mass: the lighter vehicle moves more.  A tow chain moves as one, so
@@ -645,8 +716,14 @@ public class PartGrapple extends APart {
 
     private void release() {
         hookDataValid = false;
+        tickHoldTension = 0;
+        overloadTicks = 0;
         hookedEntity = null;
         hookedMultipart = null;
+        if (hookedMultipartID != null) {
+            hookedMultipartID = null;
+            InterfaceManager.packetInterface.sendToAllClients(new PacketPartGrappleHook(this, null, null));
+        }
         fireVar.setTo(0, true);
         setMantle(MANTLE_NONE);
         setState(STATE_IDLE);
@@ -665,8 +742,9 @@ public class PartGrapple extends APart {
             closest = new Hit(blockHit.hitPosition.copy().addScaled(delta.copy().normalize(), 0.01));
         }
 
-        //Hook the same boxes bullets can hit, as well as the ones entities stand on.
-        EntityInteractResult multipartHit = world.getMultipartEntityIntersect(start, end, vehicleOn, CollisionType.ENTITY, CollisionType.ATTACK, CollisionType.BULLET);
+        //Hook the same boxes bullets can hit, as well as the ones entities stand on.  Only the collision boxes packs
+        //define though, not parts' own bounding boxes, or we'd hook hidden parts with no hitbox of their own.
+        EntityInteractResult multipartHit = world.getMultipartEntityIntersect(start, end, vehicleOn, true, CollisionType.ENTITY, CollisionType.ATTACK, CollisionType.BULLET);
         if (multipartHit != null && (closest == null || start.isFirstCloserThanSecond(multipartHit.position, closest.position))) {
             closest = new Hit(multipartHit.position.copy());
             closest.multipart = multipartHit.entity instanceof APart ? ((APart) multipartHit.entity).masterEntity : (AEntityF_Multipart<?>) multipartHit.entity;
@@ -734,22 +812,107 @@ public class PartGrapple extends APart {
         }
         Point3D towards = toLauncher.scale(1D / distance);
         Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
-        Point3D[] pull = getChainPull(other, towards, distance - rope, share, launcherMotion, getWinchLimit());
+        ChainPull pull = getChainPull(other, towards, distance - rope, share, launcherMotion, getWinchLimit());
+        tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
         logTowPull("towed", other, towards, distance - rope, share, launcherMotion, pull);
-        queueChainPull(other, anchor, pull[1], pull[0]);
+        queueChainPull(other, anchor, pull.force, pull.motion);
     }
 
     /**
-     * Returns the most tension the line can pull with this tick, in kg*m/ticks^2.  While reeling, that's what the
-     * winch can pull with: winchForce, or twice the weight of the vehicle we're on if that's 0.  Otherwise the
-     * winch holds the line, which nothing can pull out of it.
+     * In dev mode, logs how far the hook on a vehicle is off where it should be, every {@link #HOOK_DRIFT_LOG_INTERVAL}
+     * ticks on the server.  Called before the anchor is moved this tick, so the stored anchor is from last tick.
+     * Temporary, for chasing the hook drawing off the hooked vehicle.
+     * <p>
+     * offset: where the hook should be, in the hooked vehicle's own frame.  stale: how far the vehicle has carried the hook
+     * since last tick's anchor, in blocks.  If the vehicle updates after us in a tick, the hook we sync is this far behind its body.  Pair with the client's GrappleHookClient lines.
+     */
+    private void logServerHookDrift() {
+        if (!ConfigSystem.settings.general.devMode.value || vehicleOn.ticksExisted % HOOK_DRIFT_LOG_INTERVAL != 0) {
+            return;
+        }
+        Point3D shouldBe = getHookPosition(hookedMultipart);
+        Point3D motion = hookedMultipart instanceof AEntityVehicleD_Moving ? ((AEntityVehicleD_Moving) hookedMultipart).motion : new Point3D();
+        InterfaceManager.coreInterface.logError(String.format("GrappleHookServer tick %d on %s: offset (%.3f %.3f %.3f) stale %.3f | vehicle pos (%.2f %.2f %.2f) yaw %.2f motion (%.3f %.3f %.3f)",
+                vehicleOn.ticksExisted, hookedMultipart.definition.systemName, hookOffset.x, hookOffset.y, hookOffset.z, getAnchor().distanceTo(shouldBe),
+                hookedMultipart.position.x, hookedMultipart.position.y, hookedMultipart.position.z, hookedMultipart.orientation.angles.y, motion.x, motion.y, motion.z));
+    }
+
+    /**
+     * Client side, in dev mode: logs where the server's synced hook sits on our copy of the hooked vehicle, every
+     * {@link #HOOK_DRIFT_LOG_INTERVAL} ticks.  Takes the hooked vehicle the server told us about, or the nearest
+     * vehicle not in our tow chain if we weren't told.  Temporary, for chasing the hook drawing off the hooked vehicle.
+     * <p>
+     * offset: the server's hook in that vehicle's own frame.  It should match the server's offset if the server's hook
+     * is on our copy's body, so the difference is how far off it would be drawn without the client working it out.
+     * drawnOff: how far the server's hook is from where we now draw it.  known: whether we were told which vehicle it is.
+     * backlog: how far the server has moved that vehicle that our copy hasn't caught up to yet.
+     */
+    private void logClientHookDrift() {
+        if (!ConfigSystem.settings.general.devMode.value || getState() != STATE_VEHICLE || vehicleOn.ticksExisted % HOOK_DRIFT_LOG_INTERVAL != 0) {
+            return;
+        }
+        Point3D anchor = getAnchor();
+        AEntityF_Multipart<?> known = getHookedMultipart();
+        EntityVehicleF_Physics nearest = known instanceof EntityVehicleF_Physics ? (EntityVehicleF_Physics) known : null;
+        double nearestDistance = nearest != null ? -1 : Double.MAX_VALUE;
+        for (EntityVehicleF_Physics vehicle : world.getEntitiesOfType(EntityVehicleF_Physics.class)) {
+            double distance = vehicle.position.distanceTo(anchor);
+            if (distance < nearestDistance && !isInOurTowChain(vehicle)) {
+                nearest = vehicle;
+                nearestDistance = distance;
+            }
+        }
+        if (nearest == null) {
+            return;
+        }
+        Point3D offset = toLocal(nearest, anchor);
+        Point3D backlog = nearest.getServerCorrectionBacklog();
+        InterfaceManager.coreInterface.logError(String.format("GrappleHookClient tick %d on %s known %b: offset (%.3f %.3f %.3f) drawnOff %.3f | backlog %.3f (%.3f %.3f %.3f) | vehicle pos (%.2f %.2f %.2f) yaw %.2f velocity %.3f",
+                vehicleOn.ticksExisted, nearest.definition.systemName, known != null, offset.x, offset.y, offset.z, anchor.distanceTo(getLineAnchor()), backlog.length(), backlog.x, backlog.y, backlog.z,
+                nearest.position.x, nearest.position.y, nearest.position.z, nearest.orientation.angles.y, nearest.velocity));
+    }
+
+    /**
+     * Returns the most tension the winch can reel the line in with this tick, in kg*m/ticks^2.  The line still holds
+     * past that, but the winch stalls.  Unlimited while not reeling, so the line's own pull back to its length isn't cut.
      */
     private double getWinchLimit() {
-        if (!reelVar.isActive) {
-            return Double.POSITIVE_INFINITY;
-        }
+        return reelVar.isActive ? getWinchForce() : Double.POSITIVE_INFINITY;
+    }
+
+    /**
+     * Returns how hard the winch can pull, in kg*m/ticks^2: winchForce, or twice the weight of the vehicle we're on if that's 0.
+     */
+    private double getWinchForce() {
         //Go by mass rather than getGravitationalForce, which is 0 for floating blimps.  They still need a winch that can pull.
         return winchForceVar.currentValue > 0 ? winchForceVar.currentValue * KN_TO_TICK_FORCE : DEFAULT_WINCH_WEIGHTS * vehicleOn.currentMass * GRAVITY;
+    }
+
+    /**
+     * Returns the tension the line snaps at, in kg*m/ticks^2: breakForce, or {@link #DEFAULT_BREAK_WINCH_MULTIPLE} times the winch force if that's 0.
+     */
+    private double getBreakForce() {
+        return breakForceVar.currentValue > 0 ? breakForceVar.currentValue * KN_TO_TICK_FORCE : DEFAULT_BREAK_WINCH_MULTIPLE * getWinchForce();
+    }
+
+    /**
+     * Returns true if the line has been held past its break force for {@link #BREAK_TICKS} ticks in a row, so it snaps.
+     * Goes by the tension it took to hold the line last tick, then starts this tick's from nothing.  Server side.
+     */
+    private boolean isOverloaded() {
+        overloadTicks = tickHoldTension > getBreakForce() ? overloadTicks + 1 : 0;
+        tickHoldTension = 0;
+        return overloadTicks >= BREAK_TICKS;
+    }
+
+    /**
+     * Returns the most the winch lets the line stretch past its length while reeling, in blocks.  The spring closes the
+     * two ends up at STIFFNESS times the stretch each tick, so this is the stretch that closes them at the reel speed.
+     * The winch force caps how hard the spring speeds them up to that.  Any more stretch would only be stored up while
+     * something holds against the winch, and yank it in the moment reel is let go.  See {@link #getChainPull}.
+     */
+    private double getWinchStretch() {
+        return Math.min(MAX_PULL / STIFFNESS, reelSpeedVar.currentValue / 20D / STIFFNESS);
     }
 
     /**
@@ -762,7 +925,7 @@ public class PartGrapple extends APart {
      * passes all its momentum between them; a towing impulse bigger than the towed one is momentum the line loses.
      * thrust: what the engines added along the heading this tick.  brake: total brake hold on the grounded wheels.
      */
-    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, Point3D[] pull) {
+    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, ChainPull pull) {
         if (!ConfigSystem.settings.general.devMode.value || world.isClient() || vehicleOn.ticksExisted % TOW_LOG_INTERVAL != 0) {
             return;
         }
@@ -771,21 +934,17 @@ public class PartGrapple extends APart {
         double closing = radial - otherMotion.dotProduct(towards, false);
         double stop = Math.max(0, -closing) * share;
         double spring = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
-        double along = pull[0].dotProduct(towards, false);
-        double brake = 0;
-        for (PartGroundDevice groundDevice : lead.groundDeviceCollective.groundedGroundDevices) {
-            brake += lead.getWheelBrakingForce(groundDevice);
-        }
+        double along = pull.motion.dotProduct(towards, false);
+        double brake = getBrakeHold(lead);
         InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
                 vehicleOn.ticksExisted, end, lead.definition.systemName, lead.currentMass, share, stretch,
                 radial, closing, stop, spring, along, stop + spring - along,
-                along * lead.currentMass, pull[1].length(), getWinchLimit(),
+                along * lead.currentMass, pull.force.length(), getWinchLimit(),
                 lead.velocity, lead.getThrustSpeedGain(), brake, lead.groundDeviceCollective.groundedGroundDevices.size()));
     }
 
     /**
-     * Works out how much a line pulls on a tow chain.  Returns {the motion to add to the vehicle at the front of
-     * the chain, the line's tension in kg*m/ticks^2}.  The same on both ends of the line.
+     * Works out how much a line pulls on a tow chain.  The same on both ends of the line.
      * 
      * The line stops the chain moving further away, and pulls it back towards the line length.  The
      * tension is the force required with the whole chain's mass.  The chain's tyres and brakes resist
@@ -799,21 +958,22 @@ public class PartGrapple extends APart {
      * Tyres and brakes don't resist the part of that which stops the chain itself moving away, as friction is
      * already slowing it down, so it helps the line instead.  They do resist the part that drags the chain after the other end.
      *
+     * The rigid part always holds, as the winch's drum doesn't let line out however hard it's pulled.  Reeling in is
+     * the spring part, and while reeling the winch can only pull so hard.  The spring only gets what the tension has
+     * left under that once the line is held, so a chain driving away hard stalls the winch rather than being reeled in.
+     *
      * @param hooked the vehicle in the chain the line is on.
      * @param towards which way the line pulls the chain.  Must be normalized.
      * @param stretch how far past its length the line is pulled, in blocks.
      * @param share how much of the line's pull the chain takes, from 0 to 1.
-     * While reeling, the winch can only pull so hard.  If holding the chain would take more tension than that, the
-     * whole pull is cut down to it, so a chain driving away harder than the winch pulls drags line back out.
-     *
      * @param otherMotion the motion of the vehicle at the front of the chain on the other end, or null if that end doesn't move.
-     * @param maxTension the most tension the line can pull with, in kg*m/ticks^2.  See {@link #getWinchLimit()}.
+     * @param maxTension the most tension the winch can reel in with, in kg*m/ticks^2.  See {@link #getWinchLimit()}.
      */
-    private static Point3D[] getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, double maxTension) {
+    private static ChainPull getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, double maxTension) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         if (!(lead.currentMass > 0)) {
             //Massless, as packs can leave emptyMass out.  There's nothing to share the pull with, so don't move it.
-            return new Point3D[] {new Point3D(), new Point3D()};
+            return new ChainPull(new Point3D(), new Point3D(), 0);
         }
         //Rigid line: stop the ends pulling further apart.  The part that just stops us moving away is
         //stopping, and the rest drags us after the other end, which our tyres and brakes hold against.
@@ -824,29 +984,25 @@ public class PartGrapple extends APart {
         Point3D stopping = towards.copy().scale(ownStopSpeed);
         Point3D dragging = towards.copy().scale(stopSpeed - ownStopSpeed);
         //Pull back towards the line length.  Motion gets scaled by speedFactor when applied, so undo that here.
+        //Only make up what our share of the closing speed is short of.  Otherwise each tick's pull adds to the last,
+        //and the line flings us past the hook.  Free-rolling wheels barely slow us, so this goes for the ground too.
         double springSpeed = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
-        if (lead.groundDeviceCollective.groundedGroundDevices.isEmpty()) {
-            //In the air, nothing slows down what the line has already pulled us to, so only make up what we're short
-            //of.  Otherwise each tick's pull adds to the last, and the line flings us past the hook.
-            springSpeed = Math.max(0, springSpeed - Math.max(0, closingSpeed));
-        }
+        springSpeed = Math.max(0, springSpeed - Math.max(0, closingSpeed) * share);
         Point3D spring = towards.copy().scale(springSpeed);
 
-        Point3D force = stopping.copy().add(dragging).add(spring).scale(lead.currentMass);
-        double tension = force.length();
-        if (tension > maxTension) {
-            //Past what the winch can pull with, so it gives.  Whatever it can't stop pulls line back out of it.
-            double give = maxTension / tension;
-            stopping.scale(give);
-            dragging.scale(give);
-            spring.scale(give);
-            force.scale(give);
+        //All three are along the line, so the tensions add.  Holding takes what it needs, and the winch reels in with what's left.
+        double holdTension = (stopping.length() + dragging.length()) * lead.currentMass;
+        double springTension = spring.length() * lead.currentMass;
+        double reelTension = Math.max(0, maxTension - holdTension);
+        if (springTension > reelTension) {
+            spring.scale(reelTension / springTension);
         }
+        Point3D force = stopping.copy().add(dragging).add(spring).scale(lead.currentMass);
         Point3D moving = dragging.add(spring).scale(lead.currentMass);
         for (EntityVehicleF_Physics chainVehicle : getTowChain(lead)) {
             moving.subtract(getTyreHold(chainVehicle, moving, chainVehicle == hooked ? Math.max(0, force.y) : 0));
         }
-        return new Point3D[] {stopping.add(moving.scale(1D / lead.currentMass)), force};
+        return new ChainPull(stopping.add(moving.scale(1D / lead.currentMass)), force, holdTension);
     }
 
     /**
@@ -1230,16 +1386,20 @@ public class PartGrapple extends APart {
         }
         Point3D lineNormal = toAnchor.scale(1D / distance);
         //A hooked vehicle's chain moves too, so the rigid part of the line goes by how fast we're pulling apart from it.
-        Point3D otherMotion = getState() == STATE_VEHICLE && hookedMultipart instanceof EntityVehicleF_Physics ? getTowChainLead((EntityVehicleF_Physics) hookedMultipart).motion : null;
-        Point3D[] pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, otherMotion, getWinchLimit());
+        AEntityF_Multipart<?> hooked = getHookedMultipart();
+        Point3D otherMotion = hooked instanceof EntityVehicleF_Physics ? getTowChainLead((EntityVehicleF_Physics) hooked).motion : null;
+        ChainPull pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, otherMotion, getWinchLimit());
+        if (!world.isClient()) {
+            tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
+        }
         if (otherMotion != null) {
             logTowPull("towing", vehicleOn, lineNormal, distance - rope, share, otherMotion, pull);
         }
         if (vehicleOn.towedByConnection != null) {
-            queueChainPull(vehicleOn, position, pull[1], pull[0]);
+            queueChainPull(vehicleOn, position, pull.force, pull.motion);
             return;
         }
-        vehicleOn.motion.add(pull[0]);
+        vehicleOn.motion.add(pull.motion);
 
         //Vehicles don't stop wheels going into walls, and the line usually pulls the vehicle towards one.
         List<BoundingBox> freeBoxes = vehicleOn.getBoxesOutsideBlocks(vehicleOn.getBoxesForWallChecks());
@@ -1254,7 +1414,7 @@ public class PartGrapple extends APart {
             return;
         }
 
-        turnFromLine(vehicleOn, position, pull[1], null, true, freeBoxes);
+        turnFromLine(vehicleOn, position, pull.force, null, true, freeBoxes);
         //Turning moves our origin to keep the pivot still, so check that against the walls too.
         vehicleOn.clampMotionToWalls(freeBoxes);
     }
@@ -1492,29 +1652,30 @@ public class PartGrapple extends APart {
                 case MANTLE_READY: {
                     double rope = ropeVar.currentValue;
                     //With the mantle off, the line can carry us up the wall, but not over the edge.  An overhang we
-                    //can't get past stops us under it, short of the edge.
-                    boolean canMantle = !disableMantleVar.isActive && !path.blocked;
-                    progress = path.getProgressForLine(progress, rope, anchor, canMantle ? path.completeAt : path.getLipProgress());
+                    //can't get past stops us under it, short of the edge, and with no room on top we stop at the edge.
+                    boolean canMantle = !disableMantleVar.isActive && !path.blocked && !path.noRoomOnTop;
+                    double end = canMantle ? path.completeAt : path.getLipProgress();
+                    progress = path.getProgressForLine(progress, rope, anchor, end);
                     if (progress <= 0 && path.getLineLength(0, anchor) < rope - MANTLE_CONTACT) {
                         //Let back down to the bottom with line to spare.  The line takes over again.
                         setMantle(MANTLE_NONE);
                         return;
                     }
-                    if (path.blocked) {
-                        if (progress >= path.completeAt - ClimbPath.SAMPLE) {
+                    if (path.blocked || path.noRoomOnTop) {
+                        if (progress >= end - ClimbPath.SAMPLE) {
                             if (!mantleBlockedSent && reelVar.isActive) {
                                 mantleBlockedSent = true;
-                                sendMantleMessage(LanguageSystem.INTERACT_GRAPPLE_MANTLEBLOCKED);
+                                sendMantleMessage(path.blocked ? LanguageSystem.INTERACT_GRAPPLE_MANTLEBLOCKED : LanguageSystem.INTERACT_GRAPPLE_MANTLENOROOM);
                             }
                             if (isDrivingBackwards()) {
                                 setMantle(MANTLE_DESCEND);
                             }
-                        } else if (progress < path.completeAt - MANTLE_CONTACT) {
+                        } else if (progress < end - MANTLE_CONTACT) {
                             //Tell them again if they come back up to it.
                             mantleBlockedSent = false;
                         }
                     }
-                    if (!path.blocked && progress >= path.completeAt) {
+                    if (canMantle && progress >= path.completeAt) {
                         progress = path.completeAt;
                         completeMantle();
                         break;
@@ -1688,6 +1849,65 @@ public class PartGrapple extends APart {
     }
 
     /**
+     * Returns true if the vehicle fits flat on top of the wall at the end of the climb path.  The plane between the bottoms
+     * of its wheels has to have air above it everywhere, as high as the vehicle reaches above it, and rest on top of a solid
+     * block somewhere.  Its collision boxes can't be in a block there either, for anything sticking out past the plane.
+     * Boxes don't turn with us, so they're moved to where they'd be and checked as they are.
+     *
+     * @param planeFront the plane's edge at the end facing the wall, in our own frame.
+     * @param planeRear the plane's edge at the far end, in our own frame.
+     * @param tracks offsets across the plane to check along, from the middle of its edges.
+     */
+    private boolean hasRoomOnTop(ClimbPath path, Point3D planeFront, Point3D planeRear, List<Double> tracks) {
+        Point3D topPosition = new Point3D();
+        RotationMatrix topOrientation = new RotationMatrix();
+        path.getPose(path.completeAt, topPosition, topOrientation);
+        Point3D up = new Point3D(0, 1, 0).rotate(topOrientation);
+
+        //How high the vehicle reaches above the lower edge of the plane.
+        double planeBottom = Math.min(planeFront.y, planeRear.y);
+        double reach = MANTLE_ROOM_MARGIN;
+        for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+            reach = Math.max(reach, toVehicleLocal(box.globalCenter).y + box.heightRadius - planeBottom);
+        }
+        for (APart part : vehicleOn.allParts) {
+            reach = Math.max(reach, toVehicleLocal(part.boundingBox.globalCenter).y + part.boundingBox.heightRadius - planeBottom);
+        }
+
+        //Walk the plane, checking there's air above each point and a block just under at least one.
+        int steps = Math.max(1, (int) Math.ceil(planeFront.distanceTo(planeRear) / MANTLE_ROOM_STEP));
+        boolean supported = false;
+        for (int i = 0; i <= steps; ++i) {
+            Point3D along = planeRear.copy().interpolate(planeFront, i / (double) steps);
+            for (double track : tracks) {
+                Point3D point = along.copy().add(track, 0, 0).rotate(topOrientation).add(topPosition);
+                for (double height = MANTLE_ROOM_MARGIN;; height = Math.min(reach, height + MANTLE_ROOM_STEP)) {
+                    if (isSolid(point.copy().addScaled(up, height))) {
+                        return false;
+                    }
+                    if (height >= reach) {
+                        break;
+                    }
+                }
+                supported |= isSolid(point.copy().addScaled(up, -MANTLE_ROOM_MARGIN));
+            }
+        }
+        if (!supported) {
+            return false;
+        }
+
+        for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+            Point3D center = toVehicleLocal(box.globalCenter).rotate(topOrientation).add(topPosition);
+            center.y += MANTLE_ROOM_MARGIN;
+            BoundingBox onTop = new BoundingBox(center, Math.max(MANTLE_STEP, box.widthRadius - MANTLE_ROOM_MARGIN), Math.max(MANTLE_STEP, box.heightRadius - MANTLE_ROOM_MARGIN), Math.max(MANTLE_STEP, box.depthRadius - MANTLE_ROOM_MARGIN));
+            if (world.checkForCollisions(onTop, new Point3D(), true, false)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Returns true if a block's collision box is at the point.
      */
     private boolean isSolid(Point3D point) {
@@ -1762,6 +1982,8 @@ public class PartGrapple extends APart {
         final double completeAt;
         /**True if an overhang too big for the wheels stops the path short of the top.**/
         final boolean blocked;
+        /**True if the vehicle wouldn't fit on top, so the path goes up the face but can't be taken over the lip.  See {@link PartGrapple#hasRoomOnTop}.**/
+        boolean noRoomOnTop;
         /**See {@link #getClosestAhead}.**/
         private double[] closestAhead;
         private Point3D closestAheadAnchor;
@@ -2046,7 +2268,11 @@ public class PartGrapple extends APart {
             if (progress[progress.length - 1] < SAMPLE) {
                 return null;
             }
-            return new ClimbPath(origin, normal, yaw, side, frontLocal, grapple.toVehicleLocal(grapple.position), Math.toDegrees(Math.atan2(planeRise, planeRun)), poses, progress, outline, top, progress[lipPose], stuck);
+            ClimbPath path = new ClimbPath(origin, normal, yaw, side, frontLocal, grapple.toVehicleLocal(grapple.position), Math.toDegrees(Math.atan2(planeRise, planeRun)), poses, progress, outline, top, progress[lipPose], stuck);
+            //The top is only looked for up to a little above the hook, and only under the hook, so a hook in the face of
+            //a taller wall, or a ledge with something over it, still gives a top that there's no room on.
+            path.noRoomOnTop = !stuck && !grapple.hasRoomOnTop(path, frontLocal, rearLocal, tracks);
+            return path;
         }
 
         /**Returns {u, y} of the plane's back edge for a {front edge u, front edge y, pitch} pose.**/
@@ -2405,6 +2631,73 @@ public class PartGrapple extends APart {
         attachedVar.setTo(state >= STATE_BLOCK ? 1 : 0, true);
     }
 
+    /**
+     * Client side: sets the multipart the hook is stuck in and where on it, or clears it if the ID is null.  See {@link PacketPartGrappleHook}.
+     */
+    public void setHookedMultipart(UUID multipartID, Point3D offset) {
+        hookedMultipartID = multipartID;
+        clientHookedMultipart = null;
+        if (offset != null) {
+            hookOffset.set(offset);
+        }
+    }
+
+    /**
+     * Returns the total brake hold on the vehicle's grounded wheels, in kg*m/ticks^2.  For debug logging.
+     */
+    private static double getBrakeHold(EntityVehicleF_Physics vehicle) {
+        double brake = 0;
+        for (PartGroundDevice groundDevice : vehicle.groundDeviceCollective.groundedGroundDevices) {
+            brake += vehicle.getWheelBrakingForce(groundDevice);
+        }
+        return brake;
+    }
+
+    /**
+     * Returns true if the hook is stuck in something and the winch is reeling the line in.
+     */
+    public boolean isReeling() {
+        return isAttached() && reelVar.isActive;
+    }
+
+    /**
+     * Returns the multipart the hook is stuck in, or null if it isn't stuck in one or the client doesn't have it.
+     * The server's own one, or the client's copy of it.
+     */
+    private AEntityF_Multipart<?> getHookedMultipart() {
+        if (getState() != STATE_VEHICLE) {
+            return null;
+        }
+        if (!world.isClient()) {
+            return hookedMultipart;
+        }
+        if (hookedMultipartID == null) {
+            return null;
+        }
+        if (clientHookedMultipart == null || !clientHookedMultipart.isValid) {
+            //Looked up again if it's gone, as it can unload and reload while we hold it.
+            AEntityA_Base found = world.getEntity(hookedMultipartID);
+            clientHookedMultipart = found instanceof AEntityF_Multipart ? (AEntityF_Multipart<?>) found : null;
+        }
+        return clientHookedMultipart;
+    }
+
+    /**
+     * Returns where the line pulls from this tick.  On a multipart, that's worked out from our own copy of it.  A client's
+     * copy can be a way off the server's while it's being pulled, so the line pulls where the hook is drawn.
+     */
+    private Point3D getLineAnchor() {
+        AEntityF_Multipart<?> hooked = getHookedMultipart();
+        return hooked != null ? getHookPosition(hooked) : getAnchor();
+    }
+
+    /**
+     * Returns where the hook is on the passed-in multipart it's stuck in, in world coordinates.
+     */
+    private Point3D getHookPosition(AEntityF_Multipart<?> hooked) {
+        return hookOffset.copy().rotate(hooked.orientation).add(hooked.position);
+    }
+
     private Point3D getAnchor() {
         return new Point3D(anchorXVar.currentValue, anchorYVar.currentValue, anchorZVar.currentValue);
     }
@@ -2437,6 +2730,12 @@ public class PartGrapple extends APart {
     }
 
     private Point3D getRenderAnchor(float partialTicks) {
+        AEntityF_Multipart<?> hooked = getHookedMultipart();
+        if (hooked != null) {
+            //Stuck in a multipart, so draw it on our copy of that, where it's being drawn, rather than where the server has it.
+            hooked.getInterpolatedOrientation(hookedRenderOrientation, partialTicks);
+            return hookOffset.copy().rotate(hookedRenderOrientation).add(hooked.prevPosition.copy().interpolate(hooked.position, partialTicks));
+        }
         return renderAnchor != null ? prevRenderAnchor.copy().interpolate(renderAnchor, partialTicks) : getAnchor();
     }
 
@@ -2620,6 +2919,24 @@ public class PartGrapple extends APart {
                 center.add(wheel.position);
             }
             return center.scale(1D / wheels.size());
+        }
+    }
+
+    /**
+     * How a line pulls on one end's tow chain this tick.  See {@link #getChainPull}.
+     */
+    private static class ChainPull {
+        /**The motion to add to the vehicle at the front of the chain.**/
+        final Point3D motion;
+        /**The line's tension, in kg*m/ticks^2.**/
+        final Point3D force;
+        /**How much of the tension it takes just to hold the chain to the line, before any reeling in, in kg*m/ticks^2.  This is what can snap the line.**/
+        final double holdTension;
+
+        ChainPull(Point3D motion, Point3D force, double holdTension) {
+            this.motion = motion;
+            this.force = force;
+            this.holdTension = holdTension;
         }
     }
 

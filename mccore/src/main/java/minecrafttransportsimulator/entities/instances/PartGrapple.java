@@ -103,7 +103,7 @@ public class PartGrapple extends APart {
     /**How long reel has to be held at the top of the line before the pull over the edge starts, in ticks.**/
     private static final int MANTLE_HOLD_TICKS = 30;
     /**How fast the launcher-end wheels move along the wall while being pulled over the edge, in blocks per tick.**/
-    private static final double MANTLE_SPEED = 1D / 16D;
+    private static final double MANTLE_SPEED = 5D / 64D;
     /**How fast they slip back while reel isn't held during the pull, in blocks per tick.**/
     private static final double MANTLE_SLIP_SPEED = 1D / 64D;
     /**How fast they move at full throttle when driving back down the wall, in blocks per tick.**/
@@ -247,9 +247,9 @@ public class PartGrapple extends APart {
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
         isFixedVar.setTo(definition.grapple.isFixed ? 1 : 0, false);
         //The variant can add to these, so its item tooltip can show them.  See ItemPartGrapple.
-        disableBlockAttachVar.setTo(definition.grapple.disableBlockAttach || subDefinition.grappleDisableBlockAttach ? 1 : 0, false);
-        disableEntityAttachVar.setTo(definition.grapple.disableEntityAttach || subDefinition.grappleDisableEntityAttach ? 1 : 0, false);
-        disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach || subDefinition.grappleDisableVehicleAttach ? 1 : 0, false);
+        disableBlockAttachVar.setTo(definition.grapple.disableBlockAttach ? 1 : 0, false);
+        disableEntityAttachVar.setTo(definition.grapple.disableEntityAttach ? 1 : 0, false);
+        disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach ? 1 : 0, false);
         disableMantleVar.setTo(definition.grapple.disableMantle ? 1 : 0, false);
     }
 

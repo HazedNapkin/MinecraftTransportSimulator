@@ -531,6 +531,8 @@ public class LanguageSystem {
 
     public static final LanguageEntry ITEMINFO_GRAPPLE_RANGE = new LanguageEntry("iteminfo.grapple.range", "Range (blocks): ");
     public static final LanguageEntry ITEMINFO_GRAPPLE_REELSPEED = new LanguageEntry("iteminfo.grapple.reelSpeed", "Winch Speed (blk/s): ");
+    public static final LanguageEntry ITEMINFO_GRAPPLE_WINCHFORCE = new LanguageEntry("iteminfo.grapple.winchForce", "Winch Force (kN): ");
+    public static final LanguageEntry ITEMINFO_GRAPPLE_WINCHFORCE_DEFAULT = new LanguageEntry("iteminfo.grapple.winchForceDefault", "Twice vehicle weight");
     public static final LanguageEntry ITEMINFO_GRAPPLE_ATTACHESTO = new LanguageEntry("iteminfo.grapple.attachesTo", "Attaches To: ");
     public static final LanguageEntry ITEMINFO_GRAPPLE_BLOCKS = new LanguageEntry("iteminfo.grapple.blocks", "Blocks");
     public static final LanguageEntry ITEMINFO_GRAPPLE_ENTITIES = new LanguageEntry("iteminfo.grapple.entities", "Mobs");

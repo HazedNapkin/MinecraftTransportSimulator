@@ -704,6 +704,10 @@ public class JSONPart extends AJSONPartProvider {
         public float reelSpeed;
 
         @ModifiableValue
+        @JSONDescription("The most the winch can pull with while reeling the line in, in kN.  Driving away from the hook harder than this, such as reversing on full throttle, drags line back out of the winch, and anything less slows how fast it reels you in.  It doesn't limit the line while it isn't being reeled in, so a vehicle hanging from the line or parked on it stays put.  0 (default) makes it twice the weight of the vehicle the grapple is on, enough to hoist that vehicle up the line.")
+        public float winchForce;
+
+        @ModifiableValue
         @JSONDescription("The shortest the winch can reel the line, in blocks.  Short lines let the vehicle be pulled right up over the top of a wall when the hook is just past the edge.  Defaults to 0, which lets the line be reeled all the way in.")
         public float minLength;
 

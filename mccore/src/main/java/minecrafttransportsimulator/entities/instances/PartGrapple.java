@@ -103,6 +103,14 @@ public class PartGrapple extends APart {
     private static final double LINE_TYRE_GRIP = 0.25;
     /**A hook closer than this to the pivot, flat on the ground, is too close to swing the vehicle about it like a trailer.**/
     private static final double MIN_SWING_ARM = 0.5;
+    /**Converts kN to the kg*m/ticks^2 the vehicle physics uses, at 20 ticks a second.**/
+    private static final double KN_TO_TICK_FORCE = 1000D / 400D;
+    /**How many times the vehicle's weight the winch pulls with while reeling when winchForce is left at 0.**/
+    private static final double DEFAULT_WINCH_WEIGHTS = 2;
+    /**Gravity in m/ticks^2, the same as {@link EntityVehicleF_Physics#getGravitationalForce()} uses.**/
+    private static final double GRAVITY = 0.0245D;
+    /**How often dev mode logs a line between two vehicles, in ticks.  See logTowPull.  Temporary.**/
+    private static final int TOW_LOG_INTERVAL = 5;
     /**How often the server checks the anchor block still exists, in ticks.**/
     private static final int ANCHOR_CHECK_INTERVAL = 10;
 
@@ -143,6 +151,7 @@ public class PartGrapple extends APart {
     private final ComputedVariable rangeVar;
     private final ComputedVariable hookSpeedVar;
     private final ComputedVariable reelSpeedVar;
+    private final ComputedVariable winchForceVar;
     private final ComputedVariable minLengthVar;
     private final ComputedVariable maxAimAngleVar;
     private final ComputedVariable hookDamageVar;
@@ -217,6 +226,7 @@ public class PartGrapple extends APart {
         addVariable(this.rangeVar = new ComputedVariable(this, "range"));
         addVariable(this.hookSpeedVar = new ComputedVariable(this, "hookSpeed"));
         addVariable(this.reelSpeedVar = new ComputedVariable(this, "reelSpeed"));
+        addVariable(this.winchForceVar = new ComputedVariable(this, "winchForce"));
         addVariable(this.minLengthVar = new ComputedVariable(this, "minLength"));
         addVariable(this.maxAimAngleVar = new ComputedVariable(this, "maxAimAngle"));
         addVariable(this.hookDamageVar = new ComputedVariable(this, "hookDamage"));
@@ -254,6 +264,7 @@ public class PartGrapple extends APart {
         rangeVar.setTo(definition.grapple.range, false);
         hookSpeedVar.setTo(definition.grapple.hookSpeed, false);
         reelSpeedVar.setTo(definition.grapple.reelSpeed, false);
+        winchForceVar.setTo(definition.grapple.winchForce, false);
         minLengthVar.setTo(definition.grapple.minLength, false);
         maxAimAngleVar.setTo(definition.grapple.maxAimAngle, false);
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
@@ -721,8 +732,55 @@ public class PartGrapple extends APart {
         if (distance <= rope || distance < 1.0E-3) {
             return;
         }
-        Point3D[] pull = getChainPull(other, toLauncher.scale(1D / distance), distance - rope, share);
+        Point3D towards = toLauncher.scale(1D / distance);
+        Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
+        Point3D[] pull = getChainPull(other, towards, distance - rope, share, launcherMotion, getWinchLimit());
+        logTowPull("towed", other, towards, distance - rope, share, launcherMotion, pull);
         queueChainPull(other, anchor, pull[1], pull[0]);
+    }
+
+    /**
+     * Returns the most tension the line can pull with this tick, in kg*m/ticks^2.  While reeling, that's what the
+     * winch can pull with: winchForce, or twice the weight of the vehicle we're on if that's 0.  Otherwise the
+     * winch holds the line, which nothing can pull out of it.
+     */
+    private double getWinchLimit() {
+        if (!reelVar.isActive) {
+            return Double.POSITIVE_INFINITY;
+        }
+        //Go by mass rather than getGravitationalForce, which is 0 for floating blimps.  They still need a winch that can pull.
+        return winchForceVar.currentValue > 0 ? winchForceVar.currentValue * KN_TO_TICK_FORCE : DEFAULT_WINCH_WEIGHTS * vehicleOn.currentMass * GRAVITY;
+    }
+
+    /**
+     * In dev mode, logs how a line between two vehicles pulls on one end, every {@link #TOW_LOG_INTERVAL} ticks on the server.
+     * Both ends log on the same tick, so the "towing" and "towed" lines pair up.  Temporary, for chasing weak vehicle tows.
+     * <p>
+     * radial: the chain's speed towards the other end before the line, in blocks per tick.  closing: how fast the
+     * two ends close up, so negative is pulling apart.  stop: what the rigid line puts on it to stop the ends pulling apart.  spring: what the stretch pulls it in by.  along: what it actually gets towards
+     * the other end, after tyres and brakes.  impulse: along times mass.  The two ends' impulses match if the line
+     * passes all its momentum between them; a towing impulse bigger than the towed one is momentum the line loses.
+     * thrust: what the engines added along the heading this tick.  brake: total brake hold on the grounded wheels.
+     */
+    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, Point3D[] pull) {
+        if (!ConfigSystem.settings.general.devMode.value || world.isClient() || vehicleOn.ticksExisted % TOW_LOG_INTERVAL != 0) {
+            return;
+        }
+        EntityVehicleF_Physics lead = getTowChainLead(hooked);
+        double radial = lead.motion.dotProduct(towards, false);
+        double closing = radial - otherMotion.dotProduct(towards, false);
+        double stop = Math.max(0, -closing) * share;
+        double spring = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
+        double along = pull[0].dotProduct(towards, false);
+        double brake = 0;
+        for (PartGroundDevice groundDevice : lead.groundDeviceCollective.groundedGroundDevices) {
+            brake += lead.getWheelBrakingForce(groundDevice);
+        }
+        InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
+                vehicleOn.ticksExisted, end, lead.definition.systemName, lead.currentMass, share, stretch,
+                radial, closing, stop, spring, along, stop + spring - along,
+                along * lead.currentMass, pull[1].length(), getWinchLimit(),
+                lead.velocity, lead.getThrustSpeedGain(), brake, lead.groundDeviceCollective.groundedGroundDevices.size()));
     }
 
     /**
@@ -734,37 +792,57 @@ public class PartGrapple extends APart {
      * what they can of the pull back, and the rest moves it.  If the line is lifting the vehicle it's on, that vehicle presses down
      * less, so its tyres grip less. 
      * 
-     * Tyres and brakes don't resist when the line is stopping the chain from moving. When the chain is
-     * moving away, friction is already slowing it down, so it helps the line instead.
+     * The rigid part goes by how fast the two ends are pulling apart, not just how fast the chain is, and each end
+     * takes its share of stopping that.  So when the other end drives off, the chain is dragged after it with the
+     * speed the other end loses, and the line passes momentum between them rather than losing it.
+     * 
+     * Tyres and brakes don't resist the part of that which stops the chain itself moving away, as friction is
+     * already slowing it down, so it helps the line instead.  They do resist the part that drags the chain after the other end.
      *
      * @param hooked the vehicle in the chain the line is on.
      * @param towards which way the line pulls the chain.  Must be normalized.
      * @param stretch how far past its length the line is pulled, in blocks.
      * @param share how much of the line's pull the chain takes, from 0 to 1.
+     * While reeling, the winch can only pull so hard.  If holding the chain would take more tension than that, the
+     * whole pull is cut down to it, so a chain driving away harder than the winch pulls drags line back out.
+     *
+     * @param otherMotion the motion of the vehicle at the front of the chain on the other end, or null if that end doesn't move.
+     * @param maxTension the most tension the line can pull with, in kg*m/ticks^2.  See {@link #getWinchLimit()}.
      */
-    private static Point3D[] getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share) {
+    private static Point3D[] getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, Point3D otherMotion, double maxTension) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         if (!(lead.currentMass > 0)) {
             //Massless, as packs can leave emptyMass out.  There's nothing to share the pull with, so don't move it.
             return new Point3D[] {new Point3D(), new Point3D()};
         }
-        //Rigid line: stop the chain moving further away.
-        Point3D stopping = new Point3D();
+        //Rigid line: stop the ends pulling further apart.  The part that just stops us moving away is
+        //stopping, and the rest drags us after the other end, which our tyres and brakes hold against.
         double radialSpeed = lead.motion.dotProduct(towards, false);
-        if (radialSpeed < 0) {
-            stopping.addScaled(towards, -radialSpeed * share);
-        }
+        double closingSpeed = otherMotion != null ? radialSpeed - otherMotion.dotProduct(towards, false) : radialSpeed;
+        double stopSpeed = Math.max(0, -closingSpeed) * share;
+        double ownStopSpeed = Math.min(stopSpeed, Math.max(0, -radialSpeed));
+        Point3D stopping = towards.copy().scale(ownStopSpeed);
+        Point3D dragging = towards.copy().scale(stopSpeed - ownStopSpeed);
         //Pull back towards the line length.  Motion gets scaled by speedFactor when applied, so undo that here.
         double springSpeed = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
         if (lead.groundDeviceCollective.groundedGroundDevices.isEmpty()) {
             //In the air, nothing slows down what the line has already pulled us to, so only make up what we're short
             //of.  Otherwise each tick's pull adds to the last, and the line flings us past the hook.
-            springSpeed = Math.max(0, springSpeed - Math.max(0, radialSpeed));
+            springSpeed = Math.max(0, springSpeed - Math.max(0, closingSpeed));
         }
         Point3D spring = towards.copy().scale(springSpeed);
 
-        Point3D force = stopping.copy().add(spring).scale(lead.currentMass);
-        Point3D moving = spring.copy().scale(lead.currentMass);
+        Point3D force = stopping.copy().add(dragging).add(spring).scale(lead.currentMass);
+        double tension = force.length();
+        if (tension > maxTension) {
+            //Past what the winch can pull with, so it gives.  Whatever it can't stop pulls line back out of it.
+            double give = maxTension / tension;
+            stopping.scale(give);
+            dragging.scale(give);
+            spring.scale(give);
+            force.scale(give);
+        }
+        Point3D moving = dragging.add(spring).scale(lead.currentMass);
         for (EntityVehicleF_Physics chainVehicle : getTowChain(lead)) {
             moving.subtract(getTyreHold(chainVehicle, moving, chainVehicle == hooked ? Math.max(0, force.y) : 0));
         }
@@ -1151,7 +1229,12 @@ public class PartGrapple extends APart {
             return;
         }
         Point3D lineNormal = toAnchor.scale(1D / distance);
-        Point3D[] pull = getChainPull(vehicleOn, lineNormal, distance - rope, share);
+        //A hooked vehicle's chain moves too, so the rigid part of the line goes by how fast we're pulling apart from it.
+        Point3D otherMotion = getState() == STATE_VEHICLE && hookedMultipart instanceof EntityVehicleF_Physics ? getTowChainLead((EntityVehicleF_Physics) hookedMultipart).motion : null;
+        Point3D[] pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, otherMotion, getWinchLimit());
+        if (otherMotion != null) {
+            logTowPull("towing", vehicleOn, lineNormal, distance - rope, share, otherMotion, pull);
+        }
         if (vehicleOn.towedByConnection != null) {
             queueChainPull(vehicleOn, position, pull[1], pull[0]);
             return;

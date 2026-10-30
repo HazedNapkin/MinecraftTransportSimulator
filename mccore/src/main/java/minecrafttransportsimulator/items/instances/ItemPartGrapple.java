@@ -29,14 +29,16 @@ public class ItemPartGrapple extends AItemPart {
         super.addTooltipLines(tooltipLines, data);
         tooltipLines.add(LanguageSystem.ITEMINFO_GRAPPLE_RANGE.getCurrentValue() + definition.grapple.range);
         tooltipLines.add(LanguageSystem.ITEMINFO_GRAPPLE_REELSPEED.getCurrentValue() + definition.grapple.reelSpeed);
+        //Same as the part's defaults, with the variant's flags on top.  Variable modifiers can still change them
+        //on a placed part, but they need the part to run, so they can't show here.
         List<String> attachesTo = new ArrayList<>();
-        if (!definition.grapple.disableBlockAttach) {
+        if (!definition.grapple.disableBlockAttach && !subDefinition.grappleDisableBlockAttach) {
             attachesTo.add(LanguageSystem.ITEMINFO_GRAPPLE_BLOCKS.getCurrentValue());
         }
-        if (!definition.grapple.disableEntityAttach) {
+        if (!definition.grapple.disableEntityAttach && !subDefinition.grappleDisableEntityAttach) {
             attachesTo.add(LanguageSystem.ITEMINFO_GRAPPLE_ENTITIES.getCurrentValue());
         }
-        if (!definition.grapple.disableVehicleAttach) {
+        if (!definition.grapple.disableVehicleAttach && !subDefinition.grappleDisableVehicleAttach) {
             attachesTo.add(LanguageSystem.ITEMINFO_GRAPPLE_VEHICLES.getCurrentValue());
         }
         if (!attachesTo.isEmpty()) {

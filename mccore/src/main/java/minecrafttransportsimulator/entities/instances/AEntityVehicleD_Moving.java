@@ -124,10 +124,21 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     public boolean pitchHeldByGrapple;
     /**True if a grapple line is holding our roll this tick, so ground roll correction shouldn't level us.**/
     public boolean rollHeldByGrapple;
+    /**True if a grapple is carrying us up a wall this tick.  It sets our whole move from the wall's shape, so the ground and collision checks are skipped, the same as on a road.**/
+    public boolean climbingWithGrapple;
     /**Pulls from grapple lines on us or a vehicle we tow, applied in our next update.  Lines hooked into us from other vehicles only queue these on the server.**/
     public final List<PartGrapple.LinePull> grapplePulls = new ArrayList<>();
+    /**Motion a grapple line added this tick to keep the point it turned us about still.  It's a move for this tick only, so it's taken back off our motion next tick.**/
+    public final Point3D grappleTurnMotion = new Point3D();
+    /**Pitch past which clients don't correct their rotation towards the server.  See moveVehicle.**/
+    private static final double NEAR_UPRIGHT_PITCH = 70;
     /**Push out of a wall to apply after moving this tick, if a grapple line has dragged us into one.**/
     private Point3D grapplePushOut;
+    //Dev mode grapple movement log.  See logGrappleMovement.  Temporary.
+    private static final int GRAPPLE_LOG_AFTER_TICKS = 100;
+    private static final double GRAPPLE_LOG_WILD_MOVE = 0.5;
+    private static final double GRAPPLE_LOG_WILD_TURN = 10;
+    private long lastGrappleAttachedTick = -GRAPPLE_LOG_AFTER_TICKS - 1;
 
     //Wall checks for motion that doesn't come from our own wheels, such as a grapple line.
     /**How far we are pushed out of a wall each tick, in blocks.**/
@@ -249,10 +260,11 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             //Grapples go after our own forces, so their lines can override tyre grip and steering.
             world.beginProfiling("Grapples", false);
             updateGrapples();
-            world.beginProfiling("Summoning", false);
-            VehicleSummonManager.onVehicleTick((EntityVehicleF_Physics) this);
             world.beginProfiling("TotalMovement", false);
             moveVehicle();
+            if (ConfigSystem.settings.general.devMode.value && !grapples.isEmpty()) {
+                logGrappleMovement();
+            }
             if (!world.isClient()) {
                 adjustControlSurfaces();
             }
@@ -385,13 +397,67 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     }
 
     /**
+     * In dev mode, logs how we actually moved and turned this tick, on both sides, while a grapple line is
+     * attached and for {@link #GRAPPLE_LOG_AFTER_TICKS} after, so judder after a release shows up too.
+     * The move and turn are measured from where we were at the start of the tick, so they include
+     * everything: the line, a climb, ground handling, collisions, push-outs and client sync corrections.
+     * Ticks that move or turn a lot are marked WILD, so they're easy to find.  Temporary, for tracking down
+     * wild movement on grapples.
+     * <p>
+     * The turn is given as an angle about an axis in our own frame: x is pitch, y is yaw and z is roll.
+     */
+    private void logGrappleMovement() {
+        StringBuilder grappleStates = new StringBuilder();
+        boolean attached = false;
+        for (PartGrapple grapple : grapples) {
+            attached |= grapple.isAttached();
+            grappleStates.append(' ').append(grapple.getDebugState());
+        }
+        if (attached) {
+            lastGrappleAttachedTick = ticksExisted;
+        } else if (ticksExisted - lastGrappleAttachedTick > GRAPPLE_LOG_AFTER_TICKS) {
+            return;
+        }
+
+        //The turn this tick, in our own frame: the start-of-tick orientation taken back off the current one.
+        RotationMatrix turn = new RotationMatrix().multiplyTranspose(prevOrientation).multiply(orientation);
+        double turnAngle = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, (turn.m00 + turn.m11 + turn.m22 - 1) / 2D))));
+        Point3D turnAxis = new Point3D(turn.m21 - turn.m12, turn.m02 - turn.m20, turn.m10 - turn.m01);
+        if (turnAxis.length() > 1.0E-9) {
+            turnAxis.normalize();
+        }
+        Point3D moved = position.copy().subtract(prevPosition);
+        boolean wild = moved.length() > GRAPPLE_LOG_WILD_MOVE || turnAngle > GRAPPLE_LOG_WILD_TURN;
+
+        //Columns of the matrix are where our own axes point in the world.
+        InterfaceManager.coreInterface.logError(String.format("GrappleMove %s tick %d%s: climbing %b held %b/%b grounded %d pushOut %s | moved %.3f (%.3f %.3f %.3f) motion (%.3f %.3f %.3f) | turned %.2f about (%.2f %.2f %.2f) | forward (%.3f %.3f %.3f) up (%.3f %.3f %.3f) angles (%.2f %.2f %.2f) | client fix move (%.3f %.3f %.3f) turn (%.2f %.2f %.2f) | pos (%.2f %.2f %.2f) |%s",
+                world.isClient() ? "client" : "server", ticksExisted, wild ? " WILD" : "",
+                climbingWithGrapple, pitchHeldByGrapple, rollHeldByGrapple, groundDeviceCollective.groundedGroundDevices.size(), grapplePushOut,
+                moved.length(), moved.x, moved.y, moved.z, motion.x, motion.y, motion.z,
+                turnAngle, turnAxis.x, turnAxis.y, turnAxis.z,
+                orientation.m02, orientation.m12, orientation.m22, orientation.m01, orientation.m11, orientation.m21, orientation.angles.x, orientation.angles.y, orientation.angles.z,
+                clientDeltaMApplied.x, clientDeltaMApplied.y, clientDeltaMApplied.z, clientDeltaRApplied.x, clientDeltaRApplied.y, clientDeltaRApplied.z,
+                position.x, position.y, position.z, grappleStates));
+    }
+
+    /**
      * Updates all grapple lines on this vehicle, applying their forces to our motion.
      * If a line has dragged us into a wall, this also works out how to step us back out.
      */
     private void updateGrapples() {
         pitchHeldByGrapple = false;
         rollHeldByGrapple = false;
+        climbingWithGrapple = false;
         grapplePushOut = null;
+        //Left in our motion, last tick's turn shift would carry on as speed, and in the air nothing slows it.
+        //Each turn would then fling us further, so a vehicle hanging off a short line swung itself over the hook.
+        //Collisions and drag may have taken some of it off already, so don't take off more than is left.
+        if (!grappleTurnMotion.isZero()) {
+            motion.x -= getRemaining(motion.x, grappleTurnMotion.x);
+            motion.y -= getRemaining(motion.y, grappleTurnMotion.y);
+            motion.z -= getRemaining(motion.z, grappleTurnMotion.z);
+            grappleTurnMotion.set(0, 0, 0);
+        }
         if (!grapples.isEmpty()) {
             boolean attached = false;
             for (PartGrapple grapple : grapples) {
@@ -401,7 +467,8 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
                 }
             }
             //Only while attached, so we don't change how collisions are handled the rest of the time.
-            if (attached && towedByConnection == null) {
+            //Not while a grapple holds our pose, as that's already clear of the wall.
+            if (attached && towedByConnection == null && !climbingWithGrapple) {
                 grapplePushOut = findWallPushOut(getBoxesForWallChecks());
             }
         }
@@ -411,6 +478,13 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             }
             grapplePulls.clear();
         }
+    }
+
+    /**
+     * Returns how much of a past addition to one axis of our motion is still in it, without going past stopping.
+     */
+    private static double getRemaining(double motion, double added) {
+        return motion * added > 0 ? Math.signum(added) * Math.min(Math.abs(motion), Math.abs(added)) : 0;
     }
 
     @Override
@@ -894,7 +968,9 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             boolean fallingDown = motion.y < 0;
             lockedOnRoad = frontFollower != null && rearFollower != null;
             //If followers aren't valid, do normal logic.
-            if (!lockedOnRoad) {
+            //A grapple carrying us up a wall has already put our wheels on it, so skip this then too.
+            //Otherwise the ground boost lifts wheels that sit on the wall, and the grapple pulls them back each tick.
+            if (!lockedOnRoad && !climbingWithGrapple) {
                 //If any ground devices are collided after our movement, apply corrections to prevent this.
                 //The first correction we apply is +y motion.  This counteracts gravity, and any GDBs that may
                 //have been moved into the ground by the application of our motion and rotation.  We do this before collision
@@ -1072,11 +1148,33 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
                 //yaw rotation in the XZ plane, but instead in that relative-rotated plane.
                 //To account for this, we get the angle delta between the prior and current orientation, and use that for the delta. 
                 //Though before we do this we check if those angles were non-zero, as no need to do math if they are.
-                if (!rotationApplied.angles.isZero()) {
+                //A grapple climb sets our orientation from the wall on both sides, so it doesn't sync by these deltas.
+                //It passes through pitching straight up, where the angles' yaw and roll can flip by 180 from one tick
+                //to the next, and the server and client wouldn't flip on the same ticks.  The server leaves it out too.
+                if (!rotationApplied.angles.isZero() && !climbingWithGrapple) {
                     rotationApplied.angles.set(orientation.angles).subtract(prevOrientation.angles).clamp180();
                     clientDeltaR.add(rotationApplied.angles);
                 }
-                clientDeltaRApplied.set(serverDeltaR).subtract(clientDeltaR);
+                if (climbingWithGrapple) {
+                    //Drop any correction still pending from before the climb, or it turns us off the server once the climb ends.
+                    clientDeltaR.set(serverDeltaR);
+                    clientDeltaRApplied.set(0, 0, 0);
+                } else {
+                    //Each side adds up its own angle changes, each wrapped to +/-180.  Pitched near straight up or down,
+                    //yaw and roll can swing over 180 in one tick, so the totals can drift whole turns apart with no real
+                    //difference in our orientation.  Drop those whole turns, or we'd spin through them on the ground.
+                    clientDeltaRApplied.set(serverDeltaR).subtract(clientDeltaR);
+                    clientDeltaR.add(clientDeltaRApplied);
+                    clientDeltaRApplied.clamp180();
+                    clientDeltaR.subtract(clientDeltaRApplied);
+                    if (Math.abs(orientation.angles.x) > NEAR_UPRIGHT_PITCH) {
+                        //Pitched near straight up or down, yaw and roll swing about from tick to tick and the
+                        //difference between them is mostly noise, so correcting it would wiggle us.  Hold off until
+                        //we're back away from upright.  Both sides keep adding up their angle changes meanwhile, so
+                        //the difference is still right by then, give or take whole turns.
+                        clientDeltaRApplied.set(0, 0, 0);
+                    }
+                }
                 if (!clientDeltaRApplied.isZero()) {
                     clientDeltaRApplied.x *= Math.abs(clientDeltaRApplied.x);
                     clientDeltaRApplied.y *= Math.abs(clientDeltaRApplied.y);
@@ -1152,7 +1250,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
      * every move and turn is blocked, so we stick.
      * -clampMotionToWalls: cuts motion on any horizontal axis that would put a wheel or box into a
      * block, so we slide along the wall instead.
-     * -limitTiltToWalls / limitTurnToWalls: shrinks a tilt or turn that would swing a wheel or collision box into a block.
+     * -limitTurnToWalls: shrinks a turn that would swing a wheel or collision box into a block.
      * -findWallPushOut: steps us out a little each tick if we're already stuck, towards the nearest free spot.
      *
      * Wheels are checked by their top half only, so the ground they sit on (or a slab they're climbing) doesn't count.
@@ -1213,19 +1311,10 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     }
 
     /**
-     * Returns the largest of the tilt, half of it or a quarter of it that doesn't swing a box into a
-     * block, or 0 if none fit. Makes sure the pitch change the grapple wants to apply doesn't swing part of the vehicle into a block.
+     * Returns the largest of the turn, half of it or a quarter of it that doesn't swing a wheel or collision box
+     * into a block, or 0 if none fit.  For turns the grapple line puts on us.
      *
      * @param pivot the point we turn about, in our own frame.
-     * @param tilt the pitch to apply, in degrees.  Positive is nose down.
-     */
-    public double limitTiltToWalls(List<BoundingBox> freeBoxes, Point3D pivot, double tilt) {
-        return limitTurnToWalls(freeBoxes, pivot, new Point3D(1, 0, 0), tilt);
-    }
-
-    /**
-     * Like {@link #limitTiltToWalls(List, Point3D, double)}, but for a turn about any axis.
-     *
      * @param axis the axis we turn about, in our own frame.  Must be normalized.
      * @param angle the turn to apply, in degrees, right-handed about the axis.
      */
@@ -1401,7 +1490,12 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             //Internal call, add normally and send packet if needed.
             //Send on rotation-only ticks too, otherwise clients never get rotation done in place
             //(like levelling while hovering) and rubber-band back towards the old angle.
-            boolean rotated = !orientation.angles.equals(prevOrientation.angles);
+            //A grapple climb sets our orientation on clients too, so leave it out.  See the client side in moveVehicle.
+            boolean rotated = !climbingWithGrapple && !orientation.angles.equals(prevOrientation.angles);
+            if (climbingWithGrapple) {
+                //Trailers add this to their own deltas, so don't leave a stale one for them.
+                serverDeltaRApplied.set(0, 0, 0);
+            }
             if (!motionApplied.isZero() || rotated) {
                 serverDeltaMApplied.set(motionApplied);
                 serverDeltaM.add(motionApplied);

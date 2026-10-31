@@ -545,18 +545,14 @@ public class PartGrapple extends APart {
         double range = rangeVar.currentValue;
         Point3D target;
         IWrapperEntity controller = getController();
-        AEntityB_Existing inputSeat = null;
-        Point3D sight = null;
         if (controller != null) {
             //A custom camera shows the controller the world from somewhere other than their eyes, so sight along
             //the camera instead, or the crosshair won't be on what the middle of their screen is on.
             //Everywhere but the controller's own client, use the camera aim they sent, as nothing else knows it.
             AEntityB_Existing seat = controller.getEntityRiding();
             Point3D eye;
+            Point3D sight;
             if (seat != null && getLocalCameraAim(controller, seat)) {
-                if (seat.isRiderCameraInputActive) {
-                    inputSeat = seat;
-                }
                 eye = localCameraOffset.copy().rotate(seat.orientation).add(seat.position);
                 sight = new Point3D(0, 0, range).rotate(new RotationMatrix().setToAngles(localCameraAngles)).rotate(seat.orientation);
             } else if (seat != null && controller.getID().equals(cameraAimControllerID)) {
@@ -579,7 +575,8 @@ public class PartGrapple extends APart {
         Point3D direction = target.subtract(position).normalize();
         double maxAimAngle = maxAimAngleVar.currentValue;
         if (maxAimAngle > 0) {
-            //Keep the shot inside the cone about the launcher's +Z axis.
+            //Keep the shot inside the cone about the launcher's +Z axis.  This only limits the shot, never where the
+            //controller can look: packs that want the view to stop at the cone's edge can clamp the camera's animations.
             Point3D forward = new Point3D(0, 0, 1).rotate(orientation);
             double angle = Math.toDegrees(Math.acos(forward.dotProduct(direction, true)));
             if (angle > maxAimAngle) {
@@ -589,14 +586,6 @@ public class PartGrapple extends APart {
                     turnAxis.set(0, 1, 0).rotate(orientation);
                 }
                 direction.set(forward).rotate(new RotationMatrix().setToAxisAngle(turnAxis.normalize(), maxAimAngle));
-                if (inputSeat != null) {
-                    //Turn the mouse input back by as much as the shot was, so it stops at the edge of the cone
-                    //like the launcher does, rather than running on past it with nothing moving.
-                    Point3D input = new Point3D(0, 0, 1).rotate(inputSeat.riderCameraInputOrientation).rotate(inputSeat.orientation);
-                    input.rotate(new RotationMatrix().setToAxisAngle(turnAxis, maxAimAngle - angle)).reOrigin(inputSeat.orientation);
-                    inputSeat.riderCameraInputOrientation.angles.set(getPitch(input), getYaw(input), 0);
-                    inputSeat.riderCameraInputOrientation.updateToAngles();
-                }
             }
         }
         return direction;

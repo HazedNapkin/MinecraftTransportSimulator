@@ -452,13 +452,12 @@ public class GUIOverlay extends AGUIBase {
     }
 
     /**
-     * Points the grapple crosshair at where the first ready grapple on the player's vehicle would hook.
-     * Only shown while the player is in the controller seat and the line is in, as that's when
-     * firing goes where they're looking.
+     * Points the grapple crosshair at where the first ready grapple the player controls would hook.
+     * Only shown while the line is in, as that's when firing goes where they're looking.
      */
     private void updateGrappleCrosshair(IWrapperPlayer player) {
         AEntityB_Existing entityRiding = player.getEntityRiding();
-        if (!(entityRiding instanceof PartSeat) || !((PartSeat) entityRiding).placementDefinition.isController) {
+        if (!(entityRiding instanceof PartSeat)) {
             return;
         }
         EntityVehicleF_Physics vehicle = ((PartSeat) entityRiding).vehicleOn;
@@ -466,7 +465,7 @@ public class GUIOverlay extends AGUIBase {
             return;
         }
         for (PartGrapple grapple : vehicle.grapples) {
-            if (grapple.isValid && grapple.isActiveVar.isActive && !grapple.outOfHealth && !grapple.isLineOut()) {
+            if (grapple.isValid && grapple.isActiveVar.isActive && !grapple.outOfHealth && !grapple.isLineOut() && player.equals(grapple.getController())) {
                 grappleCrosshair.applySmoothing = vehicle.definition.motorized.isAircraft;
                 grappleCrosshair.pendingImpactPoint = grapple.getAimPoint();
                 grappleCrosshair.vehicleRef = vehicle;

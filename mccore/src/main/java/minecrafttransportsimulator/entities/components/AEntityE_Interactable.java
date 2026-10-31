@@ -383,12 +383,25 @@ public abstract class AEntityE_Interactable<JSONDefinition extends AJSONInteract
     }
 
     /**
+     * Returns true if the rider of the passed-in seat may change the passed-in variable of ours with a custom keybind.
+     * The seat is null if the keypress didn't come from a seat.  By default anyone may.
+     */
+    public boolean canSeatChangeVariable(ComputedVariable variable, AEntityB_Existing seat) {
+        return true;
+    }
+
+    /**
      * Handles the custom keypress for this entity.
      */
-    public final void handleCustomKeypress(byte keyIndex, boolean keyPressed) {
+    public final void handleCustomKeypress(byte keyIndex, boolean keyPressed, AEntityB_Existing seat) {
         if (definition.customKeybinds != null) {
             definition.customKeybinds.forEach(customKeybind -> {
                 if (customKeybind.keyIndex == keyIndex) {
+                    //Check the entity the variable is on lets this seat change it, as it may be on another part.
+                    ComputedVariable variable = getOrCreateVariable(customKeybind.action.variable);
+                    if (variable.entity instanceof AEntityE_Interactable && !((AEntityE_Interactable<?>) variable.entity).canSeatChangeVariable(variable, seat)) {
+                        return;
+                    }
                     performAction(customKeybind.action, keyPressed);
                     return;
                 }

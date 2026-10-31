@@ -261,55 +261,58 @@ public final class ControlSystem {
             controlGun(multipart, ControlsKeyboard.CAR_GUN_FIRE, ControlsKeyboard.CAR_GUN_SWITCH);
         }
 
+        //Send custom keypresses from our seat, so parts that only some seats can use know where they came from.
+        AEntityB_Existing riding = clientPlayer.getEntityRiding();
+        AEntityF_Multipart<?> keypressEntity = riding instanceof PartSeat ? (PartSeat) riding : multipart;
         if (ControlsKeyboard.GENERAL_CUSTOM1.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 1, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 1, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM1.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 1, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 1, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM2.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 2, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 2, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM2.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 2, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 2, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM3.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 3, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 3, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM3.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 3, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 3, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM4.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 4, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 4, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM4.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 4, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 4, false));
         }
 		if (ControlsKeyboard.GENERAL_CUSTOM5.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 5, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 5, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM5.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 5, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 5, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM6.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 6, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 6, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM6.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 6, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 6, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM7.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 7, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 7, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM7.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 7, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 7, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM8.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 8, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 8, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM8.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 8, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 8, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM9.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 9, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 9, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM9.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 9, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 9, false));
         }
         if (ControlsKeyboard.GENERAL_CUSTOM10.isPressed()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 10, true));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 10, true));
         } else if (ControlsKeyboard.GENERAL_CUSTOM10.justReleased()) {
-            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(multipart, 10, false));
+            InterfaceManager.packetInterface.sendToServer(new PacketEntityCustomKeypress(keypressEntity, 10, false));
         }
     }
 

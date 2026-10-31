@@ -245,6 +245,8 @@ public class PartGrapple extends APart {
     //Launch direction for the current tick, so the turret and crosshair don't raycast every frame.
     private final Point3D launchDirection = new Point3D();
     private long launchDirectionTick = -1;
+    //Seats that control us: seats on us, the seat we're on, and seats linked to us.  If there are none, the vehicle's controller does.
+    private final List<PartSeat> seatsControllingGrapple = new ArrayList<>();
     //Aim sent by a controller looking through a custom camera: where the camera is and which way it aims, relative to their seat.
     private UUID cameraAimControllerID;
     private final Point3D cameraAimOffset = new Point3D();
@@ -370,6 +372,57 @@ public class PartGrapple extends APart {
             data.setPoint3d(HOOK_OFFSET_TAG, hookOffset);
         }
         return data;
+    }
+
+    @Override
+    public void updatePartList() {
+        super.updatePartList();
+        seatsControllingGrapple.clear();
+        addLinkedPartsToList(seatsControllingGrapple, PartSeat.class);
+        if (entityOn instanceof PartSeat && !seatsControllingGrapple.contains(entityOn)) {
+            seatsControllingGrapple.add((PartSeat) entityOn);
+        }
+        for (APart part : allParts) {
+            if (part instanceof PartSeat && !seatsControllingGrapple.contains(part)) {
+                seatsControllingGrapple.add((PartSeat) part);
+            }
+        }
+    }
+
+    /**
+     * Returns the rider of the first of our seats that has one.  If we have no seats, returns the vehicle's
+     * controller, so grapples not tied to seats work from the driver's seat.
+     */
+    @Override
+    public IWrapperEntity getController() {
+        if (seatsControllingGrapple.isEmpty()) {
+            return super.getController();
+        }
+        for (PartSeat seat : seatsControllingGrapple) {
+            if (seat.rider != null) {
+                return seat.rider;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if the rider of the passed-in seat can control us.  Anyone can if we have no seats.
+     */
+    private boolean canBeControlledFrom(AEntityB_Existing seat) {
+        return seatsControllingGrapple.isEmpty() || seatsControllingGrapple.contains(seat);
+    }
+
+    @Override
+    public boolean canSeatChangeVariable(ComputedVariable variable, AEntityB_Existing seat) {
+        if (isInputVariable(variable, fireVar) || isInputVariable(variable, reelVar) || isInputVariable(variable, slackVar)) {
+            return canBeControlledFrom(seat);
+        }
+        return super.canSeatChangeVariable(variable, seat);
+    }
+
+    private static boolean isInputVariable(ComputedVariable variable, ComputedVariable input) {
+        return variable == input || variable == input.invertedVariable;
     }
 
     /**

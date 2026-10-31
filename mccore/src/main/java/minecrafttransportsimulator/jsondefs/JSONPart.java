@@ -713,8 +713,16 @@ public class JSONPart extends AJSONPartProvider {
         public float minLength;
 
         @ModifiableValue
-        @JSONDescription("The widest angle, in degrees from the part's +Z axis, that the hook can be fired at.  If the controller aims further out than this, the hook is fired at the edge of this cone instead, and the crosshair stops at its edge.  This never stops the controller looking further: to stop the view at the edge too, clamp the camera's animations.  0 (default) lets the hook be fired in any direction.")
+        @JSONDescription("The widest angle, in degrees from the part's +Z axis (or from the direction aimStartPitch and aimStartYaw turn it to), that the hook can be fired at.  If the controller aims further out than this, the hook is fired at the edge of this cone instead, and the crosshair stops at its edge.  This never stops the controller looking further: to stop the view at the edge too, clamp the camera's animations.  0 (default) lets the hook be fired in any direction.")
         public float maxAimAngle;
+
+        @ModifiableValue
+        @JSONDescription("Pitches the middle of the maxAimAngle cone away from the part's +Z axis, in degrees.  Positive pitches it down, so 90 with a maxAimAngle of 45 makes a grapple that can only fire downwards, up to 45 degrees from straight down.  With nobody controlling it, the hook is fired straight along the cone's middle.  Defaults to 0.")
+        public float aimStartPitch;
+
+        @ModifiableValue
+        @JSONDescription("Yaws the middle of the maxAimAngle cone away from the part's +Z axis, in degrees, the same way as other yaw rotations, so a grapple can fire out to one side.  This swings it round the part's vertical axis after aimStartPitch tilts it, so a pitched cone stays tilted by the same amount.  Defaults to 0.")
+        public float aimStartYaw;
 
         @ModifiableValue
         @JSONDescription("How much damage the hook does to an entity or vehicle when it sticks into it.  This is raw damage: unlike bullets, it is not scaled by speed or by the bullet damage config factors.  It does nothing to blocks, or when the hook bounces off.  0 (default) does no damage.")

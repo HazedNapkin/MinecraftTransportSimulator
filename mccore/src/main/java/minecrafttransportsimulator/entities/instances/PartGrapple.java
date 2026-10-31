@@ -174,7 +174,8 @@ public class PartGrapple extends APart {
     private final ComputedVariable winchForceVar;
     private final ComputedVariable breakForceVar;
     private final ComputedVariable minLengthVar;
-    private final ComputedVariable maxAimAngleVar;
+    private final ComputedVariable maxAimAngleHorizontalVar;
+    private final ComputedVariable maxAimAngleVerticalVar;
     private final ComputedVariable aimStartPitchVar;
     private final ComputedVariable aimStartYawVar;
     private final ComputedVariable hookDamageVar;
@@ -284,7 +285,8 @@ public class PartGrapple extends APart {
         addVariable(this.winchForceVar = new ComputedVariable(this, "winchForce"));
         addVariable(this.breakForceVar = new ComputedVariable(this, "breakForce"));
         addVariable(this.minLengthVar = new ComputedVariable(this, "minLength"));
-        addVariable(this.maxAimAngleVar = new ComputedVariable(this, "maxAimAngle"));
+        addVariable(this.maxAimAngleHorizontalVar = new ComputedVariable(this, "maxAimAngleHorizontal"));
+        addVariable(this.maxAimAngleVerticalVar = new ComputedVariable(this, "maxAimAngleVertical"));
         addVariable(this.aimStartPitchVar = new ComputedVariable(this, "aimStartPitch"));
         addVariable(this.aimStartYawVar = new ComputedVariable(this, "aimStartYaw"));
         addVariable(this.hookDamageVar = new ComputedVariable(this, "hookDamage"));
@@ -326,7 +328,8 @@ public class PartGrapple extends APart {
         winchForceVar.setTo(definition.grapple.winchForce, false);
         breakForceVar.setTo(definition.grapple.breakForce, false);
         minLengthVar.setTo(definition.grapple.minLength, false);
-        maxAimAngleVar.setTo(definition.grapple.maxAimAngle, false);
+        maxAimAngleHorizontalVar.setTo(definition.grapple.maxAimAngleHorizontal, false);
+        maxAimAngleVerticalVar.setTo(definition.grapple.maxAimAngleVertical, false);
         aimStartPitchVar.setTo(definition.grapple.aimStartPitch, false);
         aimStartYawVar.setTo(definition.grapple.aimStartYaw, false);
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
@@ -643,19 +646,29 @@ public class PartGrapple extends APart {
         }
 
         Point3D direction = target.subtract(position).normalize();
-        double maxAimAngle = maxAimAngleVar.currentValue;
-        if (maxAimAngle > 0) {
-            //Keep the shot inside the cone about the aim start direction.  This only limits the shot, never where the
-            //controller can look: packs that want the view to stop at the cone's edge can clamp the camera's animations.
-            Point3D forward = getAimLocal(new Point3D(0, 0, 1)).rotate(orientation);
-            double angle = Math.toDegrees(Math.acos(forward.dotProduct(direction, true)));
-            if (angle > maxAimAngle) {
-                Point3D turnAxis = forward.crossProduct(direction);
-                if (turnAxis.length() < 1.0E-6) {
-                    //Aimed straight backwards, so any axis square to the cone's middle will do.
-                    turnAxis = getAimLocal(new Point3D(0, 1, 0)).rotate(orientation);
-                }
-                direction.set(forward).rotate(new RotationMatrix().setToAxisAngle(turnAxis.normalize(), maxAimAngle));
+        double maxHorizontal = maxAimAngleHorizontalVar.currentValue;
+        double maxVertical = maxAimAngleVerticalVar.currentValue;
+        if (maxHorizontal > 0 || maxVertical > 0) {
+            //Keep the shot's yaw and pitch from the aim start direction inside their limits.  This only limits the shot, never where
+            //the controller can look: packs that want the view to stop at the edge can clamp the camera's animations.
+            RotationMatrix aimStart = getAimStartRotation();
+            Point3D local = direction.copy().reOrigin(orientation);
+            if (aimStart != null) {
+                local = aimStart.reOrigin(local);
+            }
+            double yaw = getYaw(local);
+            double pitch = getPitch(local);
+            boolean clamped = false;
+            if (maxHorizontal > 0 && Math.abs(yaw) > maxHorizontal) {
+                yaw = Math.copySign(maxHorizontal, yaw);
+                clamped = true;
+            }
+            if (maxVertical > 0 && Math.abs(pitch) > maxVertical) {
+                pitch = Math.copySign(maxVertical, pitch);
+                clamped = true;
+            }
+            if (clamped) {
+                direction.set(getAimLocal(new Point3D(0, 0, 1).rotate(new RotationMatrix().setToAngles(new Point3D(pitch, yaw, 0))))).rotate(orientation);
             }
         }
         return direction;
@@ -665,9 +678,17 @@ public class PartGrapple extends APart {
      * Turns the part-local vector by aimStartPitch and aimStartYaw, so +Z becomes the middle of the aim cone.
      */
     private Point3D getAimLocal(Point3D local) {
+        RotationMatrix aimStart = getAimStartRotation();
+        return aimStart != null ? local.rotate(aimStart) : local;
+    }
+
+    /**
+     * Returns the rotation from the part's +Z to the aim start direction, or null if aimStartPitch and aimStartYaw are both 0.
+     */
+    private RotationMatrix getAimStartRotation() {
         double pitch = aimStartPitchVar.currentValue;
         double yaw = aimStartYawVar.currentValue;
-        return pitch != 0 || yaw != 0 ? local.rotate(new RotationMatrix().setToAngles(new Point3D(pitch, yaw, 0))) : local;
+        return pitch != 0 || yaw != 0 ? new RotationMatrix().setToAngles(new Point3D(pitch, yaw, 0)) : null;
     }
 
     /**
@@ -2913,7 +2934,7 @@ public class PartGrapple extends APart {
      * While the line is out, a turning launcher points from its (moved) tip straight at the hook,
      * leaving the line angles near zero.  A fixed launcher stays put and the line angles do the work.
      * With the line in, a turning launcher points where the hook would be fired: where the controller is
-     * looking, kept inside maxAimAngle.
+     * looking, kept inside maxAimAngleHorizontal and maxAimAngleVertical.
      */
     private double[] getAim(float partialTicks) {
         if (aimTick == ticksExisted && aimPartialTicks == partialTicks) {
@@ -2959,7 +2980,7 @@ public class PartGrapple extends APart {
             aim[0] = 0;
             aim[1] = 0;
         } else {
-            //Point the barrel the way the hook would be fired, so it stays inside maxAimAngle.
+            //Point the barrel the way the hook would be fired, so it stays inside maxAimAngleHorizontal and maxAimAngleVertical.
             Point3D direction = getCachedLaunchDirection().reOrigin(orientation);
             aim[0] = getYaw(direction);
             aim[1] = getPitch(direction);

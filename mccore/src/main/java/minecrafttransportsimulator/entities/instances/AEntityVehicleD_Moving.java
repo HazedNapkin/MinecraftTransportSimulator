@@ -125,7 +125,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     public boolean rollHeldByGrapple;
     /**True if a grapple is carrying us up a wall this tick.  It sets our whole move from the wall's shape, so the ground and collision checks are skipped, the same as on a road.**/
     public boolean climbingWithGrapple;
-    /**Pulls from grapple lines on us or a vehicle we tow, applied in our next update.  Lines hooked into us from other vehicles only queue these on the server.**/
+    /**Pulls from grapple lines on us or a vehicle we tow, applied in our next update.**/
     public final List<PartGrapple.LinePull> grapplePulls = new ArrayList<>();
     /**Motion a grapple line added this tick to keep the point it turned us about still.  It's a move for this tick only, so it's taken back off our motion next tick.**/
     public final Point3D grappleTurnMotion = new Point3D();

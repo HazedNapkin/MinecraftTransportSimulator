@@ -175,6 +175,8 @@ public class PartGrapple extends APart {
     private final ComputedVariable breakForceVar;
     private final ComputedVariable minLengthVar;
     private final ComputedVariable maxAimAngleVar;
+    private final ComputedVariable aimStartPitchVar;
+    private final ComputedVariable aimStartYawVar;
     private final ComputedVariable hookDamageVar;
     private final ComputedVariable isFixedVar;
     private final ComputedVariable disableBlockAttachVar;
@@ -283,6 +285,8 @@ public class PartGrapple extends APart {
         addVariable(this.breakForceVar = new ComputedVariable(this, "breakForce"));
         addVariable(this.minLengthVar = new ComputedVariable(this, "minLength"));
         addVariable(this.maxAimAngleVar = new ComputedVariable(this, "maxAimAngle"));
+        addVariable(this.aimStartPitchVar = new ComputedVariable(this, "aimStartPitch"));
+        addVariable(this.aimStartYawVar = new ComputedVariable(this, "aimStartYaw"));
         addVariable(this.hookDamageVar = new ComputedVariable(this, "hookDamage"));
         addVariable(this.isFixedVar = new ComputedVariable(this, "isFixed"));
         addVariable(this.disableBlockAttachVar = new ComputedVariable(this, "disableBlockAttach"));
@@ -323,6 +327,8 @@ public class PartGrapple extends APart {
         breakForceVar.setTo(definition.grapple.breakForce, false);
         minLengthVar.setTo(definition.grapple.minLength, false);
         maxAimAngleVar.setTo(definition.grapple.maxAimAngle, false);
+        aimStartPitchVar.setTo(definition.grapple.aimStartPitch, false);
+        aimStartYawVar.setTo(definition.grapple.aimStartYaw, false);
         hookDamageVar.setTo(definition.grapple.hookDamage, false);
         isFixedVar.setTo(definition.grapple.isFixed ? 1 : 0, false);
         //The variant can add to these, so its item tooltip can show them.  See ItemPartGrapple.
@@ -633,26 +639,35 @@ public class PartGrapple extends APart {
             Hit aimHit = findHit(eye, eyeEnd);
             target = aimHit != null ? aimHit.position : eyeEnd;
         } else {
-            target = new Point3D(0, 0, range).rotate(orientation).add(position);
+            target = getAimLocal(new Point3D(0, 0, range)).rotate(orientation).add(position);
         }
 
         Point3D direction = target.subtract(position).normalize();
         double maxAimAngle = maxAimAngleVar.currentValue;
         if (maxAimAngle > 0) {
-            //Keep the shot inside the cone about the launcher's +Z axis.  This only limits the shot, never where the
+            //Keep the shot inside the cone about the aim start direction.  This only limits the shot, never where the
             //controller can look: packs that want the view to stop at the cone's edge can clamp the camera's animations.
-            Point3D forward = new Point3D(0, 0, 1).rotate(orientation);
+            Point3D forward = getAimLocal(new Point3D(0, 0, 1)).rotate(orientation);
             double angle = Math.toDegrees(Math.acos(forward.dotProduct(direction, true)));
             if (angle > maxAimAngle) {
                 Point3D turnAxis = forward.crossProduct(direction);
                 if (turnAxis.length() < 1.0E-6) {
-                    //Aimed straight backwards, so any axis square to +Z will do.
-                    turnAxis.set(0, 1, 0).rotate(orientation);
+                    //Aimed straight backwards, so any axis square to the cone's middle will do.
+                    turnAxis = getAimLocal(new Point3D(0, 1, 0)).rotate(orientation);
                 }
                 direction.set(forward).rotate(new RotationMatrix().setToAxisAngle(turnAxis.normalize(), maxAimAngle));
             }
         }
         return direction;
+    }
+
+    /**
+     * Turns the part-local vector by aimStartPitch and aimStartYaw, so +Z becomes the middle of the aim cone.
+     */
+    private Point3D getAimLocal(Point3D local) {
+        double pitch = aimStartPitchVar.currentValue;
+        double yaw = aimStartYawVar.currentValue;
+        return pitch != 0 || yaw != 0 ? local.rotate(new RotationMatrix().setToAngles(new Point3D(pitch, yaw, 0))) : local;
     }
 
     /**

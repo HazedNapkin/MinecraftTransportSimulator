@@ -713,7 +713,7 @@ public class JSONPart extends AJSONPartProvider {
         public float minLength;
 
         @ModifiableValue
-        @JSONDescription("The widest angle, in degrees from the part's +Z axis, that the hook can be fired at.  If the controller aims further out than this, the hook is fired at the edge of this cone instead.  0 (default) lets the hook be fired in any direction.")
+        @JSONDescription("The widest angle, in degrees from the part's +Z axis, that the hook can be fired at.  If the controller aims further out than this, the hook is fired at the edge of this cone instead, and the crosshair stops at its edge.  This never stops the controller looking further: to stop the view at the edge too, clamp the camera's animations.  0 (default) lets the hook be fired in any direction.")
         public float maxAimAngle;
 
         @ModifiableValue

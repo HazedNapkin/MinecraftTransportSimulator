@@ -245,6 +245,8 @@ public class PartGrapple extends APart {
     //Launch direction for the current tick, so the turret and crosshair don't raycast every frame.
     private final Point3D launchDirection = new Point3D();
     private long launchDirectionTick = -1;
+    //Seats that control us: seats on us, the seat we're on, and seats linked to us.  If there are none, the vehicle's controller does.
+    private final List<PartSeat> seatsControllingGrapple = new ArrayList<>();
     //Aim sent by a controller looking through a custom camera: where the camera is and which way it aims, relative to their seat.
     private UUID cameraAimControllerID;
     private final Point3D cameraAimOffset = new Point3D();
@@ -372,6 +374,57 @@ public class PartGrapple extends APart {
         return data;
     }
 
+    @Override
+    public void updatePartList() {
+        super.updatePartList();
+        seatsControllingGrapple.clear();
+        addLinkedPartsToList(seatsControllingGrapple, PartSeat.class);
+        if (entityOn instanceof PartSeat && !seatsControllingGrapple.contains(entityOn)) {
+            seatsControllingGrapple.add((PartSeat) entityOn);
+        }
+        for (APart part : allParts) {
+            if (part instanceof PartSeat && !seatsControllingGrapple.contains(part)) {
+                seatsControllingGrapple.add((PartSeat) part);
+            }
+        }
+    }
+
+    /**
+     * Returns the rider of the first of our seats that has one.  If we have no seats, returns the vehicle's
+     * controller, so grapples not tied to seats work from the driver's seat.
+     */
+    @Override
+    public IWrapperEntity getController() {
+        if (seatsControllingGrapple.isEmpty()) {
+            return super.getController();
+        }
+        for (PartSeat seat : seatsControllingGrapple) {
+            if (seat.rider != null) {
+                return seat.rider;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if the rider of the passed-in seat can control us.  Anyone can if we have no seats.
+     */
+    private boolean canBeControlledFrom(AEntityB_Existing seat) {
+        return seatsControllingGrapple.isEmpty() || seatsControllingGrapple.contains(seat);
+    }
+
+    @Override
+    public boolean canSeatChangeVariable(ComputedVariable variable, AEntityB_Existing seat) {
+        if (isInputVariable(variable, fireVar) || isInputVariable(variable, reelVar) || isInputVariable(variable, slackVar)) {
+            return canBeControlledFrom(seat);
+        }
+        return super.canSeatChangeVariable(variable, seat);
+    }
+
+    private static boolean isInputVariable(ComputedVariable variable, ComputedVariable input) {
+        return variable == input || variable == input.invertedVariable;
+    }
+
     /**
      * Called by the vehicle we are on, on both client and server, once per tick just before it moves.
      */
@@ -383,6 +436,14 @@ public class PartGrapple extends APart {
             updateRenderAnchor();
             sendCameraAim();
             logClientHookDrift();
+
+            //Pull the hooked vehicle's share here too, the same as the server.  Clients only get its position from the
+            //server, so without this our copy of it never moves by itself, falls blocks behind, and the line drags us back to it.
+            AEntityF_Multipart<?> hooked = getHookedMultipart();
+            double targetShare = 1 - selfShareVar.currentValue;
+            if (hooked instanceof EntityVehicleF_Physics && targetShare > 0) {
+                pullVehicle((EntityVehicleF_Physics) hooked, getLineAnchor(), ropeVar.currentValue, targetShare);
+            }
         }
 
         //Both sides run the vehicle's side of the line so clients don't have to wait on server corrections.
@@ -869,7 +930,9 @@ public class PartGrapple extends APart {
         Point3D towards = toLauncher.scale(1D / distance);
         Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
         ChainPull pull = getChainPull(other, towards, distance - rope, share, launcherMotion, getWinchLimit());
-        tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
+        if (!world.isClient()) {
+            tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
+        }
         logTowPull("towed", other, towards, distance - rope, share, launcherMotion, pull);
         queueChainPull(other, anchor, pull.force, pull.motion);
     }
@@ -2998,7 +3061,7 @@ public class PartGrapple extends APart {
 
     /**
      * A pull from a grapple line, on the vehicle the hook is in or one further up its tow chain.
-     * Queued by the server on that vehicle, which applies it in its own update.
+     * Queued on that vehicle, which applies it in its own update.
      */
     public static class LinePull {
         /**Where the line pulls, in world coordinates.**/

@@ -436,6 +436,14 @@ public class PartGrapple extends APart {
             updateRenderAnchor();
             sendCameraAim();
             logClientHookDrift();
+
+            //Pull the hooked vehicle's share here too, the same as the server.  Clients only get its position from the
+            //server, so without this our copy of it never moves by itself, falls blocks behind, and the line drags us back to it.
+            AEntityF_Multipart<?> hooked = getHookedMultipart();
+            double targetShare = 1 - selfShareVar.currentValue;
+            if (hooked instanceof EntityVehicleF_Physics && targetShare > 0) {
+                pullVehicle((EntityVehicleF_Physics) hooked, getLineAnchor(), ropeVar.currentValue, targetShare);
+            }
         }
 
         //Both sides run the vehicle's side of the line so clients don't have to wait on server corrections.
@@ -922,7 +930,9 @@ public class PartGrapple extends APart {
         Point3D towards = toLauncher.scale(1D / distance);
         Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
         ChainPull pull = getChainPull(other, towards, distance - rope, share, launcherMotion, getWinchLimit());
-        tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
+        if (!world.isClient()) {
+            tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
+        }
         logTowPull("towed", other, towards, distance - rope, share, launcherMotion, pull);
         queueChainPull(other, anchor, pull.force, pull.motion);
     }
@@ -3051,7 +3061,7 @@ public class PartGrapple extends APart {
 
     /**
      * A pull from a grapple line, on the vehicle the hook is in or one further up its tow chain.
-     * Queued by the server on that vehicle, which applies it in its own update.
+     * Queued on that vehicle, which applies it in its own update.
      */
     public static class LinePull {
         /**Where the line pulls, in world coordinates.**/

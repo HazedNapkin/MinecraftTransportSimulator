@@ -716,15 +716,19 @@ public class JSONPart extends AJSONPartProvider {
         public float minLength;
 
         @ModifiableValue
-        @JSONDescription("The widest angle, in degrees from the part's +Z axis (or from the direction aimStartPitch and aimStartYaw turn it to), that the hook can be fired at.  If the controller aims further out than this, the hook is fired at the edge of this cone instead, and the crosshair stops at its edge.  This never stops the controller looking further: to stop the view at the edge too, clamp the camera's animations.  0 (default) lets the hook be fired in any direction.")
-        public float maxAimAngle;
+        @JSONDescription("The furthest the hook can be fired to either side, in degrees of yaw from the part's +Z axis (or from the direction aimStartPitch and aimStartYaw turn it to).  If the controller aims further round than this, the hook is fired at this limit instead, and the crosshair stops there.  This never stops the controller looking further: to stop the view at the limit too, clamp the camera's animations.  0 (default) means no limit.")
+        public float maxAimAngleHorizontal;
 
         @ModifiableValue
-        @JSONDescription("Pitches the middle of the maxAimAngle cone away from the part's +Z axis, in degrees.  Positive pitches it down, so 90 with a maxAimAngle of 45 makes a grapple that can only fire downwards, up to 45 degrees from straight down.  With nobody controlling it, the hook is fired straight along the cone's middle.  Defaults to 0.")
+        @JSONDescription("The furthest the hook can be fired up or down, in degrees of pitch from the part's +Z axis (or from the direction aimStartPitch and aimStartYaw turn it to).  This is measured after maxAimAngleHorizontal turns the shot, so it's how far above or below the horizon of the aim start direction the hook can go.  Works the same as maxAimAngleHorizontal otherwise.  0 (default) means no limit.")
+        public float maxAimAngleVertical;
+
+        @ModifiableValue
+        @JSONDescription("Pitches the direction maxAimAngleHorizontal and maxAimAngleVertical are measured from away from the part's +Z axis, in degrees.  Positive pitches it down, so 90 with both limits at 45 makes a grapple that can only fire downwards, up to 45 degrees from straight down.  With nobody controlling it, the hook is fired straight along this direction.  Defaults to 0.")
         public float aimStartPitch;
 
         @ModifiableValue
-        @JSONDescription("Yaws the middle of the maxAimAngle cone away from the part's +Z axis, in degrees, the same way as other yaw rotations, so a grapple can fire out to one side.  This swings it round the part's vertical axis after aimStartPitch tilts it, so a pitched cone stays tilted by the same amount.  Defaults to 0.")
+        @JSONDescription("Yaws the direction maxAimAngleHorizontal and maxAimAngleVertical are measured from away from the part's +Z axis, in degrees, the same way as other yaw rotations, so a grapple can fire out to one side.  This swings it round the part's vertical axis after aimStartPitch tilts it, so a pitched direction stays tilted by the same amount.  Defaults to 0.")
         public float aimStartYaw;
 
         @ModifiableValue
@@ -732,7 +736,7 @@ public class JSONPart extends AJSONPartProvider {
         public float hookDamage;
 
         @ModifiableValue
-        @JSONDescription("If true, the launcher body doesn't turn to follow the controller's view or the hook, so grapple_body_yaw and grapple_body_pitch are always 0.  The hook is still fired where the controller aims, within maxAimAngle, and the cable still swings out from the part's origin. Defaults to false.")
+        @JSONDescription("If true, the launcher body doesn't turn to follow the controller's view or the hook, so grapple_body_yaw and grapple_body_pitch are always 0.  The hook is still fired where the controller aims, within maxAimAngleHorizontal and maxAimAngleVertical, and the cable still swings out from the part's origin. Defaults to false.")
         public boolean isFixed;
 
         @ModifiableValue

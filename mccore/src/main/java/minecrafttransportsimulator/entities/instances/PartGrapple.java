@@ -181,6 +181,7 @@ public class PartGrapple extends APart {
     private final ComputedVariable disableEntityAttachVar;
     private final ComputedVariable disableVehicleAttachVar;
     private final ComputedVariable disableMantleVar;
+    private final ComputedVariable disableClimbVar;
 
     //Inputs.
     public final ComputedVariable fireVar;
@@ -288,6 +289,7 @@ public class PartGrapple extends APart {
         addVariable(this.disableEntityAttachVar = new ComputedVariable(this, "disableEntityAttach"));
         addVariable(this.disableVehicleAttachVar = new ComputedVariable(this, "disableVehicleAttach"));
         addVariable(this.disableMantleVar = new ComputedVariable(this, "disableMantle"));
+        addVariable(this.disableClimbVar = new ComputedVariable(this, "disableClimb"));
 
         addVariable(this.fireVar = new ComputedVariable(this, VAR_FIRE, data));
         addVariable(this.reelVar = new ComputedVariable(this, VAR_REEL));
@@ -328,6 +330,7 @@ public class PartGrapple extends APart {
         disableEntityAttachVar.setTo(definition.grapple.disableEntityAttach ? 1 : 0, false);
         disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach ? 1 : 0, false);
         disableMantleVar.setTo(definition.grapple.disableMantle ? 1 : 0, false);
+        disableClimbVar.setTo(definition.grapple.disableClimb ? 1 : 0, false);
     }
 
     /**
@@ -1539,6 +1542,14 @@ public class PartGrapple extends APart {
     }
 
     /**
+     * Returns true if the vehicle can't climb walls, so the line pulls it like anywhere else.  Mantling needs the
+     * climb to get up the wall first, so disableClimb only counts with disableMantle on too.
+     */
+    private boolean isClimbDisabled() {
+        return disableClimbVar.isActive && disableMantleVar.isActive;
+    }
+
+    /**
      * Starts the climb if the end of the vehicle facing the hook is being reeled up against a wall too tall for
      * its wheels to drive up, by their climbHeight, with the hook up on it.  Server only.  The wall counts as touching if it's just in
      * front of any of the wheels at that end, or any of the collision boxes that hit blocks.  The hook can be on
@@ -1555,7 +1566,7 @@ public class PartGrapple extends APart {
     private boolean tryStartClimb() {
         //Only reeling moves a climb, so only start one while reeling.  Otherwise bumping a wall with the line
         //taut would pin us to it until the line was let out.  Not a debug message, as this is most ticks.
-        if (getState() != STATE_BLOCK || !reelVar.isActive) {
+        if (getState() != STATE_BLOCK || !reelVar.isActive || isClimbDisabled()) {
             return false;
         }
         Point3D heading = new Point3D(vehicleOn.headingVector.x, 0, vehicleOn.headingVector.z);
@@ -1755,7 +1766,7 @@ public class PartGrapple extends APart {
     private void updateMantle() {
         boolean server = !world.isClient();
         ClimbPath path = getClimbPath();
-        if (path == null) {
+        if (path == null || isClimbDisabled()) {
             if (server) {
                 setMantle(MANTLE_NONE);
             }

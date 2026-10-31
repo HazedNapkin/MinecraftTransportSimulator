@@ -743,6 +743,10 @@ public class JSONPart extends AJSONPartProvider {
         @JSONDescription("Normally, once a wheel or block collision box at the end of the vehicle facing the hook is reeled up against a wall too tall for its wheels to drive up by their climbHeight, with the hook up on it above that height, the vehicle squares up to the wall and climbs it as the line is reeled in.  The plane between the bottoms of its wheels pitches up the face while its far end slides along the ground, then slides up the face once upright, stepping out over any overhang that sticks out no further than the wheels could drive up.  A bigger overhang stops it underneath, where letting the line out or reversing takes it back down.  Once the line is all the way in near the top, holding reel tips it over the lip onto the top, where it's held until the grapple is released.  Only if the vehicle fits on top, though: with a block in the way up there, such as when the hook is in the face of a taller wall, it stops with its front wheels at the top instead.  Driving backwards from there takes it back down.  If true, the vehicle still climbs the wall, but can't be pulled over the edge, and stops with its front wheels at the top. Defaults to false.")
         public boolean disableMantle;
 
+        @ModifiableValue
+        @JSONDescription("If true, the vehicle doesn't climb walls at all.  Reeling it up against one just pulls it with the line's usual physics, like anywhere else.  Mantling needs the climb, so this only applies when disableMantle is true too.  If this becomes true mid-climb, the climb stops and the line takes over.  Defaults to false.")
+        public boolean disableClimb;
+
         @JSONDescription("The point the launcher body turns about for grapple_body_yaw and grapple_body_pitch, in part coordinates.  This must match the centerPoint of the animations that use those variables, so the cable lines up with the turned barrel.  Defaults to the part's origin.")
         public Point3D grapplePivotPoint;
     }

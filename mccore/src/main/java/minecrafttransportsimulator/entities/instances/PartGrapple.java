@@ -508,8 +508,13 @@ public class PartGrapple extends APart {
      */
     public void updateLine() {
         //Both sides count the cooldown down themselves, so it doesn't need syncing every tick.
+        //Capped at snapCooldown, so lowering it, such as by importing a JSON in dev mode, shortens one already running.
         if (cooldownVar.isActive) {
-            cooldownVar.setTo(Math.max(0, cooldownVar.currentValue - 1), false);
+            cooldownVar.setTo(Math.max(0, Math.min(cooldownVar.currentValue, snapCooldownVar.currentValue) - 1), false);
+        }
+        //A hook lost before loseHookOnSnap was turned off, or before hookItem was removed, could never be reloaded, so give it back.
+        if (!world.isClient() && hookLostVar.isActive && (!loseHookOnSnapVar.isActive || definition.grapple.hookItem == null)) {
+            hookLostVar.setTo(0, true);
         }
 
         //The server owns the hook.  It flies it, decides hits and line length, and syncs them to clients.

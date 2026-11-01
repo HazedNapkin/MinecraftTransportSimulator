@@ -113,7 +113,7 @@ public class PartGrapple extends APart {
     /**How many times the range the two ends can be pulled apart before the line snaps.**/
     private static final double SNAP_FACTOR = 1.5;
     /**Cap on how fast a line can turn the vehicle the launcher is on, or its tow chain, in degrees per tick.**/
-    private static final double MAX_PULL_TURN = 6;
+    private static final double MAX_PULL_TURN = 12;
     /**Cap on how fast a line can turn a vehicle we've hooked and are towing, or its tow chain, in degrees per tick.**/
     private static final double MAX_TOWED_PULL_TURN = 30;
     /**Turns smaller than this, in degrees, aren't applied to a vehicle on the line.**/

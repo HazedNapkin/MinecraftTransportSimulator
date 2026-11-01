@@ -298,6 +298,9 @@ public class PartGrapple extends APart {
     //Launch direction for the current tick, so the turret and crosshair don't raycast every frame.
     private final Point3D launchDirection = new Point3D();
     private long launchDirectionTick = -1;
+    //Where the hook would hook if fired now, worked out once a tick for the crosshair, which asks every frame.
+    private final Point3D aimPoint = new Point3D();
+    private long aimPointTick = -1;
     //Seats that control us: seats on us, the seat we're on, and seats linked to us.  If there are none, the vehicle's controller does.
     private final List<PartSeat> seatsControllingGrapple = new ArrayList<>();
     //Aim sent by a controller looking through a custom camera: where the camera is and which way it aims, relative to their seat.
@@ -671,9 +674,13 @@ public class PartGrapple extends APart {
      * The hook flies straight, so this is exact for anything that holds still.  Used by the aiming crosshair.
      */
     public Point3D getAimPoint() {
-        Point3D end = getCachedLaunchDirection().scale(rangeVar.currentValue).add(position);
-        Hit hit = findHit(position, end);
-        return hit != null ? hit.position : end;
+        if (aimPointTick != ticksExisted) {
+            aimPointTick = ticksExisted;
+            Point3D end = getCachedLaunchDirection().scale(rangeVar.currentValue).add(position);
+            Hit hit = findHit(position, end);
+            aimPoint.set(hit != null ? hit.position : end);
+        }
+        return aimPoint.copy();
     }
 
     /**

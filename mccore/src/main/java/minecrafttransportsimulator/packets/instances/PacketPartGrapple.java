@@ -1,29 +1,26 @@
 package minecrafttransportsimulator.packets.instances;
 
-import java.util.UUID;
-
 import io.netty.buffer.ByteBuf;
 import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.entities.instances.PartGrapple;
 import minecrafttransportsimulator.mcinterface.AWrapperWorld;
-import minecrafttransportsimulator.packets.components.APacketEntity;
+import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
+import minecrafttransportsimulator.packets.components.APacketEntityInteract;
 
 /**
  * Packet used to send a grapple's aim to the server while its controller looks through a custom camera.
  * The camera shows them the world from somewhere other than their eyes, and may turn them to face along it,
  * so the server can't tell where they're really aiming from where they are and the way they face.  Sent to the
  * server by the controller's client when the aim changes, then on to all clients so they turn the launcher the
- * same way.  The offset is where the camera is and the angles are where it aims, both relative to the
- * controller's seat.  Null angles mean the controller stopped using the camera.
+ * same way.  The player is the controller who sent it.  The offset is where the camera is and the angles are
+ * where it aims, both relative to the controller's seat.  Null angles mean the controller stopped using the camera.
  */
-public class PacketPartGrapple extends APacketEntity<PartGrapple> {
-    private final UUID controllerID;
+public class PacketPartGrapple extends APacketEntityInteract<PartGrapple, IWrapperPlayer> {
     private final Point3D offset;
     private final Point3D angles;
 
-    public PacketPartGrapple(PartGrapple grapple, UUID controllerID, Point3D offset, Point3D angles) {
-        super(grapple);
-        this.controllerID = controllerID;
+    public PacketPartGrapple(PartGrapple grapple, IWrapperPlayer controller, Point3D offset, Point3D angles) {
+        super(grapple, controller);
         boolean active = offset != null && angles != null;
         this.offset = active ? offset.copy() : null;
         this.angles = active ? angles.copy() : null;
@@ -31,9 +28,7 @@ public class PacketPartGrapple extends APacketEntity<PartGrapple> {
 
     public PacketPartGrapple(ByteBuf buf) {
         super(buf);
-        boolean active = buf.readBoolean();
-        this.controllerID = readUUIDFromBuffer(buf);
-        if (active) {
+        if (buf.readBoolean()) {
             this.angles = new Point3D(buf.readDouble(), buf.readDouble(), 0);
             this.offset = readPoint3dFromBuffer(buf);
         } else {
@@ -46,7 +41,6 @@ public class PacketPartGrapple extends APacketEntity<PartGrapple> {
     public void writeToBuffer(ByteBuf buf) {
         super.writeToBuffer(buf);
         buf.writeBoolean(angles != null);
-        writeUUIDToBuffer(controllerID, buf);
         if (angles != null) {
             buf.writeDouble(angles.x);
             buf.writeDouble(angles.y);
@@ -55,7 +49,7 @@ public class PacketPartGrapple extends APacketEntity<PartGrapple> {
     }
 
     @Override
-    public boolean handle(AWrapperWorld world, PartGrapple grapple) {
-        return grapple.setCameraAim(controllerID, offset, angles);
+    public boolean handle(AWrapperWorld world, PartGrapple grapple, IWrapperPlayer controller) {
+        return grapple.setCameraAim(controller.getID(), offset, angles);
     }
 }

@@ -823,10 +823,10 @@ public class PartGrapple extends APart {
                 cameraAimSentID = controller.getID();
                 cameraAimSentAngles.set(localCameraAngles);
                 cameraAimSentOffset.set(localCameraOffset);
-                InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, cameraAimSentID, cameraAimSentOffset, cameraAimSentAngles));
+                InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, InterfaceManager.clientInterface.getClientPlayer(), cameraAimSentOffset, cameraAimSentAngles));
             }
         } else if (cameraAimSentID != null) {
-            InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, cameraAimSentID, null, null));
+            InterfaceManager.packetInterface.sendToServer(new PacketPartGrapple(this, InterfaceManager.clientInterface.getClientPlayer(), null, null));
             cameraAimSentID = null;
         }
     }

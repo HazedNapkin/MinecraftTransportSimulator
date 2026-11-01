@@ -1123,7 +1123,7 @@ public class PartGrapple extends APart {
             tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
         }
         logTowPull("towed", other, towards, distance - rope, share, launcherMotion, pull);
-        queueChainPull(other, anchor, pull.force, pull.motion, MAX_TOWED_PULL_TURN, this);
+        queueChainPull(other, anchor, pull.force, pull.motion, MAX_TOWED_PULL_TURN, launcherMotion.copy(), this);
     }
 
     /**
@@ -1322,21 +1322,23 @@ public class PartGrapple extends APart {
      * @param hooked the vehicle in the chain the line is on.
      * @param point where the line is on it, in world coordinates.
      * @param maxTurn the most the line can turn each vehicle in the chain, in degrees per tick.
+     * @param otherMotion the motion of the front of the chain on the other end of the line, for the vehicle at the front of
+     * this chain to swing after, or null for it to swing after its own motion.  See {@link #swingFromLine}.
      * @param debugSource the grapple to tell how the hooked vehicle turns, or null.  Temporary.
      */
-    private static void queueChainPull(EntityVehicleF_Physics hooked, Point3D point, Point3D force, Point3D motion, double maxTurn, PartGrapple debugSource) {
+    private static void queueChainPull(EntityVehicleF_Physics hooked, Point3D point, Point3D force, Point3D motion, double maxTurn, Point3D otherMotion, PartGrapple debugSource) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         Point3D pullPoint = point.copy();
         EntityVehicleF_Physics vehicle = hooked;
         while (vehicle != lead) {
             TowingConnection connection = vehicle.towedByConnection;
             if (!connection.hitchConnection.mounted && !connection.hitchConnection.restricted) {
-                vehicle.grapplePulls.add(new LinePull(pullPoint, force, connection.hookupCurrentPosition.copy(), null, maxTurn, vehicle == hooked ? debugSource : null));
+                vehicle.grapplePulls.add(new LinePull(pullPoint, force, connection.hookupCurrentPosition.copy(), null, maxTurn, null, vehicle == hooked ? debugSource : null));
                 pullPoint = connection.hitchCurrentPosition.copy();
             }
             vehicle = connection.towingVehicle;
         }
-        lead.grapplePulls.add(new LinePull(pullPoint, force, null, motion, maxTurn, lead == hooked ? debugSource : null));
+        lead.grapplePulls.add(new LinePull(pullPoint, force, null, motion, maxTurn, otherMotion, lead == hooked ? debugSource : null));
     }
 
     /**
@@ -1418,7 +1420,7 @@ public class PartGrapple extends APart {
         if (pull.motion != null) {
             vehicle.motion.add(pull.motion);
         }
-        String turnMode = turnFromLine(vehicle, pull.point, pull.force, pull.pivot, pull.motion != null, vehicle.getBoxesOutsideBlocks(vehicle.getBoxesForWallChecks()), pull.maxTurn);
+        String turnMode = turnFromLine(vehicle, pull.point, pull.force, pull.pivot, pull.motion != null, pull.otherMotion, vehicle.getBoxesOutsideBlocks(vehicle.getBoxesForWallChecks()), pull.maxTurn);
         if (pull.debugSource != null) {
             pull.debugSource.debugTowTurn(turnMode);
         }
@@ -1456,11 +1458,12 @@ public class PartGrapple extends APart {
      * @param lineForce the line's tension, in kg*m/ticks^2.
      * @param pivotPoint what the vehicle turns about, in world coordinates, or null to work it out from the wheels.
      * @param takesMotion true if the vehicle was given the line's motion this tick, rather than only turning about a hookup.
+     * @param otherMotion the motion of the front of the chain on the other end of the line, to swing after, or null to swing after our own motion.
      * @param freeBoxes the vehicle's boxes that aren't already inside a block, to check the turn against.
      * @param maxTurn the most the line can turn the vehicle, in degrees per tick.
      * @return how the line turned the vehicle, for debugging.  Temporary.
      */
-    private static String turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, boolean takesMotion, List<BoundingBox> freeBoxes, double maxTurn) {
+    private static String turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn) {
         if (vehicle.lockedOnRoad) {
             //The road sets our heading.
             return "trailer mode OFF, locked on a road";
@@ -1566,7 +1569,7 @@ public class PartGrapple extends APart {
 
         turnFromTorque(vehicle, torque, lineTorque, arm, fullForceLocal, pivot, up, freeBoxes, maxTurn);
         if (swing) {
-            swingFromLine(vehicle, hook, pivot, up, lineForce, takesMotion, freeBoxes, maxTurn);
+            swingFromLine(vehicle, hook, pivot, up, lineForce, takesMotion, otherMotion, freeBoxes, maxTurn);
             return "trailer mode ON";
         }
         return "trailer mode OFF, " + noSwingReason;
@@ -1613,12 +1616,16 @@ public class PartGrapple extends APart {
      * hook points at where the hook is going this tick.  Its wheels roll rather than slide, so the sideways part of the
      * hook's move goes into the turn, and what's left moves the vehicle along its new arm.  All points and vectors are
      * in the vehicle's own frame, except the line's tension.
+     * <p>
+     * A vehicle towed by another vehicle's line swings after that vehicle, as the taut line takes the hook wherever the
+     * other end goes, the same as a hitch.  Our own motion can't tell us that, as our wheels keep it along our heading.
      *
      * @param lineForce the line's tension, in kg*m/ticks^2, in world coordinates.
      * @param takesMotion true if the vehicle was given the line's motion this tick, so its motion carries the hook, and the
      * part of that the turn takes up comes off it.  Otherwise it only swings about a hookup, and the hook goes where the line pulls the chain.
+     * @param otherMotion the motion of the front of the chain on the other end of the line, for the hook to go with, or null for it to go with ours.
      */
-    private static void swingFromLine(EntityVehicleF_Physics vehicle, Point3D hook, Point3D pivot, Point3D up, Point3D lineForce, boolean takesMotion, List<BoundingBox> freeBoxes, double maxTurn) {
+    private static void swingFromLine(EntityVehicleF_Physics vehicle, Point3D hook, Point3D pivot, Point3D up, Point3D lineForce, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn) {
         Point3D arm = hook.copy().subtract(pivot);
         arm.addScaled(up, -arm.dotProduct(up, false));
         if (arm.length() < MIN_SWING_ARM) {
@@ -1627,7 +1634,10 @@ public class PartGrapple extends APart {
 
         //Where the hook goes this tick, flat on the ground.  Motion gets scaled by speedFactor when applied.
         Point3D hookMove;
-        if (takesMotion) {
+        boolean followsOther = takesMotion && otherMotion != null;
+        if (followsOther) {
+            hookMove = otherMotion.copy().scale(vehicle.speedFactor);
+        } else if (takesMotion) {
             hookMove = vehicle.motion.copy().scale(vehicle.speedFactor);
         } else {
             EntityVehicleF_Physics lead = getTowChainLead(vehicle);
@@ -1653,6 +1663,9 @@ public class PartGrapple extends APart {
         if (lineLocal.length() > 1.0E-6 && arm.crossProduct(lineLocal).dotProduct(axis, false) > 0) {
             //Our own motion can carry the hook further round than the line, so don't turn past pointing the hook along it.
             angle = Math.min(angle, Math.toDegrees(Math.acos(arm.copy().normalize().dotProduct(lineLocal.normalize(), true))));
+        } else if (followsOther) {
+            //The other end has moved round the far side of the line from us, so the line hasn't swung that way yet.
+            return;
         }
         if (!(angle > MIN_PULL_TURN)) {
             return;
@@ -1660,8 +1673,9 @@ public class PartGrapple extends APart {
         angle = vehicle.limitTurnToWalls(freeBoxes, pivot, axis, angle);
         if (angle != 0) {
             RotationMatrix turnMatrix = applyTurn(vehicle, pivot, axis, angle);
-            if (takesMotion) {
+            if (takesMotion && !followsOther) {
                 //The turn has carried the hook sideways, so our wheels don't slide it there too.
+                //Not when we swing after the other end, as our motion never had that sideways move in it.
                 //This stays off our motion for good, as the wheels rolled rather than slid.
                 Point3D swung = arm.copy().rotate(turnMatrix).subtract(arm);
                 vehicle.motion.subtract(swung.rotate(vehicle.orientation).scale(1D / vehicle.speedFactor));
@@ -1735,7 +1749,7 @@ public class PartGrapple extends APart {
             logTowPull("towing", vehicleOn, lineNormal, distance - rope, share, otherMotion, pull);
         }
         if (vehicleOn.towedByConnection != null) {
-            queueChainPull(vehicleOn, position, pull.force, pull.motion, MAX_PULL_TURN, null);
+            queueChainPull(vehicleOn, position, pull.force, pull.motion, MAX_PULL_TURN, null, null);
             return;
         }
         vehicleOn.motion.add(pull.motion);
@@ -1753,7 +1767,7 @@ public class PartGrapple extends APart {
             return;
         }
 
-        turnFromLine(vehicleOn, position, pull.force, null, true, freeBoxes, MAX_PULL_TURN);
+        turnFromLine(vehicleOn, position, pull.force, null, true, null, freeBoxes, MAX_PULL_TURN);
         //Turning moves our origin to keep the pivot still, so check that against the walls too.
         vehicleOn.clampMotionToWalls(freeBoxes);
     }
@@ -3530,15 +3544,18 @@ public class PartGrapple extends APart {
         final Point3D motion;
         /**The most the line can turn the vehicle, in degrees per tick.**/
         final double maxTurn;
+        /**The motion of the front of the chain on the other end of the line, to swing after, or null to swing after our own motion.**/
+        final Point3D otherMotion;
         /**The grapple to tell how the vehicle turns, if it's the one the hook is in.  Temporary.**/
         final PartGrapple debugSource;
 
-        LinePull(Point3D point, Point3D force, Point3D pivot, Point3D motion, double maxTurn, PartGrapple debugSource) {
+        LinePull(Point3D point, Point3D force, Point3D pivot, Point3D motion, double maxTurn, Point3D otherMotion, PartGrapple debugSource) {
             this.point = point;
             this.force = force;
             this.pivot = pivot;
             this.motion = motion;
             this.maxTurn = maxTurn;
+            this.otherMotion = otherMotion;
             this.debugSource = debugSource;
         }
     }

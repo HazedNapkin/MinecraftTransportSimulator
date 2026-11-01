@@ -97,6 +97,10 @@ public class PartGrapple extends APart {
     private static final double STIFFNESS = 0.3;
     /**Cap on the pull-back speed from stretch, in blocks per tick, so the line can't fling anything.**/
     private static final double MAX_PULL = 0.6;
+    /**Gravity on the dangling hook, in blocks per tick squared.**/
+    private static final double DANGLE_GRAVITY = 9.81 / 400D;
+    /**Fraction of the dangling hook's speed kept each tick, so its swing dies down.**/
+    private static final double DANGLE_DAMPING = 0.95;
     /**How many times the range the two ends can be pulled apart before the line snaps.**/
     private static final double SNAP_FACTOR = 1.5;
     /**Cap on how fast a line can turn a vehicle on either end of it, in degrees per tick.**/
@@ -174,6 +178,7 @@ public class PartGrapple extends APart {
     private final ComputedVariable winchForceVar;
     private final ComputedVariable breakForceVar;
     private final ComputedVariable minLengthVar;
+    private final ComputedVariable idleLengthVar;
     private final ComputedVariable maxAimAngleHorizontalVar;
     private final ComputedVariable maxAimAngleVerticalVar;
     private final ComputedVariable aimStartPitchVar;
@@ -245,6 +250,14 @@ public class PartGrapple extends APart {
     private Point3D renderAnchor;
     private final double[] aim = new double[5];
     private long aimTick = -1;
+    //Client-only swing of the hook hanging off the launcher while the line is in.  Purely visual, so the server
+    //never runs it.  The hook is stepped in world positions, but drawn from its offset from the tip, as the tip
+    //moves with the vehicle after this runs.  Interpolating world positions would leave the hook a tick behind.
+    private final Point3D dangleHook = new Point3D();
+    private final Point3D prevDangleHook = new Point3D();
+    private final Point3D dangleOffset = new Point3D();
+    private final Point3D prevDangleOffset = new Point3D();
+    private boolean dangleValid;
     private float aimPartialTicks = -1;
     //Launch direction for the current tick, so the turret and crosshair don't raycast every frame.
     private final Point3D launchDirection = new Point3D();
@@ -285,6 +298,7 @@ public class PartGrapple extends APart {
         addVariable(this.winchForceVar = new ComputedVariable(this, "winchForce"));
         addVariable(this.breakForceVar = new ComputedVariable(this, "breakForce"));
         addVariable(this.minLengthVar = new ComputedVariable(this, "minLength"));
+        addVariable(this.idleLengthVar = new ComputedVariable(this, "idleLength"));
         addVariable(this.maxAimAngleHorizontalVar = new ComputedVariable(this, "maxAimAngleHorizontal"));
         addVariable(this.maxAimAngleVerticalVar = new ComputedVariable(this, "maxAimAngleVertical"));
         addVariable(this.aimStartPitchVar = new ComputedVariable(this, "aimStartPitch"));
@@ -328,6 +342,7 @@ public class PartGrapple extends APart {
         winchForceVar.setTo(definition.grapple.winchForce, false);
         breakForceVar.setTo(definition.grapple.breakForce, false);
         minLengthVar.setTo(definition.grapple.minLength, false);
+        idleLengthVar.setTo(definition.grapple.idleLength, false);
         maxAimAngleHorizontalVar.setTo(definition.grapple.maxAimAngleHorizontal, false);
         maxAimAngleVerticalVar.setTo(definition.grapple.maxAimAngleVertical, false);
         aimStartPitchVar.setTo(definition.grapple.aimStartPitch, false);
@@ -446,6 +461,7 @@ public class PartGrapple extends APart {
             updateServerHook();
         } else {
             updateRenderAnchor();
+            updateDangle();
             sendCameraAim();
             logClientHookDrift();
 
@@ -2976,19 +2992,70 @@ public class PartGrapple extends APart {
             return aim;
         }
 
-        if (fixed) {
-            aim[0] = 0;
-            aim[1] = 0;
+        double[] body = getIdleBodyAim();
+        aim[0] = body[0];
+        aim[1] = body[1];
+        if (dangleValid) {
+            //Hanging off the tip.  Same as the line being out, but the body keeps following the aim.
+            Point3D line = prevDangleOffset.copy().interpolate(dangleOffset, partialTicks).reOrigin(orientation);
+            aim[4] = line.length();
+            line.rotate(new RotationMatrix().setToAxisAngle(0, 1, 0, -body[0])).rotate(new RotationMatrix().setToAxisAngle(1, 0, 0, -body[1]));
+            aim[2] = getYaw(line);
+            aim[3] = getPitch(line);
         } else {
-            //Point the barrel the way the hook would be fired, so it stays inside maxAimAngleHorizontal and maxAimAngleVertical.
-            Point3D direction = getCachedLaunchDirection().reOrigin(orientation);
-            aim[0] = getYaw(direction);
-            aim[1] = getPitch(direction);
+            aim[2] = 0;
+            aim[3] = 0;
+            aim[4] = 0;
         }
-        aim[2] = 0;
-        aim[3] = 0;
-        aim[4] = 0;
         return aim;
+    }
+
+    /**
+     * Returns {body yaw, body pitch} for the launcher while the line is in.
+     */
+    private double[] getIdleBodyAim() {
+        if (isFixedVar.isActive) {
+            return new double[] { 0, 0 };
+        }
+        //Point the barrel the way the hook would be fired, so it stays inside maxAimAngleHorizontal and maxAimAngleVertical.
+        Point3D direction = getCachedLaunchDirection().reOrigin(orientation);
+        return new double[] { getYaw(direction), getPitch(direction) };
+    }
+
+    /**
+     * Swings the hook hanging idleLength below the barrel tip while the line is in.  Client only.
+     * The hook is a point mass on a rigid line: it carries on at its speed, less some damping, falls,
+     * then is pulled back to idleLength from the tip, so the vehicle moving the tip swings it.
+     */
+    private void updateDangle() {
+        double length = idleLengthVar.currentValue;
+        if (lineOutVar.isActive || length <= 0) {
+            dangleValid = false;
+            return;
+        }
+        double[] body = getIdleBodyAim();
+        Point3D tip = getTip(definition.grapple.grapplePivotPoint, body[0], body[1]).rotate(orientation).add(position);
+        if (!dangleValid || !dangleHook.isDistanceToCloserThan(tip, length * 2)) {
+            //Just reeled in, or teleported.  Start hanging straight down.
+            dangleHook.set(tip).add(0, -length, 0);
+            prevDangleHook.set(dangleHook);
+            dangleOffset.set(0, -length, 0);
+            prevDangleOffset.set(dangleOffset);
+            dangleValid = true;
+            return;
+        }
+        Point3D velocity = dangleHook.copy().subtract(prevDangleHook).scale(DANGLE_DAMPING);
+        prevDangleHook.set(dangleHook);
+        dangleHook.add(velocity).add(0, -DANGLE_GRAVITY, 0);
+        Point3D line = dangleHook.copy().subtract(tip);
+        double distance = line.length();
+        if (distance > 1.0E-3) {
+            dangleHook.set(tip).addScaled(line, length / distance);
+        } else {
+            dangleHook.set(tip).add(0, -length, 0);
+        }
+        prevDangleOffset.set(dangleOffset);
+        dangleOffset.set(dangleHook).subtract(tip);
     }
 
     /**Returns where the barrel tip (the part origin) ends up after aiming, in local coordinates.**/

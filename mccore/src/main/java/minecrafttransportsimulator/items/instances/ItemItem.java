@@ -165,6 +165,11 @@ public class ItemItem extends AItemPack<JSONItem> implements IItemEntityInteract
                                         vehicle.world.spawnItemStack(vehicle.getStack(), hitBox.globalCenter, null);
                                         VehicleLocationTracker.forget(vehicle);
                                         vehicle.remove();
+                                    if (vehicle.definition.motorized.packTime > 0) {
+                                        //Timed packing is handled by PacketVehiclePacking after server-side duration validation.
+                                        return CallbackType.NONE;
+                                    } else if ((!ConfigSystem.settings.general.opPickupVehiclesOnly.value || player.isOP()) && (!ConfigSystem.settings.general.creativePickupVehiclesOnly.value || player.isCreative()) && entity.isValid) {
+                                        packVehicle(vehicle, hitBox.globalCenter);
                                     }
                                 }
                             }else {
@@ -172,7 +177,13 @@ public class ItemItem extends AItemPack<JSONItem> implements IItemEntityInteract
                                     APart part = (APart) entity;
                                     if (!part.isPermanent && part.isValid) {
                                         LanguageEntry partResult = part.checkForRemoval(player);
-                                        if (partResult != null) {
+                                        if (part.definition.generic.removeTime > 0) {
+                                            //Timed removals are handled by PacketEntityInteract after server-side duration validation.
+                                            if (partResult != null) {
+                                                player.sendPacket(new PacketPlayerChatMessage(player, partResult));
+                                            }
+                                            return CallbackType.NONE;
+                                        } else if (partResult != null) {
                                             player.sendPacket(new PacketPlayerChatMessage(player, partResult));
                                             return CallbackType.NONE;
                                         } else {
@@ -462,6 +473,12 @@ public class ItemItem extends AItemPack<JSONItem> implements IItemEntityInteract
             default:
                 return CallbackType.SKIP;
         }
+    }
+
+    public static void packVehicle(EntityVehicleF_Physics vehicle, Point3D itemSpawnPosition) {
+        vehicle.disconnectAllConnections();
+        vehicle.world.spawnItemStack(vehicle.getStack(), itemSpawnPosition, null);
+        vehicle.remove();
     }
 
     @Override

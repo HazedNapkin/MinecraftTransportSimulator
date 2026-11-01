@@ -160,11 +160,6 @@ public class ItemItem extends AItemPack<JSONItem> implements IItemEntityInteract
                             //Left clicking removes parts, or removes vehicles, if we were sneaking.
                             if(player.isSneaking()) {
                                 if(vehicle != null) {
-                                    if ((!ConfigSystem.settings.general.opPickupVehiclesOnly.value || player.isOP()) && (!ConfigSystem.settings.general.creativePickupVehiclesOnly.value || player.isCreative()) && entity.isValid) {
-                                        vehicle.disconnectAllConnections();
-                                        vehicle.world.spawnItemStack(vehicle.getStack(), hitBox.globalCenter, null);
-                                        VehicleLocationTracker.forget(vehicle);
-                                        vehicle.remove();
                                     if (vehicle.definition.motorized.packTime > 0) {
                                         //Timed packing is handled by PacketVehiclePacking after server-side duration validation.
                                         return CallbackType.NONE;
@@ -478,6 +473,7 @@ public class ItemItem extends AItemPack<JSONItem> implements IItemEntityInteract
     public static void packVehicle(EntityVehicleF_Physics vehicle, Point3D itemSpawnPosition) {
         vehicle.disconnectAllConnections();
         vehicle.world.spawnItemStack(vehicle.getStack(), itemSpawnPosition, null);
+        VehicleLocationTracker.forget(vehicle);
         vehicle.remove();
     }
 

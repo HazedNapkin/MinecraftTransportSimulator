@@ -84,23 +84,6 @@ public class GUIOverlay extends AGUIBase {
         addComponent(grappleCrosshair = new GUIComponentCrosshair(screenWidth / 2, screenHeight / 2, 45));
         grappleCrosshair.visible = false;
         grappleCrosshair.ignoreGUILightingState = true;
-        addComponent(scannerItem = new GUIComponentItem(0, screenHeight / 4, 6.0F) {
-            //Render the item stats as a tooltip, as it's easier to see.
-            @Override
-            public boolean isMouseInBounds(int mouseX, int mouseY) {
-                return true;
-            }
-
-            @Override
-            public void renderTooltip(AGUIBase gui, int mouseX, int mouseY) {
-                super.renderTooltip(gui, scannerItem.constructedX, scannerItem.constructedY + 24 * 6);
-            }
-
-            @Override
-            public List<String> getTooltipText() {
-                return tooltipText;
-            }
-        });
         scannerPreview = new GUIComponentPartSlotScanner();
         addComponent(new GUIComponentPartSlotMarkers(scannerPreview));
         addComponent(scannerPreview);

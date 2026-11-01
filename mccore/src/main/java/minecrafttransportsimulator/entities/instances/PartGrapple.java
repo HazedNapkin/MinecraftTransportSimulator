@@ -211,6 +211,7 @@ public class PartGrapple extends APart {
     private final ComputedVariable disableClimbVar;
     private final ComputedVariable loseHookOnSnapVar;
     private final ComputedVariable snapCooldownVar;
+    private final ComputedVariable cutToolDamageVar;
 
     //Inputs.
     public final ComputedVariable fireVar;
@@ -355,6 +356,7 @@ public class PartGrapple extends APart {
         addVariable(this.disableClimbVar = new ComputedVariable(this, "disableClimb"));
         addVariable(this.loseHookOnSnapVar = new ComputedVariable(this, "loseHookOnSnap"));
         addVariable(this.snapCooldownVar = new ComputedVariable(this, "snapCooldown"));
+        addVariable(this.cutToolDamageVar = new ComputedVariable(this, "cutToolDamage"));
 
         addVariable(this.fireVar = new ComputedVariable(this, VAR_FIRE, data));
         addVariable(this.reelVar = new ComputedVariable(this, VAR_REEL));
@@ -406,6 +408,7 @@ public class PartGrapple extends APart {
         disableClimbVar.setTo(definition.grapple.disableClimb ? 1 : 0, false);
         loseHookOnSnapVar.setTo(definition.grapple.loseHookOnSnap ? 1 : 0, false);
         snapCooldownVar.setTo(definition.grapple.snapCooldown, false);
+        cutToolDamageVar.setTo(definition.grapple.cutToolDamage, false);
     }
 
     /**
@@ -3027,13 +3030,13 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Cuts the line of every grapple hooked into the passed-in entity.  Server only.
+     * Cuts the line of every grapple hooked into the passed-in player, with whatever they're holding.  Server only.
      */
-    public static void cutLinesHookedInto(IWrapperEntity entity) {
-        for (AEntityVehicleD_Moving vehicle : entity.getWorld().getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
+    public static void cutLinesHookedInto(IWrapperPlayer player) {
+        for (AEntityVehicleD_Moving vehicle : player.getWorld().getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
             for (PartGrapple grapple : vehicle.grapples) {
-                if (grapple.getState() == STATE_ENTITY && entity.equals(grapple.hookedEntity)) {
-                    grapple.cut();
+                if (grapple.getState() == STATE_ENTITY && player.equals(grapple.hookedEntity)) {
+                    grapple.cutWith(player);
                 }
             }
         }
@@ -3071,8 +3074,18 @@ public class PartGrapple extends APart {
         if (lineOutVar.isActive && canCutLines(player)) {
             boolean hookedInPlayer = getState() == STATE_ENTITY && player.equals(hookedEntity);
             if (hookedInPlayer || getDistanceToSegment(player.getEyePosition(), position, getLineAnchor()) < CUT_REACH + CUT_REACH_MARGIN) {
-                cut();
+                cutWith(player);
             }
+        }
+    }
+
+    /**
+     * Cuts the line with what the player is holding, which loses cutToolDamage durability for it.  Server only.
+     */
+    private void cutWith(IWrapperPlayer player) {
+        cut();
+        if (cutToolDamageVar.currentValue > 0) {
+            player.damageHeldStack((int) cutToolDamageVar.currentValue);
         }
     }
 

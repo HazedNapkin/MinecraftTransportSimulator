@@ -781,6 +781,10 @@ public class JSONPart extends AJSONPartProvider {
         @JSONDescription("How long after the line snaps or is cut before the grapple can be fired again, in ticks.  grapple_cooldown counts down the ticks left, so packs can animate it.  If loseHookOnSnap is also set, the grapple needs reloading and has to finish cooling down before it can fire.  Defaults to 0, for no cooldown.")
         public int snapCooldown;
 
+        @ModifiableValue
+        @JSONDescription("How much durability is taken off the tool a player cuts this grapple's line with.  Only tools that can be damaged lose any, such as swords and axes in the grappleCuttingItems config.  Unbreaking applies, players in creative mode don't lose any, and the tool breaks if it runs out.  Defaults to 0, which doesn't damage the tool.")
+        public int cutToolDamage;
+
         @JSONDescription("The point the launcher body turns about for grapple_body_yaw and grapple_body_pitch, in part coordinates.  This must match the centerPoint of the animations that use those variables, so the cable lines up with the turned barrel.  Defaults to the part's origin.")
         public Point3D grapplePivotPoint;
     }

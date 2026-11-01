@@ -713,6 +713,10 @@ public class JSONPart extends AJSONPartProvider {
         public float minLength;
 
         @ModifiableValue
+        @JSONDescription("How far the hook hangs below the barrel tip while the line is in, in blocks.  The hook dangles on a line this long and swings as the vehicle moves, through grapple_line_yaw, grapple_line_pitch and grapple_length.  This is only drawn: the dangling hook doesn't hit or catch anything.  0 (default) keeps the hook on the barrel.")
+        public float idleLength;
+
+        @ModifiableValue
         @JSONDescription("The furthest the hook can be fired to either side, in degrees of yaw from the part's +Z axis (or from the direction aimStartPitch and aimStartYaw turn it to).  If the controller aims further round than this, the hook is fired at this limit instead, and the crosshair stops there.  This never stops the controller looking further: to stop the view at the limit too, clamp the camera's animations.  0 (default) means no limit.")
         public float maxAimAngleHorizontal;
 

@@ -148,6 +148,8 @@ public class PartGrapple extends APart {
     private static final int TOW_LOG_INTERVAL = 5;
     /**How often the server checks the anchor block still exists, in ticks.**/
     private static final int ANCHOR_CHECK_INTERVAL = 10;
+    /**How long to wait after a climb path couldn't be built before trying again, in ticks.  Building one is costly.**/
+    private static final int CLIMB_RETRY_INTERVAL = 10;
 
     /**How long reel has to be held at the top of the line before the pull over the edge starts, in ticks.**/
     private static final int MANTLE_HOLD_TICKS = 30;
@@ -270,6 +272,8 @@ public class PartGrapple extends APart {
     //The climb path, built on each side from the mantle variables when it's first needed.
     private ClimbPath climbPath;
     private double[] climbPathKey;
+    /**Tick a climb path last failed to build when starting a climb, so it isn't rebuilt every tick.  Server only.**/
+    private long climbFailedTick = -CLIMB_RETRY_INTERVAL;
 
     /**The vehicle or placed part the hook is stuck in, on both sides, so clients can draw the hook on their own copy of it.**/
     private UUID hookedMultipartID;
@@ -1793,7 +1797,11 @@ public class PartGrapple extends APart {
             return false;
         }
 
-        //Set the path before the phase, so clients have it by the time they start following it.
+        //Building a path is costly, so after one fails, give it a while before trying again.
+        if (vehicleOn.ticksExisted - climbFailedTick < CLIMB_RETRY_INTERVAL) {
+            return false;
+        }
+
         //The path starts from the front edge of the plane under the wheels and block collision boxes.
         Point3D leadEdge = new ClimbPlane(wheels).frontLocal.rotate(vehicleOn.orientation).add(vehicleOn.position);
         double lowestBottom = Double.MAX_VALUE;
@@ -1806,15 +1814,23 @@ public class PartGrapple extends APart {
         for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
             lowestBottom = Math.min(lowestBottom, box.globalCenter.y - box.heightRadius);
         }
-        mantleOriginXVar.setTo(leadEdge.x, true);
-        mantleOriginZVar.setTo(leadEdge.z, true);
-        mantleBaseVar.setTo(lowestBottom - 0.5, true);
-        mantleYawVar.setTo(Math.toDegrees(Math.atan2(wallNormal.x, wallNormal.z)), true);
-        mantleSideVar.setTo(side, true);
-        if (getClimbPath() == null) {
+        //Build the path before setting the mantle variables, as each one sends a packet to every client.
+        double[] key = {leadEdge.x, leadEdge.z, lowestBottom - 0.5, Math.toDegrees(Math.atan2(wallNormal.x, wallNormal.z)), side, anchor.x, anchor.y, anchor.z};
+        ClimbPath path = ClimbPath.build(this, key);
+        if (path == null) {
+            climbFailedTick = vehicleOn.ticksExisted;
             debugClimb("couldn't work out a path up the wall");
             return false;
         }
+        climbPathKey = key;
+        climbPath = path;
+
+        //Set the path before the phase, so clients have it by the time they start following it.
+        mantleOriginXVar.setTo(key[0], true);
+        mantleOriginZVar.setTo(key[1], true);
+        mantleBaseVar.setTo(key[2], true);
+        mantleYawVar.setTo(key[3], true);
+        mantleSideVar.setTo(key[4], true);
         debugClimb("started");
         //Start from where we really are on the wall.  The line might be stretched, and the climb follows its length.
         ropeVar.setTo(clampRope(position.distanceTo(anchor)), true);
@@ -1911,7 +1927,7 @@ public class PartGrapple extends APart {
         double[] key = {mantleOriginXVar.currentValue, mantleOriginZVar.currentValue, mantleBaseVar.currentValue, mantleYawVar.currentValue, mantleSideVar.currentValue, anchorXVar.currentValue, anchorYVar.currentValue, anchorZVar.currentValue};
         if (climbPathKey == null || !Arrays.equals(key, climbPathKey)) {
             climbPathKey = key;
-            climbPath = ClimbPath.build(this);
+            climbPath = ClimbPath.build(this, key);
         }
         return climbPath;
     }
@@ -2317,25 +2333,25 @@ public class PartGrapple extends APart {
         }
 
         /**
-         * Builds the path from the grapple's mantle variables and hook.  Returns null if there's no wall to
-         * climb there, or it's too long a way.
+         * Builds the path from the values the grapple's mantle variables hold: {origin x, origin z, base, yaw, side,
+         * hook x, hook y, hook z}.  Returns null if there's no wall to climb there, or it's too long a way.
          */
-        static ClimbPath build(PartGrapple grapple) {
+        static ClimbPath build(PartGrapple grapple, double[] key) {
             //Split the wheels about the end facing the wall, which isn't always the launcher's.
-            if (grapple.mantleSideVar.currentValue == 0) {
+            if (key[4] == 0) {
                 return null;
             }
-            WheelSplit wheels = grapple.new WheelSplit(grapple.mantleSideVar.currentValue);
+            WheelSplit wheels = grapple.new WheelSplit(key[4]);
             if (wheels.launcherEnd.isEmpty() || wheels.farEnd.isEmpty()) {
                 return null;
             }
             double side = wheels.side;
-            double yaw = grapple.mantleYawVar.currentValue;
+            double yaw = key[3];
             Point3D normal = new Point3D(Math.sin(Math.toRadians(yaw)), 0, Math.cos(Math.toRadians(yaw)));
             Point3D across = new Point3D(normal.z, 0, -normal.x).scale(side);
-            Point3D origin = new Point3D(grapple.mantleOriginXVar.currentValue, 0, grapple.mantleOriginZVar.currentValue);
-            double base = grapple.mantleBaseVar.currentValue;
-            Point3D anchor = grapple.getAnchor();
+            Point3D origin = new Point3D(key[0], 0, key[1]);
+            double base = key[2];
+            Point3D anchor = new Point3D(key[5], key[6], key[7]);
 
             //The plane under the wheels and block collision boxes, in our own frame, which doesn't change as we move.
             //Forwards along it is towards the wall, which is backwards for us when our back faces it.

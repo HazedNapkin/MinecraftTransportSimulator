@@ -15,6 +15,7 @@ import minecrafttransportsimulator.mcinterface.InterfaceManager;
 import minecrafttransportsimulator.packets.components.APacketBase;
 import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.entity.HumanoidArm;
@@ -150,6 +151,11 @@ public class WrapperPlayer extends WrapperEntity implements IWrapperPlayer {
     @Override
     public int getHotbarIndex() {
         return player.getInventory().selected;
+    }
+
+    @Override
+    public void damageHeldStack(int amount) {
+        player.getInventory().getItem(getHotbarIndex()).hurtAndBreak(amount, player, damaged -> damaged.broadcastBreakEvent(InteractionHand.MAIN_HAND));
     }
 
     @Override

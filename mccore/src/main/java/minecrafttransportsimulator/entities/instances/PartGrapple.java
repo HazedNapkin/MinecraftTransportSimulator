@@ -252,7 +252,7 @@ public class PartGrapple extends APart {
     private double lastCuts;
     /**1 once the hook's been lost to a snap, until a player reloads it.  See {@link #reloadHook}.**/
     private final ComputedVariable hookLostVar;
-    /**Ticks left before the grapple can fire again after a snap.  Set by the server when the line snaps, then counted down on each side.**/
+    /**Ticks left before the grapple can fire again after a snap or cut.  Set by the server when the line snaps or is cut, then counted down on each side.**/
     private final ComputedVariable cooldownVar;
 
     //Server-only hook state that can't live in a variable.  Lost on reload, which drops flying hooks and hooks in entities.
@@ -967,10 +967,17 @@ public class PartGrapple extends APart {
         if (loseHookOnSnapVar.isActive && definition.grapple.hookItem != null) {
             hookLostVar.setTo(1, true);
         }
+        startCooldown();
+        release();
+    }
+
+    /**
+     * Stops the grapple firing again for snapCooldown ticks, if it has one.  Server only.
+     */
+    private void startCooldown() {
         if (snapCooldownVar.currentValue > 0) {
             cooldownVar.setTo(snapCooldownVar.currentValue, true);
         }
-        release();
     }
 
     @Override
@@ -1006,6 +1013,7 @@ public class PartGrapple extends APart {
      */
     private void cut() {
         cutsVar.setTo(cutsVar.currentValue + 1, true);
+        startCooldown();
         release();
     }
 

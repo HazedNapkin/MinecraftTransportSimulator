@@ -81,7 +81,7 @@ public class PartGrapple extends APart {
     public static final String VAR_LENGTH = "grapple_length";
     public static final String VAR_SNAPPED = "grapple_snapped";
     public static final String VAR_CUT = "grapple_cut";
-    public static final String VAR_HOOK_LOST = "grapple_hook_lost";
+    public static final String VAR_MISSING_HOOK = "grapple_missing_hook";
     public static final String VAR_COOLDOWN = "grapple_cooldown";
 
     public static final int STATE_IDLE = 0;
@@ -251,7 +251,7 @@ public class PartGrapple extends APart {
     private boolean cut;
     private double lastCuts;
     /**1 once the hook's been lost to a snap, until a player reloads it.  See {@link #reloadHook}.**/
-    private final ComputedVariable hookLostVar;
+    private final ComputedVariable missingHookVar;
     /**Ticks left before the grapple can fire again after a snap or cut.  Set by the server when the line snaps or is cut, then counted down on each side.**/
     private final ComputedVariable cooldownVar;
 
@@ -378,7 +378,7 @@ public class PartGrapple extends APart {
         addVariable(this.mantleSideVar = new ComputedVariable(this, "grapple_mantle_side", data));
         addVariable(this.snapsVar = new ComputedVariable(this, "grapple_snaps"));
         addVariable(this.cutsVar = new ComputedVariable(this, "grapple_cuts"));
-        addVariable(this.hookLostVar = new ComputedVariable(this, VAR_HOOK_LOST, data));
+        addVariable(this.missingHookVar = new ComputedVariable(this, VAR_MISSING_HOOK, data));
         addVariable(this.cooldownVar = new ComputedVariable(this, VAR_COOLDOWN, data));
     }
 
@@ -513,8 +513,8 @@ public class PartGrapple extends APart {
             cooldownVar.setTo(Math.max(0, Math.min(cooldownVar.currentValue, snapCooldownVar.currentValue) - 1), false);
         }
         //A hook lost before loseHookOnSnap was turned off, or before hookItem was removed, could never be reloaded, so give it back.
-        if (!world.isClient() && hookLostVar.isActive && (!loseHookOnSnapVar.isActive || definition.grapple.hookItem == null)) {
-            hookLostVar.setTo(0, true);
+        if (!world.isClient() && missingHookVar.isActive && (!loseHookOnSnapVar.isActive || definition.grapple.hookItem == null)) {
+            missingHookVar.setTo(0, true);
         }
 
         //The server owns the hook.  It flies it, decides hits and line length, and syncs them to clients.
@@ -566,7 +566,7 @@ public class PartGrapple extends APart {
             return;
         }
         if (state == STATE_IDLE) {
-            if (hookLostVar.isActive || cooldownVar.isActive) {
+            if (missingHookVar.isActive || cooldownVar.isActive) {
                 //Nothing to fire, or not ready to fire it yet.
                 fireVar.setTo(0, true);
                 return;
@@ -970,7 +970,7 @@ public class PartGrapple extends APart {
         snapsVar.setTo(snapsVar.currentValue + 1, true);
         //Without a hook item to reload with, a lost hook could never come back, so keep it.
         if (loseHookOnSnapVar.isActive && definition.grapple.hookItem != null) {
-            hookLostVar.setTo(1, true);
+            missingHookVar.setTo(1, true);
         }
         startCooldown();
         release();
@@ -997,7 +997,7 @@ public class PartGrapple extends APart {
      * Reloads a hook lost to a snap if the stack is our hookItem, and returns true if it did.  Server only.
      */
     private boolean reloadHook(IWrapperItemStack stack) {
-        if (!hookLostVar.isActive || definition.grapple.hookItem == null) {
+        if (!missingHookVar.isActive || definition.grapple.hookItem == null) {
             return false;
         }
         AItemBase item = stack.getItem();
@@ -1005,7 +1005,7 @@ public class PartGrapple extends APart {
             String[] splitName = definition.grapple.hookItem.split(":");
             AJSONItem itemDefinition = ((AItemPack<?>) item).definition;
             if (splitName.length == 2 && itemDefinition.packID.equals(splitName[0]) && itemDefinition.systemName.equals(splitName[1])) {
-                hookLostVar.setTo(0, true);
+                missingHookVar.setTo(0, true);
                 return true;
             }
         }

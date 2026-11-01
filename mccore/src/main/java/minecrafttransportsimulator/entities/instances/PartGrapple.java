@@ -48,11 +48,11 @@ import minecrafttransportsimulator.systems.LanguageSystem;
  * crosshair (or along the part's +Z axis with no controller).  It flies until it sticks into the first
  * block, entity or vehicle it hits, or runs out of line and is reeled back in.  Blocks hold the vehicle,
  * entities get reeled in, and vehicles share the pull by mass.
- * <p>
+ * 
  * The hook is not a bullet.  Bullets are client-side particles that never sync or save, but the line
  * has to hold the same on every client and across reloads, so the server owns the hook and syncs it
  * to clients through variables.  Pack JSON drives and renders it through those same variables.
- * <p>
+ * 
  * The line only ever pulls, and both of its ends get the same physics.  When it's taut, whatever is on
  * each end can't move further apart and gets pulled back to the line length.  A vehicle is pulled with
  * its whole tow chain, and the chain's tyres and brakes hold back what they can.  The line's torque turns
@@ -61,7 +61,7 @@ import minecrafttransportsimulator.systems.LanguageSystem;
  * the end of the launcher vehicle facing the hook touches a wall with the hook up on it, the line stops
  * pushing it about.  The vehicle squares up to the wall and the plane under its wheels and collision boxes is pitched up
  * the face and over the lip instead.  Near the top, it can then be hauled over the edge.  See {@link ClimbPath}.
- * <p>
+ * 
  * All of this runs from {@link AEntityVehicleD_Moving} just before it moves, via {@link #updateLine()},
  * so the line's forces go through the vehicle's normal collision checks and movement sync.
  */
@@ -113,7 +113,7 @@ public class PartGrapple extends APart {
     /**How many times the range the two ends can be pulled apart before the line snaps.**/
     private static final double SNAP_FACTOR = 1.5;
     /**Cap on how fast a line can turn the vehicle the launcher is on, or its tow chain, in degrees per tick.**/
-    private static final double MAX_PULL_TURN = 15;
+    private static final double MAX_PULL_TURN = 12;
     /**Cap on how fast a line can turn a vehicle we've hooked and are towing, or its tow chain, in degrees per tick.**/
     private static final double MAX_TOWED_PULL_TURN = 30;
     /**Turns smaller than this, in degrees, aren't applied to a vehicle on the line.**/
@@ -1135,7 +1135,7 @@ public class PartGrapple extends APart {
      * In dev mode, logs how far the hook on a vehicle is off where it should be, every {@link #HOOK_DRIFT_LOG_INTERVAL}
      * ticks on the server.  Called before the anchor is moved this tick, so the stored anchor is from last tick.
      * Temporary, for chasing the hook drawing off the hooked vehicle.
-     * <p>
+     * 
      * offset: where the hook should be, in the hooked vehicle's own frame.  stale: how far the vehicle has carried the hook
      * since last tick's anchor, in blocks.  If the vehicle updates after us in a tick, the hook we sync is this far behind its body.  Pair with the client's GrappleHookClient lines.
      */
@@ -1154,7 +1154,7 @@ public class PartGrapple extends APart {
      * Client side, in dev mode: logs where the server's synced hook sits on our copy of the hooked vehicle, every
      * {@link #HOOK_DRIFT_LOG_INTERVAL} ticks.  Takes the hooked vehicle the server told us about, or the nearest
      * vehicle not in our tow chain if we weren't told.  Temporary, for chasing the hook drawing off the hooked vehicle.
-     * <p>
+     * 
      * offset: the server's hook in that vehicle's own frame.  It should match the server's offset if the server's hook
      * is on our copy's body, so the difference is how far off it would be drawn without the client working it out.
      * drawnOff: how far the server's hook is from where we now draw it.  known: whether we were told which vehicle it is.
@@ -1231,7 +1231,7 @@ public class PartGrapple extends APart {
     /**
      * In dev mode, logs how a line between two vehicles pulls on one end, every {@link #TOW_LOG_INTERVAL} ticks on the server.
      * Both ends log on the same tick, so the "towing" and "towed" lines pair up.  Temporary, for chasing weak vehicle tows.
-     * <p>
+     * 
      * radial: the chain's speed towards the other end before the line, in blocks per tick.  closing: how fast the
      * two ends close up, so negative is pulling apart.  stop: what the rigid line puts on it to stop the ends pulling apart.  spring: what the stretch pulls it in by.  along: what it actually gets towards
      * the other end, after tyres and brakes.  impulse: along times mass.  The two ends' impulses match if the line
@@ -1455,7 +1455,7 @@ public class PartGrapple extends APart {
      * it up off its wheels against its weight.  The tyres and brakes can only push back so hard, so a pull past their grip
      * drags the vehicle along rather than tipping it further.
      * -In the air, it turns about its middle until it hangs from the hook.
-     * <p>
+     * 
      * It never turns past pointing the hook along the line, so it can't swing back and forth.  It never
      * tips a grounded wheel into the ground, and never swings a wheel or box into a wall.
      *
@@ -1621,7 +1621,7 @@ public class PartGrapple extends APart {
      * hook points at where the hook is going this tick.  Its wheels roll rather than slide, so the sideways part of the
      * hook's move goes into the turn, and what's left moves the vehicle along its new arm.  All points and vectors are
      * in the vehicle's own frame, except the line's tension.
-     * <p>
+     * 
      * A vehicle towed by another vehicle's line swings after that vehicle, as the taut line takes the hook wherever the
      * other end goes, the same as a hitch.  Our own motion can't tell us that, as our wheels keep it along our heading.
      *
@@ -1793,7 +1793,7 @@ public class PartGrapple extends APart {
      * the height the wheels could drive up.  The climb path works out how far up the line can take us.  Blocks are
      * checked by their collision boxes, so grass and flowers don't count as a wall.  This is cheap enough to
      * check every tick: a few block checks just in front of each wheel and box.
-     * <p>
+     * 
      * The climb turns the vehicle square onto the wall's face and keeps it there, so whichever end touched it
      * faces it, with no roll.  See {@link ClimbPath}.
      *
@@ -2298,7 +2298,7 @@ public class PartGrapple extends APart {
 
     /**
      * The path a vehicle follows up a wall, worked out once from the shape of the wall when the climb starts.
-     * <p>
+     * 
      * It's built around the climb plane, see {@link ClimbPlane}, seen side-on in the upright plane square
      * onto the wall: u runs along the ground into the wall, and y is height.  The plane's front edge is the
      * furthest the wheels and block collision boxes reach towards the wall, and its back edge the furthest
@@ -2314,12 +2314,12 @@ public class PartGrapple extends APart {
      * -Onto the top: the flat plane slides on along the top until the back wheels are up there too.
      * How far the plane's edges have moved is the progress, and the vehicle's place and pitch at each progress
      * come straight from the plane.  The vehicle stays square onto the wall the whole way, with no roll.
-     * <p>
+     * 
      * Overhangs are taken as steps in the face, as if it were the ground.  One that sticks out from the face
      * below it no further than the front wheels' climbHeight, the plane steps out over on its way up, as the
      * wheels would drive up a step on flat ground.  One that sticks out further stops the path where the vehicle
      * meets its underside, and the path is blocked: it never gets to the lip.
-     * <p>
+     * 
      * Both sides build the same path from the mantle variables and the hook, so only the progress needs syncing.
      */
     private static class ClimbPath {

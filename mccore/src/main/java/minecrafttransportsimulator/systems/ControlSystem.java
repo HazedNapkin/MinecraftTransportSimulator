@@ -68,8 +68,9 @@ public final class ControlSystem {
 
     private static double throttleRequestLastCheck;
     private static double brakeRequestLastCheck;
-    /**True if a grapple winching us in has held the automatic brake off, and gas or brake hasn't been pressed since.**/
-    private static boolean autoBrakeHeldForReel;
+    /**The vehicle a grapple winching it in has held the automatic brake off on, if gas or brake hasn't been pressed in it since.
+     * Kept as the vehicle rather than a flag, so it doesn't carry over to the next vehicle we drive.**/
+    private static EntityVehicleF_Physics autoBrakeHeldForReel;
 
     private static boolean mouseYokeEnabledLastCall;
     private static double mouseYokePosX = Double.NaN;
@@ -1430,11 +1431,11 @@ public final class ControlSystem {
                     //Use only the first engine for this.
                     boolean reeling = powered.isReelingGrapple();
                     if (reeling) {
-                        autoBrakeHeldForReel = true;
-                    } else if (throttleValue != 0 || brakeValue != 0) {
-                        autoBrakeHeldForReel = false;
+                        autoBrakeHeldForReel = powered;
+                    } else if (throttleValue != 0 || brakeValue != 0 || autoBrakeHeldForReel != powered) {
+                        autoBrakeHeldForReel = null;
                     }
-                    if (throttleValue == 0 && brakeValue == 0 && !reeling && (powered.axialVelocity < PartEngine.MAX_SHIFT_SPEED || autoBrakeHeldForReel)) {
+                    if (throttleValue == 0 && brakeValue == 0 && !reeling && (powered.axialVelocity < PartEngine.MAX_SHIFT_SPEED || autoBrakeHeldForReel == powered)) {
                         throttleRequest = 0;
                         brakeRequest = EntityVehicleF_Physics.MAX_BRAKE;
                     } else if (powered.engines.get(0).currentGearVar.currentValue >= 0 || ConfigSystem.client.controlSettings.useShifter.value) {

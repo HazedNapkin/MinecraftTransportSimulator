@@ -26,6 +26,8 @@ import minecrafttransportsimulator.packets.instances.PacketEntityVariableToggle;
 import minecrafttransportsimulator.packets.instances.PacketPartGun;
 import minecrafttransportsimulator.packets.instances.PacketPartSeat;
 import minecrafttransportsimulator.packets.instances.PacketPartSeat.SeatAction;
+import minecrafttransportsimulator.packets.instances.PacketPartGrappleCut;
+import minecrafttransportsimulator.packets.instances.PacketPlayerGrappleCut;
 import minecrafttransportsimulator.packets.instances.PacketVehicleControlNotification;
 import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
 
@@ -90,6 +92,16 @@ public final class ControlSystem {
             if (!clickingLeft) {
                 clickingLeft = true;
                 handleClick(player, playerGun, true, false, false, false);
+                if (!InterfaceManager.clientInterface.isGUIOpen() && PartGrapple.canCutLines(player)) {
+                    //Attacking with something sharp cuts the grapple line we hit, or failing that, any line hooked into us.
+                    //The server checks we can reach the line, or that it's us it's hooked into.
+                    PartGrapple attacked = PartGrapple.getLineAttacked(player);
+                    if (attacked != null) {
+                        InterfaceManager.packetInterface.sendToServer(new PacketPartGrappleCut(attacked, player));
+                    } else if (PartGrapple.isAnyHookedInEntity(player.getWorld())) {
+                        InterfaceManager.packetInterface.sendToServer(new PacketPlayerGrappleCut(player));
+                    }
+                }
             }
         } else if (clickingLeft) {
             clickingLeft = false;

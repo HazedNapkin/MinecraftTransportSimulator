@@ -22,12 +22,16 @@ import minecrafttransportsimulator.entities.components.AEntityB_Existing;
 import minecrafttransportsimulator.entities.components.AEntityD_Definable;
 import minecrafttransportsimulator.entities.components.AEntityF_Multipart;
 import minecrafttransportsimulator.entities.instances.PartGrapple.LinePull;
+import minecrafttransportsimulator.items.components.AItemBase;
+import minecrafttransportsimulator.items.components.AItemPack;
 import minecrafttransportsimulator.items.instances.ItemPartGrapple;
 import minecrafttransportsimulator.jsondefs.JSONAnimationDefinition;
 import minecrafttransportsimulator.jsondefs.JSONCameraObject;
 import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
 import minecrafttransportsimulator.jsondefs.JSONPartDefinition;
+import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 import minecrafttransportsimulator.mcinterface.IWrapperEntity;
+import minecrafttransportsimulator.mcinterface.IWrapperItemStack;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
@@ -75,6 +79,7 @@ public class PartGrapple extends APart {
     public static final String VAR_LINE_PITCH = "grapple_line_pitch";
     public static final String VAR_LENGTH = "grapple_length";
     public static final String VAR_SNAPPED = "grapple_snapped";
+    public static final String VAR_CUT = "grapple_cut";
 
     public static final int STATE_IDLE = 0;
     public static final int STATE_FLYING = 1;
@@ -126,6 +131,12 @@ public class PartGrapple extends APart {
     private static final double DEFAULT_BREAK_WINCH_MULTIPLE = 5;
     /**How many ticks in a row the line has to be held past its break force before it snaps, so a single jolt doesn't break it.**/
     private static final int BREAK_TICKS = 5;
+    /**How close an attack has to pass to the line to cut it, in blocks.**/
+    private static final double CUT_RADIUS = 0.3;
+    /**How far a player can reach to cut a line, in blocks.**/
+    public static final double CUT_REACH = 3.5;
+    /**Extra reach the server allows when checking a cut, as its copies of the player and the line lag behind the client's.**/
+    private static final double CUT_REACH_MARGIN = 2;
     /**How many times the vehicle's weight the winch pulls with while reeling when winchForce is left at 0.**/
     private static final double DEFAULT_WINCH_WEIGHTS = 2;
     /**Gravity in m/ticks^2, the same as {@link EntityVehicleF_Physics#getGravitationalForce()} uses.**/
@@ -225,6 +236,11 @@ public class PartGrapple extends APart {
     private boolean snapped;
     private double lastSnaps;
     private boolean lastSnapsValid;
+    /**How many times the line has been cut.  Clients play the cut when it changes.  See {@link #cut}.**/
+    private final ComputedVariable cutsVar;
+    /**True for the tick the line is cut, for grapple_cut.  Set on clients when they see cutsVar change.**/
+    private boolean cut;
+    private double lastCuts;
 
     //Server-only hook state that can't live in a variable.  Lost on reload, which drops flying hooks and hooks in entities.
     private boolean hookDataValid;
@@ -339,6 +355,7 @@ public class PartGrapple extends APart {
         addVariable(this.mantleYawVar = new ComputedVariable(this, "grapple_mantle_yaw", data));
         addVariable(this.mantleSideVar = new ComputedVariable(this, "grapple_mantle_side", data));
         addVariable(this.snapsVar = new ComputedVariable(this, "grapple_snaps"));
+        addVariable(this.cutsVar = new ComputedVariable(this, "grapple_cuts"));
     }
 
     @Override
@@ -470,7 +487,9 @@ public class PartGrapple extends APart {
         } else {
             //The first value we see is whatever the server had when we loaded, not a snap.
             snapped = lastSnapsValid && snapsVar.currentValue != lastSnaps;
+            cut = lastSnapsValid && cutsVar.currentValue != lastCuts;
             lastSnaps = snapsVar.currentValue;
+            lastCuts = cutsVar.currentValue;
             lastSnapsValid = true;
             updateRenderAnchor();
             updateDangle();
@@ -904,6 +923,15 @@ public class PartGrapple extends APart {
      */
     private void snap() {
         snapsVar.setTo(snapsVar.currentValue + 1, true);
+        release();
+    }
+
+    /**
+     * Releases the line because a player cut it, and tells clients so they can play the cut.  Server only.
+     * Counted separately from snaps, so packs can give it its own sound.  See {@link #snap()}.
+     */
+    private void cut() {
+        cutsVar.setTo(cutsVar.currentValue + 1, true);
         release();
     }
 
@@ -2830,6 +2858,144 @@ public class PartGrapple extends APart {
     }
 
     /**
+     * Returns true if the hook is stuck in an entity.  Clients know this too, though not which entity.
+     */
+    public boolean isHookedInEntity() {
+        return getState() == STATE_ENTITY;
+    }
+
+    /**
+     * Returns true if any grapple in the world is hooked into an entity.  Clients use this to only ask the
+     * server to cut lines when there might be one in them.
+     */
+    public static boolean isAnyHookedInEntity(AWrapperWorld world) {
+        for (AEntityVehicleD_Moving vehicle : world.getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
+            for (PartGrapple grapple : vehicle.grapples) {
+                if (grapple.isHookedInEntity()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Cuts the line of every grapple hooked into the passed-in entity.  Server only.
+     */
+    public static void cutLinesHookedInto(IWrapperEntity entity) {
+        for (AEntityVehicleD_Moving vehicle : entity.getWorld().getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
+            for (PartGrapple grapple : vehicle.grapples) {
+                if (grapple.getState() == STATE_ENTITY && entity.equals(grapple.hookedEntity)) {
+                    grapple.cut();
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns the grapple whose line the player's attack passes through, or null if it misses them all.  Takes the
+     * nearest along their look, and not one behind a block.  Client side, where the line is drawn.
+     */
+    public static PartGrapple getLineAttacked(IWrapperPlayer player) {
+        Point3D eye = player.getEyePosition().copy();
+        Point3D look = player.getLineOfSight(CUT_REACH).copy();
+        BlockHitResult blockHit = player.getWorld().getBlockHit(eye, look);
+        double reach = blockHit != null ? eye.distanceTo(blockHit.hitPosition) : CUT_REACH;
+        PartGrapple nearest = null;
+        for (AEntityVehicleD_Moving vehicle : player.getWorld().getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
+            for (PartGrapple grapple : vehicle.grapples) {
+                if (grapple.lineOutVar.isActive) {
+                    double distance = getRayHitDistance(eye, look, grapple.position, grapple.getLineAnchor());
+                    if (distance >= 0 && distance < reach) {
+                        reach = distance;
+                        nearest = grapple;
+                    }
+                }
+            }
+        }
+        return nearest;
+    }
+
+    /**
+     * Cuts the line for the player, if they're holding something sharp and can reach it.  They can always
+     * reach it if the hook is stuck in them.  Server only.
+     */
+    public void cutLine(IWrapperPlayer player) {
+        if (lineOutVar.isActive && canCutLines(player)) {
+            boolean hookedInPlayer = getState() == STATE_ENTITY && player.equals(hookedEntity);
+            if (hookedInPlayer || getDistanceToSegment(player.getEyePosition(), position, getLineAnchor()) < CUT_REACH + CUT_REACH_MARGIN) {
+                cut();
+            }
+        }
+    }
+
+    /**
+     * Returns how far along the ray from start along delta it passes within {@link #CUT_RADIUS} of the segment
+     * from lineStart to lineEnd, or -1 if it doesn't.  Takes the points on each closest to the other.
+     */
+    private static double getRayHitDistance(Point3D start, Point3D delta, Point3D lineStart, Point3D lineEnd) {
+        Point3D line = lineEnd.copy().subtract(lineStart);
+        Point3D between = start.copy().subtract(lineStart);
+        double rayLengthSquared = delta.dotProduct(delta, false);
+        double lineLengthSquared = line.dotProduct(line, false);
+        double alongRay = delta.dotProduct(between, false);
+        double alongLine = line.dotProduct(between, false);
+        double cross = delta.dotProduct(line, false);
+        if (rayLengthSquared < 1.0E-6) {
+            return -1;
+        }
+
+        //Fractions along the ray and line of the closest points, clamped to their ends.
+        double rayFraction;
+        double lineFraction;
+        if (lineLengthSquared < 1.0E-6) {
+            rayFraction = clamp01(-alongRay / rayLengthSquared);
+            lineFraction = 0;
+        } else {
+            double denominator = rayLengthSquared * lineLengthSquared - cross * cross;
+            rayFraction = denominator > 1.0E-6 ? clamp01((cross * alongLine - alongRay * lineLengthSquared) / denominator) : 0;
+            lineFraction = (cross * rayFraction + alongLine) / lineLengthSquared;
+            if (lineFraction < 0) {
+                lineFraction = 0;
+                rayFraction = clamp01(-alongRay / rayLengthSquared);
+            } else if (lineFraction > 1) {
+                lineFraction = 1;
+                rayFraction = clamp01((cross - alongRay) / rayLengthSquared);
+            }
+        }
+        Point3D rayPoint = start.copy().addScaled(delta, rayFraction);
+        Point3D linePoint = lineStart.copy().addScaled(line, lineFraction);
+        return rayPoint.isDistanceToCloserThan(linePoint, CUT_RADIUS) ? rayFraction * Math.sqrt(rayLengthSquared) : -1;
+    }
+
+    /**
+     * Returns how far the point is from the nearest point on the segment from lineStart to lineEnd.
+     */
+    private static double getDistanceToSegment(Point3D point, Point3D lineStart, Point3D lineEnd) {
+        Point3D line = lineEnd.copy().subtract(lineStart);
+        double lineLengthSquared = line.dotProduct(line, false);
+        double fraction = lineLengthSquared > 1.0E-6 ? clamp01(point.copy().subtract(lineStart).dotProduct(line, false) / lineLengthSquared) : 0;
+        return point.distanceTo(lineStart.copy().addScaled(line, fraction));
+    }
+
+    private static double clamp01(double value) {
+        return Math.max(0, Math.min(1, value));
+    }
+
+    /**
+     * Returns true if the player is holding something sharp enough to cut a grapple line: a pack item with
+     * canCutGrappleLines set, or an item in the grappleCuttingItems config.
+     */
+    public static boolean canCutLines(IWrapperPlayer player) {
+        AItemBase heldItem = player.getHeldItem();
+        if (heldItem instanceof AItemPack && ((AItemPack<?>) heldItem).definition.general.canCutGrappleLines) {
+            return true;
+        }
+        IWrapperItemStack heldStack = player.getHeldStack();
+        return !heldStack.isEmpty() && ConfigSystem.settings.general.grappleCuttingItems.value.contains(InterfaceManager.coreInterface.getStackItemName(heldStack));
+    }
+
+    /**
      * Client side: sets the multipart the hook is stuck in and where on it, or clears it if the ID is null.  See {@link PacketPartGrappleHook}.
      */
     public void setHookedMultipart(UUID multipartID, Point3D offset) {
@@ -2954,6 +3120,8 @@ public class PartGrapple extends APart {
                 return new ComputedVariable(this, variable, partialTicks -> getAim(partialTicks)[4], true);
             case (VAR_SNAPPED):
                 return new ComputedVariable(this, variable, partialTicks -> snapped ? 1 : 0, false);
+            case (VAR_CUT):
+                return new ComputedVariable(this, variable, partialTicks -> cut ? 1 : 0, false);
             default:
                 return super.createComputedVariable(variable, createDefaultIfNotPresent);
         }

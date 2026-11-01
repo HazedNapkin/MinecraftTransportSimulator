@@ -54,7 +54,7 @@ import minecrafttransportsimulator.systems.LanguageSystem;
  * the vehicle so the point the line is on swings round towards the other end: it twists and pitches up
  * about its far wheels, or hangs below the line once clear of the ground.  Once a wheel or collision box at
  * the end of the launcher vehicle facing the hook touches a wall with the hook up on it, the line stops
- * pushing it about.  The vehicle squares up to the wall and the plane between its wheel bottoms is pitched up
+ * pushing it about.  The vehicle squares up to the wall and the plane under its wheels and collision boxes is pitched up
  * the face and over the lip instead.  Near the top, it can then be hauled over the edge.  See {@link ClimbPath}.
  * <p>
  * All of this runs from {@link AEntityVehicleD_Moving} just before it moves, via {@link #updateLine()},
@@ -151,9 +151,9 @@ public class PartGrapple extends APart {
     private static final double MANTLE_CONTACT = 0.25;
     /**How far round the wall the path looks, and how far up above the hook, in blocks.**/
     private static final double MANTLE_PATH_MARGIN = 2;
-    /**How far our collision boxes are shrunk and lifted when checking they fit on top of a wall, so the top they rest on doesn't count as in the way.  Also how far above and below the plane between the wheels is checked for air and a block to rest on.**/
+    /**How far our collision boxes are shrunk and lifted when checking they fit on top of a wall, so the top they rest on doesn't count as in the way.  Also how far above and below the climb plane is checked for air and a block to rest on.**/
     private static final double MANTLE_ROOM_MARGIN = 0.1;
-    /**How far apart the points checked for room on top of a wall are, along and up from the plane between the wheels.**/
+    /**How far apart the points checked for room on top of a wall are, along and up from the climb plane.**/
     private static final double MANTLE_ROOM_STEP = 0.25;
     /**Longest path a climb can have, in blocks along the wall, so a bad hook can't search half the world.**/
     private static final double MANTLE_MAX_PATH = 48;
@@ -1707,7 +1707,8 @@ public class PartGrapple extends APart {
         }
 
         //Set the path before the phase, so clients have it by the time they start following it.
-        Point3D leadCenter = wheels.getWorldCenter(wheels.launcherEnd);
+        //The path starts from the front edge of the plane under the wheels and block collision boxes.
+        Point3D leadEdge = new ClimbPlane(wheels).frontLocal.rotate(vehicleOn.orientation).add(vehicleOn.position);
         double lowestBottom = Double.MAX_VALUE;
         for (APart other : wheels.launcherEnd) {
             lowestBottom = Math.min(lowestBottom, other.position.y - other.getHeight() / 2D);
@@ -1715,8 +1716,11 @@ public class PartGrapple extends APart {
         for (APart other : wheels.farEnd) {
             lowestBottom = Math.min(lowestBottom, other.position.y - other.getHeight() / 2D);
         }
-        mantleOriginXVar.setTo(leadCenter.x, true);
-        mantleOriginZVar.setTo(leadCenter.z, true);
+        for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+            lowestBottom = Math.min(lowestBottom, box.globalCenter.y - box.heightRadius);
+        }
+        mantleOriginXVar.setTo(leadEdge.x, true);
+        mantleOriginZVar.setTo(leadEdge.z, true);
         mantleBaseVar.setTo(lowestBottom - 0.5, true);
         mantleYawVar.setTo(Math.toDegrees(Math.atan2(wallNormal.x, wallNormal.z)), true);
         mantleSideVar.setTo(side, true);
@@ -2052,8 +2056,8 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Returns true if the vehicle fits flat on top of the wall at the end of the climb path.  The plane between the bottoms
-     * of its wheels has to have air above it everywhere, as high as the vehicle reaches above it, and rest on top of a solid
+     * Returns true if the vehicle fits flat on top of the wall at the end of the climb path.  The climb plane, see
+     * {@link ClimbPlane}, has to have air above it everywhere, as high as the vehicle reaches above it, and rest on top of a solid
      * block somewhere.  Its collision boxes can't be in a block there either, for anything sticking out past the plane.
      * Boxes don't turn with us, so they're moved to where they'd be and checked as they are.
      *
@@ -2120,9 +2124,10 @@ public class PartGrapple extends APart {
     /**
      * The path a vehicle follows up a wall, worked out once from the shape of the wall when the climb starts.
      * <p>
-     * It's built around the plane between the bottoms of the wheels, seen side-on in the upright plane square
+     * It's built around the climb plane, see {@link ClimbPlane}, seen side-on in the upright plane square
      * onto the wall: u runs along the ground into the wall, and y is height.  The plane's front edge is the
-     * bottom of the wheels at the end facing the wall, and its back edge is the bottom of the others.  The
+     * furthest the wheels and block collision boxes reach towards the wall, and its back edge the furthest
+     * they reach away from it, both at the lowest of their bottoms.  The
      * wall's shape is how high the blocks go at each u, taking the highest across the vehicle's width.  The
      * vehicle's outline, its wheels and the collision boxes that hit blocks, is kept out of that shape.  The
      * climb goes in three stages:
@@ -2245,12 +2250,11 @@ public class PartGrapple extends APart {
             double base = grapple.mantleBaseVar.currentValue;
             Point3D anchor = grapple.getAnchor();
 
-            //The plane between the bottoms of the wheels, in our own frame, which doesn't change as we move.
+            //The plane under the wheels and block collision boxes, in our own frame, which doesn't change as we move.
             //Forwards along it is towards the wall, which is backwards for us when our back faces it.
-            Point3D frontLocal = wheels.getLocalCenter(wheels.launcherEnd);
-            frontLocal.y = wheels.getLocalBottom(wheels.launcherEnd);
-            Point3D rearLocal = wheels.getLocalCenter(wheels.farEnd);
-            rearLocal.y = wheels.getLocalBottom(wheels.farEnd);
+            ClimbPlane plane = grapple.new ClimbPlane(wheels);
+            Point3D frontLocal = plane.frontLocal;
+            Point3D rearLocal = plane.rearLocal;
             double planeRun = (frontLocal.z - rearLocal.z) * side;
             double planeRise = frontLocal.y - rearLocal.y;
             double planeLength = Math.hypot(planeRun, planeRise);
@@ -2258,36 +2262,27 @@ public class PartGrapple extends APart {
                 return null;
             }
 
-            //The vehicle's outline, and how far it spans across its width.
+            //The vehicle's outline.
             Outline outline = new Outline(frontLocal, planeRun / planeLength, planeRise / planeLength, side);
-            double minX = Double.MAX_VALUE;
-            double maxX = -Double.MAX_VALUE;
             List<APart> allWheels = new ArrayList<>(wheels.launcherEnd);
             allWheels.addAll(wheels.farEnd);
             for (APart wheel : allWheels) {
-                Point3D center = grapple.toVehicleLocal(wheel.position);
-                outline.addWheel(center, wheel.getHeight() / 2D);
-                minX = Math.min(minX, center.x);
-                maxX = Math.max(maxX, center.x);
+                outline.addWheel(grapple.toVehicleLocal(wheel.position), wheel.getHeight() / 2D);
             }
             Point3D heading = new Point3D(grapple.vehicleOn.headingVector.x, 0, grapple.vehicleOn.headingVector.z);
             if (heading.length() > 1.0E-3) {
                 heading.normalize();
                 for (BoundingBox box : grapple.vehicleOn.allBlockCollisionBoxes) {
-                    //Boxes don't turn with us, so take how far they reach along and across our heading.
-                    Point3D center = grapple.toVehicleLocal(box.globalCenter);
+                    //Boxes don't turn with us, so take how far they reach along our heading.
                     double depth = Math.abs(heading.x) * box.widthRadius + Math.abs(heading.z) * box.depthRadius;
-                    double width = Math.abs(heading.z) * box.widthRadius + Math.abs(heading.x) * box.depthRadius;
-                    outline.addBox(center, depth, box.heightRadius);
-                    minX = Math.min(minX, center.x - width);
-                    maxX = Math.max(maxX, center.x + width);
+                    outline.addBox(grapple.toVehicleLocal(box.globalCenter), depth, box.heightRadius);
                 }
             }
-            //The wall's shape is taken along lines spaced evenly across that span, so all of it clears the wall.
+            //The wall's shape is taken along lines spaced evenly across the plane's width, so all of it clears the wall.
             List<Double> tracks = new ArrayList<>();
-            for (double x = minX;; x = Math.min(maxX, x + TRACK_STEP)) {
+            for (double x = plane.minX;; x = Math.min(plane.maxX, x + TRACK_STEP)) {
                 tracks.add(x - frontLocal.x);
-                if (x >= maxX) {
+                if (x >= plane.maxX) {
                     break;
                 }
             }
@@ -2568,8 +2563,8 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * The vehicle's side-on outline, as points measured from the front edge of the plane between the bottoms of
-     * its wheels: how far along the plane towards the wall, and how far up off it.  Placed by where the plane's
+     * The vehicle's side-on outline, as points measured from the front edge of the climb plane, see
+     * {@link ClimbPlane}: how far along the plane towards the wall, and how far up off it.  Placed by where the plane's
      * front edge is and how far the plane is pitched up, against the wall's shape.  See {@link ClimbPath}.
      */
     private static class Outline {
@@ -3150,31 +3145,59 @@ public class PartGrapple extends APart {
             return radius;
         }
 
-        /**Middle of the wheels in the list, in the vehicle's frame.  The list must not be empty.**/
-        Point3D getLocalCenter(List<APart> wheels) {
-            Point3D center = new Point3D();
-            for (APart wheel : wheels) {
-                center.add(toVehicleLocal(wheel.position));
-            }
-            return center.scale(1D / wheels.size());
-        }
+    }
 
-        /**Height of the lowest wheel bottom in the list, in the vehicle's frame.  The list must not be empty.**/
-        double getLocalBottom(List<APart> wheels) {
+    /**
+     * The flat plane the climb is built around, in the vehicle's frame.  It's at the lowest bottom of the wheels
+     * and block collision boxes, and reaches as far as they do front to back and side to side.  See {@link ClimbPath}.
+     */
+    private class ClimbPlane {
+        /**Middle of the plane's edge at the end facing the wall.**/
+        final Point3D frontLocal;
+        /**Middle of the plane's edge at the far end.**/
+        final Point3D rearLocal;
+        /**How far the plane reaches to either side.**/
+        final double minX;
+        final double maxX;
+
+        ClimbPlane(WheelSplit wheels) {
             double bottom = Double.MAX_VALUE;
-            for (APart wheel : wheels) {
-                bottom = Math.min(bottom, toVehicleLocal(wheel.position).y - wheel.getHeight() / 2D);
+            double minZ = Double.MAX_VALUE;
+            double maxZ = -Double.MAX_VALUE;
+            double lowX = Double.MAX_VALUE;
+            double highX = -Double.MAX_VALUE;
+            List<APart> allWheels = new ArrayList<>(wheels.launcherEnd);
+            allWheels.addAll(wheels.farEnd);
+            for (APart wheel : allWheels) {
+                Point3D center = toVehicleLocal(wheel.position);
+                double radius = wheel.getHeight() / 2D;
+                double halfWidth = wheel.getWidth() / 2D;
+                bottom = Math.min(bottom, center.y - radius);
+                minZ = Math.min(minZ, center.z - radius);
+                maxZ = Math.max(maxZ, center.z + radius);
+                lowX = Math.min(lowX, center.x - halfWidth);
+                highX = Math.max(highX, center.x + halfWidth);
             }
-            return bottom;
-        }
-
-        /**Middle of the wheels in the list, in world coordinates.  The list must not be empty.**/
-        Point3D getWorldCenter(List<APart> wheels) {
-            Point3D center = new Point3D();
-            for (APart wheel : wheels) {
-                center.add(wheel.position);
+            Point3D heading = new Point3D(vehicleOn.headingVector.x, 0, vehicleOn.headingVector.z);
+            if (heading.length() > 1.0E-3) {
+                heading.normalize();
+                for (BoundingBox box : vehicleOn.allBlockCollisionBoxes) {
+                    //Boxes don't turn with us, so take how far they reach along and across our heading.
+                    Point3D center = toVehicleLocal(box.globalCenter);
+                    double depth = Math.abs(heading.x) * box.widthRadius + Math.abs(heading.z) * box.depthRadius;
+                    double width = Math.abs(heading.z) * box.widthRadius + Math.abs(heading.x) * box.depthRadius;
+                    bottom = Math.min(bottom, center.y - box.heightRadius);
+                    minZ = Math.min(minZ, center.z - depth);
+                    maxZ = Math.max(maxZ, center.z + depth);
+                    lowX = Math.min(lowX, center.x - width);
+                    highX = Math.max(highX, center.x + width);
+                }
             }
-            return center.scale(1D / wheels.size());
+            minX = lowX;
+            maxX = highX;
+            double middleX = (minX + maxX) / 2D;
+            frontLocal = new Point3D(middleX, bottom, wheels.side > 0 ? maxZ : minZ);
+            rearLocal = new Point3D(middleX, bottom, wheels.side > 0 ? minZ : maxZ);
         }
     }
 

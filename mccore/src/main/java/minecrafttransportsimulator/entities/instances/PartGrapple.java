@@ -74,6 +74,7 @@ public class PartGrapple extends APart {
     public static final String VAR_LINE_YAW = "grapple_line_yaw";
     public static final String VAR_LINE_PITCH = "grapple_line_pitch";
     public static final String VAR_LENGTH = "grapple_length";
+    public static final String VAR_SNAPPED = "grapple_snapped";
 
     public static final int STATE_IDLE = 0;
     public static final int STATE_FLYING = 1;
@@ -218,6 +219,12 @@ public class PartGrapple extends APart {
     private final ComputedVariable mantleYawVar;
     /**1 if the front of the vehicle faces the wall, -1 if the back does.**/
     private final ComputedVariable mantleSideVar;
+    /**How many times the line has snapped.  Clients play the snap when it changes.  See {@link #snapped}.**/
+    private final ComputedVariable snapsVar;
+    /**True for the tick the line snaps, for grapple_snapped.  Set on clients when they see snapsVar change.**/
+    private boolean snapped;
+    private double lastSnaps;
+    private boolean lastSnapsValid;
 
     //Server-only hook state that can't live in a variable.  Lost on reload, which drops flying hooks and hooks in entities.
     private boolean hookDataValid;
@@ -331,6 +338,7 @@ public class PartGrapple extends APart {
         addVariable(this.mantleBaseVar = new ComputedVariable(this, "grapple_mantle_base", data));
         addVariable(this.mantleYawVar = new ComputedVariable(this, "grapple_mantle_yaw", data));
         addVariable(this.mantleSideVar = new ComputedVariable(this, "grapple_mantle_side", data));
+        addVariable(this.snapsVar = new ComputedVariable(this, "grapple_snaps"));
     }
 
     @Override
@@ -460,6 +468,10 @@ public class PartGrapple extends APart {
         if (!world.isClient()) {
             updateServerHook();
         } else {
+            //The first value we see is whatever the server had when we loaded, not a snap.
+            snapped = lastSnapsValid && snapsVar.currentValue != lastSnaps;
+            lastSnaps = snapsVar.currentValue;
+            lastSnapsValid = true;
             updateRenderAnchor();
             updateDangle();
             sendCameraAim();
@@ -550,11 +562,11 @@ public class PartGrapple extends APart {
         Point3D anchor = getAnchor();
         if (!anchor.isDistanceToCloserThan(position, rangeVar.currentValue * SNAP_FACTOR)) {
             //Pulled or teleported too far apart.  The line snaps.
-            release();
+            snap();
             return;
         }
         if (isOverloaded()) {
-            release();
+            snap();
             return;
         }
 
@@ -884,6 +896,15 @@ public class PartGrapple extends APart {
         selfShareVar.setTo(selfShare, true);
         ropeVar.setTo(clampRope(position.distanceTo(hit.position)), true);
         setState(state);
+    }
+
+    /**
+     * Releases the line because it broke, and tells clients so they can play the snap.  Server only.
+     * Sent as a count rather than a one-tick flag, so clients can't miss it if the flag's on and off packets land in the same tick.
+     */
+    private void snap() {
+        snapsVar.setTo(snapsVar.currentValue + 1, true);
+        release();
     }
 
     private void release() {
@@ -2936,6 +2957,8 @@ public class PartGrapple extends APart {
                 return new ComputedVariable(this, variable, partialTicks -> getAim(partialTicks)[3], true);
             case (VAR_LENGTH):
                 return new ComputedVariable(this, variable, partialTicks -> getAim(partialTicks)[4], true);
+            case (VAR_SNAPPED):
+                return new ComputedVariable(this, variable, partialTicks -> snapped ? 1 : 0, false);
             default:
                 return super.createComputedVariable(variable, createDefaultIfNotPresent);
         }

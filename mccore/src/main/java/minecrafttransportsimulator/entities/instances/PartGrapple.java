@@ -25,6 +25,7 @@ import minecrafttransportsimulator.entities.instances.PartGrapple.LinePull;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.components.AItemPack;
 import minecrafttransportsimulator.items.instances.ItemPartGrapple;
+import minecrafttransportsimulator.jsondefs.AJSONItem;
 import minecrafttransportsimulator.jsondefs.JSONAnimationDefinition;
 import minecrafttransportsimulator.jsondefs.JSONCameraObject;
 import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
@@ -80,6 +81,8 @@ public class PartGrapple extends APart {
     public static final String VAR_LENGTH = "grapple_length";
     public static final String VAR_SNAPPED = "grapple_snapped";
     public static final String VAR_CUT = "grapple_cut";
+    public static final String VAR_HOOK_LOST = "grapple_hook_lost";
+    public static final String VAR_COOLDOWN = "grapple_cooldown";
 
     public static final int STATE_IDLE = 0;
     public static final int STATE_FLYING = 1;
@@ -202,6 +205,8 @@ public class PartGrapple extends APart {
     private final ComputedVariable disableVehicleAttachVar;
     private final ComputedVariable disableMantleVar;
     private final ComputedVariable disableClimbVar;
+    private final ComputedVariable loseHookOnSnapVar;
+    private final ComputedVariable snapCooldownVar;
 
     //Inputs.
     public final ComputedVariable fireVar;
@@ -241,6 +246,10 @@ public class PartGrapple extends APart {
     /**True for the tick the line is cut, for grapple_cut.  Set on clients when they see cutsVar change.**/
     private boolean cut;
     private double lastCuts;
+    /**1 once the hook's been lost to a snap, until a player reloads it.  See {@link #reloadHook}.**/
+    private final ComputedVariable hookLostVar;
+    /**Ticks left before the grapple can fire again after a snap.  Set by the server when the line snaps, then counted down on each side.**/
+    private final ComputedVariable cooldownVar;
 
     //Server-only hook state that can't live in a variable.  Lost on reload, which drops flying hooks and hooks in entities.
     private boolean hookDataValid;
@@ -333,6 +342,8 @@ public class PartGrapple extends APart {
         addVariable(this.disableVehicleAttachVar = new ComputedVariable(this, "disableVehicleAttach"));
         addVariable(this.disableMantleVar = new ComputedVariable(this, "disableMantle"));
         addVariable(this.disableClimbVar = new ComputedVariable(this, "disableClimb"));
+        addVariable(this.loseHookOnSnapVar = new ComputedVariable(this, "loseHookOnSnap"));
+        addVariable(this.snapCooldownVar = new ComputedVariable(this, "snapCooldown"));
 
         addVariable(this.fireVar = new ComputedVariable(this, VAR_FIRE, data));
         addVariable(this.reelVar = new ComputedVariable(this, VAR_REEL));
@@ -356,6 +367,8 @@ public class PartGrapple extends APart {
         addVariable(this.mantleSideVar = new ComputedVariable(this, "grapple_mantle_side", data));
         addVariable(this.snapsVar = new ComputedVariable(this, "grapple_snaps"));
         addVariable(this.cutsVar = new ComputedVariable(this, "grapple_cuts"));
+        addVariable(this.hookLostVar = new ComputedVariable(this, VAR_HOOK_LOST, data));
+        addVariable(this.cooldownVar = new ComputedVariable(this, VAR_COOLDOWN, data));
     }
 
     @Override
@@ -380,6 +393,8 @@ public class PartGrapple extends APart {
         disableVehicleAttachVar.setTo(definition.grapple.disableVehicleAttach ? 1 : 0, false);
         disableMantleVar.setTo(definition.grapple.disableMantle ? 1 : 0, false);
         disableClimbVar.setTo(definition.grapple.disableClimb ? 1 : 0, false);
+        loseHookOnSnapVar.setTo(definition.grapple.loseHookOnSnap ? 1 : 0, false);
+        snapCooldownVar.setTo(definition.grapple.snapCooldown, false);
     }
 
     /**
@@ -481,6 +496,11 @@ public class PartGrapple extends APart {
      * Called by the vehicle we are on, on both client and server, once per tick just before it moves.
      */
     public void updateLine() {
+        //Both sides count the cooldown down themselves, so it doesn't need syncing every tick.
+        if (cooldownVar.isActive) {
+            cooldownVar.setTo(Math.max(0, cooldownVar.currentValue - 1), false);
+        }
+
         //The server owns the hook.  It flies it, decides hits and line length, and syncs them to clients.
         if (!world.isClient()) {
             updateServerHook();
@@ -530,6 +550,11 @@ public class PartGrapple extends APart {
             return;
         }
         if (state == STATE_IDLE) {
+            if (hookLostVar.isActive || cooldownVar.isActive) {
+                //Nothing to fire, or not ready to fire it yet.
+                fireVar.setTo(0, true);
+                return;
+            }
             launch();
             //Take the first step straight away.  Otherwise clients get a tick with the hook sitting on the
             //launcher, and a zero-length cable has no direction, so it can point anywhere.
@@ -923,7 +948,41 @@ public class PartGrapple extends APart {
      */
     private void snap() {
         snapsVar.setTo(snapsVar.currentValue + 1, true);
+        //Without a hook item to reload with, a lost hook could never come back, so keep it.
+        if (loseHookOnSnapVar.isActive && definition.grapple.hookItem != null) {
+            hookLostVar.setTo(1, true);
+        }
+        if (snapCooldownVar.currentValue > 0) {
+            cooldownVar.setTo(snapCooldownVar.currentValue, true);
+        }
         release();
+    }
+
+    @Override
+    public boolean interact(IWrapperPlayer player) {
+        if (isActiveVar.isActive && reloadHook(player.getHeldStack()) && !player.isCreative()) {
+            player.getInventory().removeFromSlot(player.getHotbarIndex(), 1);
+        }
+        return true;
+    }
+
+    /**
+     * Reloads a hook lost to a snap if the stack is our hookItem, and returns true if it did.  Server only.
+     */
+    private boolean reloadHook(IWrapperItemStack stack) {
+        if (!hookLostVar.isActive || definition.grapple.hookItem == null) {
+            return false;
+        }
+        AItemBase item = stack.getItem();
+        if (item instanceof AItemPack) {
+            String[] splitName = definition.grapple.hookItem.split(":");
+            AJSONItem itemDefinition = ((AItemPack<?>) item).definition;
+            if (splitName.length == 2 && itemDefinition.packID.equals(splitName[0]) && itemDefinition.systemName.equals(splitName[1])) {
+                hookLostVar.setTo(0, true);
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

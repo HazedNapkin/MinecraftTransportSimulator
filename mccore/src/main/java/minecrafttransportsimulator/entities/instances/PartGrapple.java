@@ -1096,6 +1096,10 @@ public class PartGrapple extends APart {
      * and pulled back towards the line length, and the vehicle doesn't feel it.  One with a mass takes its share of
      * the line the same as a vehicle does, see {@link #getChainPull}: it only takes its share of stopping the two ends
      * pulling apart and of the pull back, and the vehicle takes the rest in {@link #applyLineForces}.
+     * <p>
+     * Other lines hooked into the entity share stopping it the same as on a vehicle, see {@link #getLinesHolding}.  Each line
+     * pushes the entity as soon as it works out its pull, so they all work from its velocity at the start of the tick.
+     * Otherwise the first line would stop it, take all the tension, and leave the others nothing to hold.
      *
      * @param share how much of the line's pull the entity takes, from 0 to 1.  1 for an entity with no mass.
      */
@@ -1107,17 +1111,18 @@ public class PartGrapple extends APart {
         }
         Point3D lineNormal = toLauncher.scale(1D / distance);
         Point3D motionAdded = new Point3D();
-        double radialSpeed = entity.getVelocity().dotProduct(lineNormal, false);
+        double lines = getLinesHolding(entity, lineNormal);
+        double radialSpeed = getLineCensus(world).getVelocity(entity).dotProduct(lineNormal, false);
         if (share >= 1) {
             if (radialSpeed < 0) {
-                motionAdded.addScaled(lineNormal, -radialSpeed);
+                motionAdded.addScaled(lineNormal, -radialSpeed / lines);
             }
             motionAdded.addScaled(lineNormal, Math.min((distance - rope) * STIFFNESS, MAX_PULL));
         } else {
             //Our motion gets scaled by speedFactor when applied, but the entity's velocity is how far it really moves.
             EntityVehicleF_Physics lead = getTowChainLead(vehicleOn);
             double closingSpeed = radialSpeed - lead.motion.dotProduct(lineNormal, false) * lead.speedFactor;
-            double stopSpeed = Math.max(0, -closingSpeed) * share;
+            double stopSpeed = Math.max(0, -closingSpeed) * share / lines;
             double springSpeed = Math.max(0, Math.min((distance - rope) * STIFFNESS, MAX_PULL) * share - Math.max(0, closingSpeed) * share);
             motionAdded.addScaled(lineNormal, stopSpeed + springSpeed);
             tickHoldTension = Math.max(tickHoldTension, stopSpeed * getEntityMass(entity));
@@ -1158,7 +1163,7 @@ public class PartGrapple extends APart {
         }
         Point3D towards = toLauncher.scale(1D / distance);
         Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
-        int lines = getLinesHolding(getTowChainLead(other), towards);
+        double lines = getLinesHolding(getTowChainLead(other), towards);
         ChainPull pull = getChainPull(other, towards, distance - rope, share, lines, launcherMotion, getWinchLimit());
         if (!world.isClient()) {
             tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
@@ -1274,7 +1279,7 @@ public class PartGrapple extends APart {
      * passes all its momentum between them; a towing impulse bigger than the towed one is momentum the line loses.
      * thrust: what the engines added along the heading this tick.  brake: total brake hold on the grounded wheels.
      */
-    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, int lines, Point3D otherMotion, ChainPull pull) {
+    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, double lines, Point3D otherMotion, ChainPull pull) {
         if (!ConfigSystem.settings.general.devMode.value || world.isClient() || vehicleOn.ticksExisted % TOW_LOG_INTERVAL != 0) {
             return;
         }
@@ -1285,7 +1290,7 @@ public class PartGrapple extends APart {
         double spring = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
         double along = pull.motion.dotProduct(towards, false);
         double brake = getBrakeHold(lead);
-        InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f lines %d stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
+        InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f lines %.2f stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
                 vehicleOn.ticksExisted, end, lead.definition.systemName, lead.currentMass, share, lines, stretch,
                 radial, closing, stop, spring, along, stop + spring - along,
                 along * lead.currentMass, pull.force.length(), getWinchLimit(),
@@ -1311,21 +1316,21 @@ public class PartGrapple extends APart {
      * the spring part, and while reeling the winch can only pull so hard.  The spring only gets what the tension has
      * left under that once the line is held, so a chain driving away hard stalls the winch rather than being reeled in.
      *
-     * When more than one line holds the chain the same way, they share stopping it, so each only takes its part
-     * of the hold tension.  Every line works its pull out from the same motion before any are applied, so without
-     * this each would take all of it: the chain would be stopped once per line, and a load that one line can't
-     * hold would snap every line on it rather than being spread between them.  Reeling in isn't shared, as each
-     * winch pulls with its own force.  See {@link #getLinesHolding}.
+     * When more than one line holds the chain, they share stopping it by how much they pull the same way, so each
+     * only takes its part of the hold tension.  Every line works its pull out from the same motion before any are
+     * applied, so without this each would take all of it: the chain would be stopped once per line, and a load that
+     * one line can't hold would snap every line on it rather than being spread between them.  Reeling in isn't
+     * shared, as each winch pulls with its own force.  See {@link #getLinesHolding}.
      *
      * @param hooked the vehicle in the chain the line is on.
      * @param towards which way the line pulls the chain.  Must be normalized.
      * @param stretch how far past its length the line is pulled, in blocks.
      * @param share how much of the line's pull the chain takes, from 0 to 1.
-     * @param lines how many lines hold the chain this way, counting this one.  At least 1.
+     * @param lines how many lines' worth hold the chain this way, counting this one.  At least 1.  See {@link #getLinesHolding}.
      * @param otherMotion the motion of the vehicle at the front of the chain on the other end, or null if that end doesn't move.
      * @param maxTension the most tension the winch can reel in with, in kg*m/ticks^2.  See {@link #getWinchLimit()}.
      */
-    private static ChainPull getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, int lines, Point3D otherMotion, double maxTension) {
+    private static ChainPull getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, double lines, Point3D otherMotion, double maxTension) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         if (!(lead.currentMass > 0)) {
             //Massless, as packs can leave emptyMass out.  There's nothing to share the pull with, so don't move it.
@@ -1393,19 +1398,24 @@ public class PartGrapple extends APart {
     private static final Map<AWrapperWorld, LineCensus> lineCensuses = new WeakHashMap<>();
 
     /**
-     * Returns how many taut lines hold the tow chain led by the passed-in vehicle in roughly the passed-in direction,
-     * counting this one.  A line pulling the other way doesn't help hold it, so it isn't counted.  The lines can be on
-     * any vehicle: ours, the chain's own, or a third one hooked into it.  See {@link #getChainPull}.
+     * Returns how many lines' worth hold the passed-in body the way this line pulls it, counting this one as 1.  Each
+     * other taut line on it counts by how much it pulls the same way: the dot product of the two directions.  So a
+     * line alongside ours counts fully and they share holding it, one at right angles counts for nothing as it holds
+     * a different way, and one pulling the other way doesn't help hold it at all.  Dividing each line's hold by this
+     * stops the body once between them, wherever the lines point: two lines at 45 degrees either side of where it's
+     * going each stop their own part of its motion, and those add back up to all of it.  The lines can be on any
+     * vehicle: ours, the body's own, or a third one hooked into it.  See {@link #getChainPull}.
      *
-     * @param towards which way this line pulls the chain.  Must be normalized.
+     * @param body the front of the tow chain the line holds, or the entity it's hooked into.
+     * @param towards which way this line pulls the body.  Must be normalized.
      */
-    private int getLinesHolding(EntityVehicleF_Physics lead, Point3D towards) {
-        int lines = 1;
-        List<LineHold> holds = getLineCensus(world).holds.get(lead);
+    private double getLinesHolding(Object body, Point3D towards) {
+        double lines = 1;
+        List<LineHold> holds = getLineCensus(world).holds.get(body);
         if (holds != null) {
             for (LineHold hold : holds) {
-                if (hold.grapple != this && hold.pull.dotProduct(towards, false) > 0) {
-                    ++lines;
+                if (hold.grapple != this) {
+                    lines += Math.max(0, hold.pull.dotProduct(towards, false));
                 }
             }
         }
@@ -1413,7 +1423,7 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Returns the taut lines in the passed-in world, grouped by the tow chain they hold.  Every vehicle is only
+     * Returns the taut lines in the passed-in world, grouped by the tow chain or entity they hold.  Every vehicle is only
      * looked through on the first call each tick; later calls that tick reuse it.  The client and server have
      * their own worlds, so they each get their own.
      */
@@ -1433,8 +1443,8 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Adds which way this grapple's line pulls each tow chain it holds to the census.  Nothing if the line is slack.
-     * Our end is held the same as in applyLineForces, and the hooked end the same as in pullVehicle.
+     * Adds which way this grapple's line pulls each tow chain or entity it holds to the census.  Nothing if the line is slack.
+     * Our end is held the same as in applyLineForces, and the hooked end the same as in pullVehicle or pullEntity.
      */
     private void addHolds(LineCensus census) {
         if (!isAttached()) {
@@ -1454,23 +1464,37 @@ public class PartGrapple extends APart {
         if (hooked instanceof EntityVehicleF_Physics && 1 - selfShareVar.currentValue > 0) {
             census.add(getTowChainLead((EntityVehicleF_Physics) hooked), this, toAnchor.copy().scale(-1));
         }
+        //Only the server knows which entity the hook is in, and only it pulls entities.
+        if (getState() == STATE_ENTITY && hookedEntity != null && hookedEntity.getEntityRiding() == null) {
+            census.add(hookedEntity, this, toAnchor.copy().scale(-1));
+            census.entityVelocities.computeIfAbsent(hookedEntity, k -> hookedEntity.getVelocity().copy());
+        }
     }
 
     /**Every taut line in a world on one tick, by the vehicle at the front of each tow chain they hold.**/
     private static class LineCensus {
         final long tick;
-        final Map<EntityVehicleF_Physics, List<LineHold>> holds = new HashMap<>();
+        /**Keyed by the front of the tow chain each line holds, or the entity it's hooked into.**/
+        final Map<Object, List<LineHold>> holds = new HashMap<>();
+        /**Each hooked entity's velocity before any line pulled it this tick.  See {@link PartGrapple#pullEntity}.**/
+        final Map<IWrapperEntity, Point3D> entityVelocities = new HashMap<>();
 
         LineCensus(long tick) {
             this.tick = tick;
         }
 
-        void add(EntityVehicleF_Physics lead, PartGrapple grapple, Point3D pull) {
-            holds.computeIfAbsent(lead, k -> new ArrayList<>()).add(new LineHold(grapple, pull));
+        void add(Object body, PartGrapple grapple, Point3D pull) {
+            holds.computeIfAbsent(body, k -> new ArrayList<>()).add(new LineHold(grapple, pull));
+        }
+
+        /**Returns the entity's velocity before any line pulled it this tick, or its velocity now if no line holds it.**/
+        Point3D getVelocity(IWrapperEntity entity) {
+            Point3D velocity = entityVelocities.get(entity);
+            return velocity != null ? velocity : entity.getVelocity();
         }
     }
 
-    /**One line holding one tow chain: the grapple, and which way it pulls the chain, normalized.**/
+    /**One line holding one tow chain or entity: the grapple, and which way it pulls it, normalized.**/
     private static class LineHold {
         final PartGrapple grapple;
         final Point3D pull;
@@ -1886,7 +1910,7 @@ public class PartGrapple extends APart {
             //Our motion gets scaled by speedFactor when applied, so match the entity's real velocity to that.
             otherMotion = hookedEntity.getVelocity().copy().scale(1D / getTowChainLead(vehicleOn).speedFactor);
         }
-        int lines = getLinesHolding(getTowChainLead(vehicleOn), lineNormal);
+        double lines = getLinesHolding(getTowChainLead(vehicleOn), lineNormal);
         ChainPull pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, lines, otherMotion, getWinchLimit());
         if (!world.isClient()) {
             tickHoldTension = Math.max(tickHoldTension, pull.holdTension);

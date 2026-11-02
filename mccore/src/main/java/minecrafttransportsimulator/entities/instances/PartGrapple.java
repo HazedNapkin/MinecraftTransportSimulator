@@ -667,7 +667,7 @@ public class PartGrapple extends APart {
         //Pull whatever we're stuck in.  The vehicle's share is applied on both sides in updateLine.
         double targetShare = 1 - selfShareVar.currentValue;
         if (state == STATE_ENTITY) {
-            pullEntity(hookedEntity, anchor, ropeVar.currentValue);
+            pullEntity(hookedEntity, anchor, ropeVar.currentValue, targetShare);
         } else if (state == STATE_VEHICLE && hookedMultipart instanceof EntityVehicleF_Physics && targetShare > 0) {
             pullVehicle((EntityVehicleF_Physics) hookedMultipart, anchor, ropeVar.currentValue, targetShare);
         }
@@ -924,11 +924,14 @@ public class PartGrapple extends APart {
         double selfShare;
         int state;
         if (hit.entity != null) {
-            //Entities are light next to a vehicle, so the vehicle doesn't feel them.  We just reel them in.
+            //Entities with a mass in the config share the pull by mass, the same as a vehicle.  The rest are light next
+            //to a vehicle, so the vehicle doesn't feel them, and we just reel them in.
             hookedEntity = hit.entity;
             hookOffset.set(hit.position).subtract(hit.entity.getPosition());
             state = STATE_ENTITY;
-            selfShare = 0;
+            double entityMass = getEntityMass(hit.entity);
+            double ourMass = getTowChainLead(vehicleOn).currentMass;
+            selfShare = entityMass > 0 ? entityMass / (entityMass + ourMass) : 0;
         } else if (hit.multipart != null) {
             //Store the hit in the other entity's local coordinates, so the hook stays put as it turns.
             hookedMultipart = hit.multipart;
@@ -1088,8 +1091,15 @@ public class PartGrapple extends APart {
 
     /**
      * Reels an entity towards the launcher.  Server only.
+     * 
+     * An entity with no mass in the config is light next to a vehicle: it's stopped moving away from the launcher
+     * and pulled back towards the line length, and the vehicle doesn't feel it.  One with a mass takes its share of
+     * the line the same as a vehicle does, see {@link #getChainPull}: it only takes its share of stopping the two ends
+     * pulling apart and of the pull back, and the vehicle takes the rest in {@link #applyLineForces}.
+     *
+     * @param share how much of the line's pull the entity takes, from 0 to 1.  1 for an entity with no mass.
      */
-    private void pullEntity(IWrapperEntity entity, Point3D anchor, double rope) {
+    private void pullEntity(IWrapperEntity entity, Point3D anchor, double rope, double share) {
         Point3D toLauncher = position.copy().subtract(anchor);
         double distance = toLauncher.length();
         if (distance <= rope || distance < 1.0E-3 || entity.getEntityRiding() != null) {
@@ -1098,12 +1108,31 @@ public class PartGrapple extends APart {
         Point3D lineNormal = toLauncher.scale(1D / distance);
         Point3D motionAdded = new Point3D();
         double radialSpeed = entity.getVelocity().dotProduct(lineNormal, false);
-        if (radialSpeed < 0) {
-            motionAdded.addScaled(lineNormal, -radialSpeed);
+        if (share >= 1) {
+            if (radialSpeed < 0) {
+                motionAdded.addScaled(lineNormal, -radialSpeed);
+            }
+            motionAdded.addScaled(lineNormal, Math.min((distance - rope) * STIFFNESS, MAX_PULL));
+        } else {
+            //Our motion gets scaled by speedFactor when applied, but the entity's velocity is how far it really moves.
+            EntityVehicleF_Physics lead = getTowChainLead(vehicleOn);
+            double closingSpeed = radialSpeed - lead.motion.dotProduct(lineNormal, false) * lead.speedFactor;
+            double stopSpeed = Math.max(0, -closingSpeed) * share;
+            double springSpeed = Math.max(0, Math.min((distance - rope) * STIFFNESS, MAX_PULL) * share - Math.max(0, closingSpeed) * share);
+            motionAdded.addScaled(lineNormal, stopSpeed + springSpeed);
+            tickHoldTension = Math.max(tickHoldTension, stopSpeed * getEntityMass(entity));
         }
-        motionAdded.addScaled(lineNormal, Math.min((distance - rope) * STIFFNESS, MAX_PULL));
         //This marks the motion as changed, which players need as their movement is client-side.
         entity.applyMotion(motionAdded);
+    }
+
+    /**
+     * Returns the entity's mass from the grappleEntityMasses config, in kg, or 0 if it isn't listed.
+     */
+    private static double getEntityMass(IWrapperEntity entity) {
+        String name = entity.getRegistryName();
+        Double mass = name != null ? ConfigSystem.settings.general.grappleEntityMasses.value.get(name) : null;
+        return mass != null && mass > 0 ? mass : 0;
     }
 
     /**
@@ -1850,8 +1879,13 @@ public class PartGrapple extends APart {
         }
         Point3D lineNormal = toAnchor.scale(1D / distance);
         //A hooked vehicle's chain moves too, so the rigid part of the line goes by how fast we're pulling apart from it.
+        //So does a hooked entity heavy enough to pull on us.  Clients don't know which entity it is, so they treat it as still.
         AEntityF_Multipart<?> hooked = getHookedMultipart();
         Point3D otherMotion = hooked instanceof EntityVehicleF_Physics ? getTowChainLead((EntityVehicleF_Physics) hooked).motion : null;
+        if (hookedEntity != null && getState() == STATE_ENTITY) {
+            //Our motion gets scaled by speedFactor when applied, so match the entity's real velocity to that.
+            otherMotion = hookedEntity.getVelocity().copy().scale(1D / getTowChainLead(vehicleOn).speedFactor);
+        }
         int lines = getLinesHolding(getTowChainLead(vehicleOn), lineNormal);
         ChainPull pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, lines, otherMotion, getWinchLimit());
         if (!world.isClient()) {

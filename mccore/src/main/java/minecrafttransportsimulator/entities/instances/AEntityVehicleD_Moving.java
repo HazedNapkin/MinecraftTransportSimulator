@@ -34,6 +34,7 @@ import minecrafttransportsimulator.packets.instances.PacketPlayerChatMessage;
 import minecrafttransportsimulator.packets.instances.PacketVehicleServerMovement;
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
+import minecrafttransportsimulator.systems.summoning.VehicleLocationTracker;
 import minecrafttransportsimulator.systems.summoning.VehicleSummonManager;
 
 /**
@@ -1678,6 +1679,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
         data.setPoint3d("serverDeltaM", serverDeltaM);
         data.setPoint3d("serverDeltaR", serverDeltaR);
         data.setDouble("serverDeltaP", serverDeltaP);
+        VehicleLocationTracker.onVehicleSave((EntityVehicleF_Physics) this);
         return data;
     }
 }

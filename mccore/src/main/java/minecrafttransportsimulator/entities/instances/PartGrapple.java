@@ -26,6 +26,7 @@ import minecrafttransportsimulator.entities.components.AEntityF_Multipart;
 import minecrafttransportsimulator.entities.instances.PartGrapple.LinePull;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.components.AItemPack;
+import minecrafttransportsimulator.items.components.AItemSubTyped;
 import minecrafttransportsimulator.items.instances.ItemPartGrapple;
 import minecrafttransportsimulator.jsondefs.AJSONItem;
 import minecrafttransportsimulator.jsondefs.JSONAnimationDefinition;
@@ -1013,7 +1014,8 @@ public class PartGrapple extends APart {
         if (item instanceof AItemPack) {
             String[] splitName = definition.grapple.hookItem.split(":");
             AJSONItem itemDefinition = ((AItemPack<?>) item).definition;
-            if (splitName.length == 2 && itemDefinition.packID.equals(splitName[0]) && itemDefinition.systemName.equals(splitName[1])) {
+            //The bare systemName takes any variant, while systemName plus a subName takes only that variant.
+            if (splitName.length == 2 && itemDefinition.packID.equals(splitName[0]) && (itemDefinition.systemName.equals(splitName[1]) || (item instanceof AItemSubTyped && (itemDefinition.systemName + ((AItemSubTyped<?>) item).subDefinition.subName).equals(splitName[1])))) {
                 missingHookVar.setTo(0, true);
                 return true;
             }

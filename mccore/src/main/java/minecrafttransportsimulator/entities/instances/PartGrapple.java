@@ -2,7 +2,6 @@ package minecrafttransportsimulator.entities.instances;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -119,6 +118,8 @@ public class PartGrapple extends APart {
     private static final double MAX_PULL_TURN = 12;
     /**Cap on how fast a line can turn a vehicle we've hooked and are towing, or its tow chain, in degrees per tick.**/
     private static final double MAX_TOWED_PULL_TURN = 30;
+    /**Most vehicles a tow chain is followed through to find the one at the front.  Far past any real chain, and only reached by one a bad save has looped back on itself.**/
+    private static final int MAX_TOW_CHAIN_LENGTH = 1024;
     /**Turns smaller than this, in degrees, aren't applied to a vehicle on the line.**/
     private static final double MIN_PULL_TURN = 1.0E-3;
     /**A hook closer than this to the middle of a hooked vehicle's wheels, front to back, turns it about all its grounded wheels.**/
@@ -275,8 +276,6 @@ public class PartGrapple extends APart {
     /**True once the driver's been told an overhang stops the climb, so they aren't told every tick.**/
     private boolean mantleBlockedSent;
     private String lastClimbDebug;
-    /**What the line last did to turn the vehicle we've hooked.  See debugTowTurn.  Temporary.**/
-    private String lastTowTurnDebug;
     //The climb path, built on each side from the mantle variables when it's first needed.
     private ClimbPath climbPath;
     private double[] climbPathKey;
@@ -1042,7 +1041,6 @@ public class PartGrapple extends APart {
             InterfaceManager.packetInterface.sendToAllClients(new PacketPartGrappleHook(this, null, null));
         }
         fireVar.setTo(0, true);
-        lastTowTurnDebug = null;
         //The line's all wound back in.
         ropeVar.setTo(0, true);
         setMantle(MANTLE_NONE);
@@ -1111,19 +1109,19 @@ public class PartGrapple extends APart {
         }
         Point3D lineNormal = toLauncher.scale(1D / distance);
         Point3D motionAdded = new Point3D();
-        double lines = getLinesHolding(entity, lineNormal);
+        LineShare lines = getLinesHolding(entity, lineNormal);
         double radialSpeed = getLineCensus(world).getVelocity(entity).dotProduct(lineNormal, false);
         if (share >= 1) {
             if (radialSpeed < 0) {
-                motionAdded.addScaled(lineNormal, -radialSpeed / lines);
+                motionAdded.addScaled(lineNormal, -radialSpeed / lines.stop);
             }
-            motionAdded.addScaled(lineNormal, Math.min((distance - rope) * STIFFNESS, MAX_PULL));
+            motionAdded.addScaled(lineNormal, Math.min((distance - rope) * STIFFNESS, MAX_PULL) / lines.spring);
         } else {
             //Our motion gets scaled by speedFactor when applied, but the entity's velocity is how far it really moves.
             EntityVehicleF_Physics lead = getTowChainLead(vehicleOn);
             double closingSpeed = radialSpeed - lead.motion.dotProduct(lineNormal, false) * lead.speedFactor;
-            double stopSpeed = Math.max(0, -closingSpeed) * share / lines;
-            double springSpeed = Math.max(0, Math.min((distance - rope) * STIFFNESS, MAX_PULL) * share - Math.max(0, closingSpeed) * share);
+            double stopSpeed = Math.max(0, -closingSpeed) * share / lines.stop;
+            double springSpeed = Math.max(0, Math.min((distance - rope) * STIFFNESS, MAX_PULL) * share - Math.max(0, closingSpeed) * share) / lines.spring;
             motionAdded.addScaled(lineNormal, stopSpeed + springSpeed);
             tickHoldTension = Math.max(tickHoldTension, stopSpeed * getEntityMass(entity));
         }
@@ -1163,13 +1161,13 @@ public class PartGrapple extends APart {
         }
         Point3D towards = toLauncher.scale(1D / distance);
         Point3D launcherMotion = getTowChainLead(vehicleOn).motion;
-        double lines = getLinesHolding(getTowChainLead(other), towards);
+        LineShare lines = getLinesHolding(getTowChainLead(other), towards);
         ChainPull pull = getChainPull(other, towards, distance - rope, share, lines, launcherMotion, getWinchLimit());
         if (!world.isClient()) {
             tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
         }
         logTowPull("towed", other, towards, distance - rope, share, lines, launcherMotion, pull);
-        queueChainPull(other, anchor, pull.force, pull.motion, MAX_TOWED_PULL_TURN, launcherMotion.copy(), this);
+        queueChainPull(other, anchor, pull.force, pull.motion, MAX_TOWED_PULL_TURN / lines.count, lines.swing, launcherMotion.copy());
     }
 
     /**
@@ -1279,19 +1277,19 @@ public class PartGrapple extends APart {
      * passes all its momentum between them; a towing impulse bigger than the towed one is momentum the line loses.
      * thrust: what the engines added along the heading this tick.  brake: total brake hold on the grounded wheels.
      */
-    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, double lines, Point3D otherMotion, ChainPull pull) {
+    private void logTowPull(String end, EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, LineShare lines, Point3D otherMotion, ChainPull pull) {
         if (!ConfigSystem.settings.general.devMode.value || world.isClient() || vehicleOn.ticksExisted % TOW_LOG_INTERVAL != 0) {
             return;
         }
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         double radial = lead.motion.dotProduct(towards, false);
         double closing = radial - otherMotion.dotProduct(towards, false);
-        double stop = Math.max(0, -closing) * share / lines;
-        double spring = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
+        double stop = Math.max(0, -closing) * share / lines.stop;
+        double spring = Math.max(0, Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor - Math.max(0, closing) * share) / lines.spring;
         double along = pull.motion.dotProduct(towards, false);
         double brake = getBrakeHold(lead);
-        InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f lines %.2f stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
-                vehicleOn.ticksExisted, end, lead.definition.systemName, lead.currentMass, share, lines, stretch,
+        InterfaceManager.coreInterface.logError(String.format("GrappleTow tick %d %s %s: mass %.0f share %.2f lines stop %.2f spring %.2f swing %.2f count %d stretch %.3f | radial %.4f closing %.4f stop %.4f spring %.4f along %.4f held %.4f | impulse %.1f tension %.1f winch %.1f | speed %.4f thrust %.5f brake %.1f grounded %d",
+                vehicleOn.ticksExisted, end, lead.definition.systemName, lead.currentMass, share, lines.stop, lines.spring, lines.swing, lines.count, stretch,
                 radial, closing, stop, spring, along, stop + spring - along,
                 along * lead.currentMass, pull.force.length(), getWinchLimit(),
                 lead.velocity, lead.getThrustSpeedGain(), brake, lead.groundDeviceCollective.groundedGroundDevices.size()));
@@ -1316,21 +1314,23 @@ public class PartGrapple extends APart {
      * the spring part, and while reeling the winch can only pull so hard.  The spring only gets what the tension has
      * left under that once the line is held, so a chain driving away hard stalls the winch rather than being reeled in.
      *
-     * When more than one line holds the chain, they share stopping it by how much they pull the same way, so each
-     * only takes its part of the hold tension.  Every line works its pull out from the same motion before any are
-     * applied, so without this each would take all of it: the chain would be stopped once per line, and a load that
-     * one line can't hold would snap every line on it rather than being spread between them.  Reeling in isn't
-     * shared, as each winch pulls with its own force.  See {@link #getLinesHolding}.
+     * When more than one line holds the chain, they share stopping it and pulling it back by how much they pull the
+     * same way, so each only takes its part.  Every line works its pull out from the same motion before any are
+     * applied, so without this each would take all of it: the chain would be stopped once per line and pulled back
+     * once per line, flinging it past the hooks, and a load that one line can't hold would snap every line on it rather
+     * than being spread between them.  Each winch still only reels in with its own force.  The chain's tyres and
+     * brakes hold against all the lines together, so each line works out what they hold of the lines' total pull
+     * and only takes its part, rather than every line getting their full grip.  See {@link #getLinesHolding}.
      *
      * @param hooked the vehicle in the chain the line is on.
      * @param towards which way the line pulls the chain.  Must be normalized.
      * @param stretch how far past its length the line is pulled, in blocks.
      * @param share how much of the line's pull the chain takes, from 0 to 1.
-     * @param lines how many lines' worth hold the chain this way, counting this one.  At least 1.  See {@link #getLinesHolding}.
+     * @param lines how many lines' worth hold the chain this way, counting this one.  See {@link #getLinesHolding}.
      * @param otherMotion the motion of the vehicle at the front of the chain on the other end, or null if that end doesn't move.
      * @param maxTension the most tension the winch can reel in with, in kg*m/ticks^2.  See {@link #getWinchLimit()}.
      */
-    private static ChainPull getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, double lines, Point3D otherMotion, double maxTension) {
+    private static ChainPull getChainPull(EntityVehicleF_Physics hooked, Point3D towards, double stretch, double share, LineShare lines, Point3D otherMotion, double maxTension) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         if (!(lead.currentMass > 0)) {
             //Massless, as packs can leave emptyMass out.  There's nothing to share the pull with, so don't move it.
@@ -1340,7 +1340,7 @@ public class PartGrapple extends APart {
         //stopping, and the rest drags us after the other end, which our tyres and brakes hold against.
         double radialSpeed = lead.motion.dotProduct(towards, false);
         double closingSpeed = otherMotion != null ? radialSpeed - otherMotion.dotProduct(towards, false) : radialSpeed;
-        double stopSpeed = Math.max(0, -closingSpeed) * share / Math.max(1, lines);
+        double stopSpeed = Math.max(0, -closingSpeed) * share / lines.stop;
         double ownStopSpeed = Math.min(stopSpeed, Math.max(0, -radialSpeed));
         Point3D stopping = towards.copy().scale(ownStopSpeed);
         Point3D dragging = towards.copy().scale(stopSpeed - ownStopSpeed);
@@ -1348,7 +1348,7 @@ public class PartGrapple extends APart {
         //Only make up what our share of the closing speed is short of.  Otherwise each tick's pull adds to the last,
         //and the line flings us past the hook.  Free-rolling wheels barely slow us, so this goes for the ground too.
         double springSpeed = Math.min(stretch * STIFFNESS, MAX_PULL) * share / lead.speedFactor;
-        springSpeed = Math.max(0, springSpeed - Math.max(0, closingSpeed) * share);
+        springSpeed = Math.max(0, springSpeed - Math.max(0, closingSpeed) * share) / lines.spring;
         Point3D spring = towards.copy().scale(springSpeed);
 
         //All three are along the line, so the tensions add.  Holding takes what it needs, and the winch reels in with what's left.
@@ -1359,9 +1359,19 @@ public class PartGrapple extends APart {
             spring.scale(reelTension / springTension);
         }
         Point3D force = stopping.copy().add(dragging).add(spring).scale(lead.currentMass);
+        //The tyres and brakes hold against all the lines this way at once.  Every line's part is along its own line,
+        //so scale ours up to the lines' total, take off what they hold of that, and keep our part of what's left.
+        double ownMoving = (dragging.length() + spring.length()) * lead.currentMass;
+        double totalMoving = (dragging.length() * lines.stop + spring.length() * lines.spring) * lead.currentMass;
         Point3D moving = dragging.add(spring).scale(lead.currentMass);
-        for (EntityVehicleF_Physics chainVehicle : getTowChain(lead)) {
-            moving.subtract(getTyreHold(chainVehicle, moving, chainVehicle == hooked ? Math.max(0, force.y) : 0));
+        if (ownMoving > 0) {
+            double linesScale = totalMoving / ownMoving;
+            moving.scale(linesScale);
+            double lift = Math.max(0, force.y) * linesScale;
+            for (EntityVehicleF_Physics chainVehicle : getTowChain(lead)) {
+                moving.subtract(getTyreHold(chainVehicle, moving, chainVehicle == hooked ? lift : 0));
+            }
+            moving.scale(1D / linesScale);
         }
         return new ChainPull(stopping.add(moving.scale(1D / lead.currentMass)), force, holdTension);
     }
@@ -1375,23 +1385,23 @@ public class PartGrapple extends APart {
      * @param hooked the vehicle in the chain the line is on.
      * @param point where the line is on it, in world coordinates.
      * @param maxTurn the most the line can turn each vehicle in the chain, in degrees per tick.
+     * @param swingShare how many lines' worth swing the chain the way this one does.  See {@link LineShare#swing}.
      * @param otherMotion the motion of the front of the chain on the other end of the line, for the vehicle at the front of
      * this chain to swing after, or null for it to swing after its own motion.  See {@link #swingFromLine}.
-     * @param debugSource the grapple to tell how the hooked vehicle turns, or null.  Temporary.
      */
-    private static void queueChainPull(EntityVehicleF_Physics hooked, Point3D point, Point3D force, Point3D motion, double maxTurn, Point3D otherMotion, PartGrapple debugSource) {
+    private static void queueChainPull(EntityVehicleF_Physics hooked, Point3D point, Point3D force, Point3D motion, double maxTurn, double swingShare, Point3D otherMotion) {
         EntityVehicleF_Physics lead = getTowChainLead(hooked);
         Point3D pullPoint = point.copy();
         EntityVehicleF_Physics vehicle = hooked;
         while (vehicle != lead) {
             TowingConnection connection = vehicle.towedByConnection;
             if (!connection.hitchConnection.mounted && !connection.hitchConnection.restricted) {
-                vehicle.grapplePulls.add(new LinePull(pullPoint, force, connection.hookupCurrentPosition.copy(), null, maxTurn, null, vehicle == hooked ? debugSource : null));
+                vehicle.grapplePulls.add(new LinePull(pullPoint, force, connection.hookupCurrentPosition.copy(), null, maxTurn, swingShare, null));
                 pullPoint = connection.hitchCurrentPosition.copy();
             }
             vehicle = connection.towingVehicle;
         }
-        lead.grapplePulls.add(new LinePull(pullPoint, force, null, motion, maxTurn, otherMotion, lead == hooked ? debugSource : null));
+        lead.grapplePulls.add(new LinePull(pullPoint, force, null, motion, maxTurn, swingShare, otherMotion));
     }
 
     /**The taut lines in each world, worked out once a tick.  See {@link #getLineCensus}.**/
@@ -1401,25 +1411,37 @@ public class PartGrapple extends APart {
      * Returns how many lines' worth hold the passed-in body the way this line pulls it, counting this one as 1.  Each
      * other taut line on it counts by how much it pulls the same way: the dot product of the two directions.  So a
      * line alongside ours counts fully and they share holding it, one at right angles counts for nothing as it holds
-     * a different way, and one pulling the other way doesn't help hold it at all.  Dividing each line's hold by this
+     * a different way, and one pulling the other way doesn't help hold it at all.  Dividing each line's pull by this
      * stops the body once between them, wherever the lines point: two lines at 45 degrees either side of where it's
-     * going each stop their own part of its motion, and those add back up to all of it.  The lines can be on any
-     * vehicle: ours, the body's own, or a third one hooked into it.  See {@link #getChainPull}.
+     * going each stop their own part of its motion, and those add back up to all of it.  Lines only count towards
+     * sharing what they're doing this tick, so one whose far end is already closing in doesn't take a share of stopping
+     * the body.  The lines can be on any vehicle: ours, the body's own, or a third one hooked into it.  See {@link #getChainPull}.
      *
      * @param body the front of the tow chain the line holds, or the entity it's hooked into.
      * @param towards which way this line pulls the body.  Must be normalized.
      */
-    private double getLinesHolding(Object body, Point3D towards) {
-        double lines = 1;
+    private LineShare getLinesHolding(Object body, Point3D towards) {
+        double stop = 1;
+        double spring = 1;
+        double swing = 1;
+        int count = 1;
         List<LineHold> holds = getLineCensus(world).holds.get(body);
         if (holds != null) {
             for (LineHold hold : holds) {
                 if (hold.grapple != this) {
-                    lines += Math.max(0, hold.pull.dotProduct(towards, false));
+                    double along = Math.max(0, hold.pull.dotProduct(towards, false));
+                    swing += along;
+                    ++count;
+                    if (hold.stopping) {
+                        stop += along;
+                    }
+                    if (hold.springing) {
+                        spring += along;
+                    }
                 }
             }
         }
-        return lines;
+        return new LineShare(stop, spring, swing, count);
     }
 
     /**
@@ -1456,18 +1478,34 @@ public class PartGrapple extends APart {
             return;
         }
         toAnchor.scale(1D / distance);
+
+        //Whether the line has to stop the ends pulling apart, or pull them back together, this tick.  It's the same for
+        //both ends, as it goes by how fast they close up.  Motion gets scaled by speedFactor when applied, so this uses
+        //how far each end really moves.  Clients don't know which entity the hook is in, so they take it as still.
+        EntityVehicleF_Physics ourLead = getTowChainLead(vehicleOn);
+        double closingSpeed = ourLead.motion.dotProduct(toAnchor, false) * ourLead.speedFactor;
+        AEntityF_Multipart<?> hooked = getHookedMultipart();
+        boolean entityHeld = getState() == STATE_ENTITY && hookedEntity != null && hookedEntity.getEntityRiding() == null;
+        if (hooked instanceof EntityVehicleF_Physics) {
+            EntityVehicleF_Physics hookedLead = getTowChainLead((EntityVehicleF_Physics) hooked);
+            closingSpeed -= hookedLead.motion.dotProduct(toAnchor, false) * hookedLead.speedFactor;
+        } else if (entityHeld) {
+            census.entityVelocities.computeIfAbsent(hookedEntity, k -> hookedEntity.getVelocity().copy());
+            closingSpeed -= census.getVelocity(hookedEntity).dotProduct(toAnchor, false);
+        }
+        boolean stopping = closingSpeed < 0;
+        boolean springing = closingSpeed < Math.min((distance - ropeVar.currentValue) * STIFFNESS, MAX_PULL);
+
         //The climb moves us itself, so the line isn't holding us then.
         if (selfShareVar.currentValue > 0 && getMantle() == MANTLE_NONE) {
-            census.add(getTowChainLead(vehicleOn), this, toAnchor.copy());
+            census.add(ourLead, this, toAnchor.copy(), stopping, springing);
         }
-        AEntityF_Multipart<?> hooked = getHookedMultipart();
         if (hooked instanceof EntityVehicleF_Physics && 1 - selfShareVar.currentValue > 0) {
-            census.add(getTowChainLead((EntityVehicleF_Physics) hooked), this, toAnchor.copy().scale(-1));
+            census.add(getTowChainLead((EntityVehicleF_Physics) hooked), this, toAnchor.copy().scale(-1), stopping, springing);
         }
         //Only the server knows which entity the hook is in, and only it pulls entities.
-        if (getState() == STATE_ENTITY && hookedEntity != null && hookedEntity.getEntityRiding() == null) {
-            census.add(hookedEntity, this, toAnchor.copy().scale(-1));
-            census.entityVelocities.computeIfAbsent(hookedEntity, k -> hookedEntity.getVelocity().copy());
+        if (entityHeld) {
+            census.add(hookedEntity, this, toAnchor.copy().scale(-1), stopping, springing);
         }
     }
 
@@ -1483,8 +1521,8 @@ public class PartGrapple extends APart {
             this.tick = tick;
         }
 
-        void add(Object body, PartGrapple grapple, Point3D pull) {
-            holds.computeIfAbsent(body, k -> new ArrayList<>()).add(new LineHold(grapple, pull));
+        void add(Object body, PartGrapple grapple, Point3D pull, boolean stopping, boolean springing) {
+            holds.computeIfAbsent(body, k -> new ArrayList<>()).add(new LineHold(grapple, pull, stopping, springing));
         }
 
         /**Returns the entity's velocity before any line pulled it this tick, or its velocity now if no line holds it.**/
@@ -1498,10 +1536,35 @@ public class PartGrapple extends APart {
     private static class LineHold {
         final PartGrapple grapple;
         final Point3D pull;
+        /**True if the line has to stop the ends pulling apart this tick.**/
+        final boolean stopping;
+        /**True if the line pulls the ends back towards its length this tick.**/
+        final boolean springing;
 
-        LineHold(PartGrapple grapple, Point3D pull) {
+        LineHold(PartGrapple grapple, Point3D pull, boolean stopping, boolean springing) {
             this.grapple = grapple;
             this.pull = pull;
+            this.stopping = stopping;
+            this.springing = springing;
+        }
+    }
+
+    /**How many lines' worth share each part of holding a body the way one line pulls it, counting that line as 1.  See {@link PartGrapple#getLinesHolding}.**/
+    private static class LineShare {
+        /**Lines sharing stopping the body moving away.**/
+        final double stop;
+        /**Lines sharing pulling the body back towards their length.**/
+        final double spring;
+        /**Lines sharing swinging the body after where they go.  Swinging follows motion rather than tension, so every taut line counts, whatever it's doing.**/
+        final double swing;
+        /**How many taut lines are on the body in any direction.  They share how far it can be turned in a tick, so more lines can't turn it any faster.**/
+        final int count;
+
+        LineShare(double stop, double spring, double swing, int count) {
+            this.stop = stop;
+            this.spring = spring;
+            this.swing = swing;
+            this.count = count;
         }
     }
 
@@ -1509,9 +1572,9 @@ public class PartGrapple extends APart {
      * Returns the vehicle at the front of the tow chain the passed-in vehicle is in, which is itself if it isn't towed.
      */
     private static EntityVehicleF_Physics getTowChainLead(EntityVehicleF_Physics vehicle) {
-        //Guard against bad trailer linkings looping back on themselves, the same as the mass checks do.
-        Set<EntityVehicleF_Physics> checked = new HashSet<>();
-        while (vehicle.towedByConnection != null && checked.add(vehicle)) {
+        //Hitching refuses anything that would loop a chain back on itself, but a bad save could still have one.
+        //Cap the steps rather than tracking every vehicle seen, as this runs many times a tick and almost never has a step to take.
+        for (int steps = 0; vehicle.towedByConnection != null && steps < MAX_TOW_CHAIN_LENGTH; ++steps) {
             vehicle = vehicle.towedByConnection.towingVehicle;
         }
         return vehicle;
@@ -1584,25 +1647,7 @@ public class PartGrapple extends APart {
         if (pull.motion != null) {
             vehicle.motion.add(pull.motion);
         }
-        String turnMode = turnFromLine(vehicle, pull.point, pull.force, pull.pivot, pull.motion != null, pull.otherMotion, vehicle.getBoxesOutsideBlocks(vehicle.getBoxesForWallChecks()), pull.maxTurn);
-        if (pull.debugSource != null) {
-            pull.debugSource.debugTowTurn(turnMode);
-        }
-    }
-
-    /**
-     * In dev mode, tells whoever is driving whether the line is swinging the vehicle we've hooked like a trailer, or why not.
-     * Only says something when it changes, so it doesn't fill the chat every tick.  Server only.  Temporary.
-     */
-    private void debugTowTurn(String mode) {
-        if (!world.isClient() && ConfigSystem.settings.general.devMode.value && !mode.equals(lastTowTurnDebug)) {
-            lastTowTurnDebug = mode;
-            IWrapperEntity controller = getController();
-            if (controller instanceof IWrapperPlayer) {
-                IWrapperPlayer player = (IWrapperPlayer) controller;
-                player.sendPacket(new PacketPlayerChatMessage(player, LanguageSystem.SYSTEM_DEBUG, "Grapple tow: " + mode));
-            }
-        }
+        turnFromLine(vehicle, pull.point, pull.force, pull.pivot, pull.motion != null, pull.otherMotion, vehicle.getFreeWallBoxes(), pull.maxTurn, pull.swingShare);
     }
 
     /**
@@ -1624,13 +1669,13 @@ public class PartGrapple extends APart {
      * @param takesMotion true if the vehicle was given the line's motion this tick, rather than only turning about a hookup.
      * @param otherMotion the motion of the front of the chain on the other end of the line, to swing after, or null to swing after our own motion.
      * @param freeBoxes the vehicle's boxes that aren't already inside a block, to check the turn against.
-     * @param maxTurn the most the line can turn the vehicle, in degrees per tick.
-     * @return how the line turned the vehicle, for debugging.  Temporary.
+     * @param maxTurn the most the line can turn the vehicle, in degrees per tick.  Already divided between the lines on it.
+     * @param swingShare how many lines' worth swing the vehicle the way this one does.  See {@link LineShare#swing}.
      */
-    private static String turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn) {
+    private static void turnFromLine(EntityVehicleF_Physics vehicle, Point3D point, Point3D lineForce, Point3D pivotPoint, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn, double swingShare) {
         if (vehicle.lockedOnRoad) {
             //The road sets our heading.
-            return "trailer mode OFF, locked on a road";
+            return;
         }
 
         //Work in the vehicle's own frame, as its moments are about its own axes.
@@ -1654,11 +1699,9 @@ public class PartGrapple extends APart {
         //Only a pivot at an end can be swung about like a trailer.  A hook about the middle twists us instead.
         Point3D pivot;
         boolean swing = false;
-        String noSwingReason;
         if (pivotPoint != null) {
             pivot = toLocal(vehicle, pivotPoint);
             swing = !grounded.isEmpty();
-            noSwingReason = "not on the ground";
         } else if (!grounded.isEmpty()) {
             //Turn about the grounded wheels at the far end from the hook.  With the hook about the
             //middle, or nothing grounded at the far end, turn about all of them.
@@ -1676,10 +1719,8 @@ public class PartGrapple extends APart {
             }
             pivot = farEndWheels > 0 ? farEnd.scale(1D / farEndWheels) : allWheels.scale(1D / grounded.size());
             swing = farEndWheels > 0;
-            noSwingReason = Math.abs(hookSide) > PULL_PIVOT_END_DISTANCE ? "no grounded wheels at the far end from the hook" : String.format("hook %.2f blocks from the middle of the wheels, needs over %.2f", Math.abs(hookSide), PULL_PIVOT_END_DISTANCE);
         } else {
             pivot = center;
-            noSwingReason = "not on the ground";
         }
 
         //Twisting slides each grounded wheel square to its arm from the pivot.  The brakes resist that in any
@@ -1693,9 +1734,6 @@ public class PartGrapple extends APart {
             for (PartGroundDevice groundDevice : grounded) {
                 double braking = vehicle.getWheelBrakingForce(groundDevice) * load / weight;
                 if (braking > 0) {
-                    if (swing) {
-                        noSwingReason = "brakes on";
-                    }
                     swing = false;
                     Point3D wheelArm = toLocal(vehicle, groundDevice.position).subtract(pivot);
                     wheelArm.addScaled(up, -wheelArm.dotProduct(up, false));
@@ -1733,10 +1771,8 @@ public class PartGrapple extends APart {
 
         turnFromTorque(vehicle, torque, lineTorque, arm, fullForceLocal, pivot, up, freeBoxes, maxTurn);
         if (swing) {
-            swingFromLine(vehicle, hook, pivot, up, lineForce, takesMotion, otherMotion, freeBoxes, maxTurn);
-            return "trailer mode ON";
+            swingFromLine(vehicle, hook, pivot, up, lineForce, takesMotion, otherMotion, freeBoxes, maxTurn, swingShare);
         }
-        return "trailer mode OFF, " + noSwingReason;
     }
 
     /**
@@ -1788,8 +1824,10 @@ public class PartGrapple extends APart {
      * @param takesMotion true if the vehicle was given the line's motion this tick, so its motion carries the hook, and the
      * part of that the turn takes up comes off it.  Otherwise it only swings about a hookup, and the hook goes where the line pulls the chain.
      * @param otherMotion the motion of the front of the chain on the other end of the line, for the hook to go with, or null for it to go with ours.
+     * @param swingShare how many lines' worth swing the vehicle the way this one does.  Each line works the swing out from
+     * the same motion, so lines that agree each only take their part of it, rather than all turning it the whole way.
      */
-    private static void swingFromLine(EntityVehicleF_Physics vehicle, Point3D hook, Point3D pivot, Point3D up, Point3D lineForce, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn) {
+    private static void swingFromLine(EntityVehicleF_Physics vehicle, Point3D hook, Point3D pivot, Point3D up, Point3D lineForce, boolean takesMotion, Point3D otherMotion, List<BoundingBox> freeBoxes, double maxTurn, double swingShare) {
         Point3D arm = hook.copy().subtract(pivot);
         arm.addScaled(up, -arm.dotProduct(up, false));
         if (arm.length() < MIN_SWING_ARM) {
@@ -1821,7 +1859,6 @@ public class PartGrapple extends APart {
         //Turn the arm onto the target, the same as trailers turn onto their hitch.
         Point3D axis = up.copy().scale(Math.signum(twist));
         double angle = Math.toDegrees(Math.acos(arm.copy().normalize().dotProduct(target.copy().normalize(), true)));
-        angle = Math.min(angle, maxTurn);
         Point3D lineLocal = lineForce.copy().reOrigin(vehicle.orientation);
         lineLocal.addScaled(up, -lineLocal.dotProduct(up, false));
         if (lineLocal.length() > 1.0E-6 && arm.crossProduct(lineLocal).dotProduct(axis, false) > 0) {
@@ -1831,6 +1868,8 @@ public class PartGrapple extends APart {
             //The other end has moved round the far side of the line from us, so the line hasn't swung that way yet.
             return;
         }
+        //Lines that agree each take their part of the swing.  Capped after that, so one line turns the same as it always has.
+        angle = Math.min(angle / swingShare, maxTurn);
         if (!(angle > MIN_PULL_TURN)) {
             return;
         }
@@ -1910,7 +1949,7 @@ public class PartGrapple extends APart {
             //Our motion gets scaled by speedFactor when applied, so match the entity's real velocity to that.
             otherMotion = hookedEntity.getVelocity().copy().scale(1D / getTowChainLead(vehicleOn).speedFactor);
         }
-        double lines = getLinesHolding(getTowChainLead(vehicleOn), lineNormal);
+        LineShare lines = getLinesHolding(getTowChainLead(vehicleOn), lineNormal);
         ChainPull pull = getChainPull(vehicleOn, lineNormal, distance - rope, share, lines, otherMotion, getWinchLimit());
         if (!world.isClient()) {
             tickHoldTension = Math.max(tickHoldTension, pull.holdTension);
@@ -1919,13 +1958,13 @@ public class PartGrapple extends APart {
             logTowPull("towing", vehicleOn, lineNormal, distance - rope, share, lines, otherMotion, pull);
         }
         if (vehicleOn.towedByConnection != null) {
-            queueChainPull(vehicleOn, position, pull.force, pull.motion, MAX_PULL_TURN, null, null);
+            queueChainPull(vehicleOn, position, pull.force, pull.motion, MAX_PULL_TURN / lines.count, lines.swing, null);
             return;
         }
         vehicleOn.motion.add(pull.motion);
 
         //Vehicles don't stop wheels going into walls, and the line usually pulls the vehicle towards one.
-        List<BoundingBox> freeBoxes = vehicleOn.getBoxesOutsideBlocks(vehicleOn.getBoxesForWallChecks());
+        List<BoundingBox> freeBoxes = vehicleOn.getFreeWallBoxes();
         vehicleOn.clampMotionToWalls(freeBoxes);
 
         //The line's own physics can't carry a vehicle up a wall: the wheels catch on the face and the
@@ -1937,7 +1976,7 @@ public class PartGrapple extends APart {
             return;
         }
 
-        turnFromLine(vehicleOn, position, pull.force, null, true, null, freeBoxes, MAX_PULL_TURN);
+        turnFromLine(vehicleOn, position, pull.force, null, true, null, freeBoxes, MAX_PULL_TURN / lines.count, lines.swing);
         //Turning moves our origin to keep the pivot still, so check that against the walls too.
         vehicleOn.clampMotionToWalls(freeBoxes);
     }
@@ -3722,21 +3761,21 @@ public class PartGrapple extends APart {
         final Point3D pivot;
         /**Motion to add to the vehicle, or null if it only turns.**/
         final Point3D motion;
-        /**The most the line can turn the vehicle, in degrees per tick.**/
+        /**The most the line can turn the vehicle, in degrees per tick.  Already divided between the lines on it.**/
         final double maxTurn;
+        /**How many lines' worth swing the vehicle the way this one does.  See {@link LineShare#swing}.**/
+        final double swingShare;
         /**The motion of the front of the chain on the other end of the line, to swing after, or null to swing after our own motion.**/
         final Point3D otherMotion;
-        /**The grapple to tell how the vehicle turns, if it's the one the hook is in.  Temporary.**/
-        final PartGrapple debugSource;
 
-        LinePull(Point3D point, Point3D force, Point3D pivot, Point3D motion, double maxTurn, Point3D otherMotion, PartGrapple debugSource) {
+        LinePull(Point3D point, Point3D force, Point3D pivot, Point3D motion, double maxTurn, double swingShare, Point3D otherMotion) {
             this.point = point;
             this.force = force;
             this.pivot = pivot;
             this.motion = motion;
             this.maxTurn = maxTurn;
+            this.swingShare = swingShare;
             this.otherMotion = otherMotion;
-            this.debugSource = debugSource;
         }
     }
 

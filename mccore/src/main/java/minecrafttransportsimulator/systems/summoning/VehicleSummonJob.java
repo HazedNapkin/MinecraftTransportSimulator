@@ -164,6 +164,8 @@ final class VehicleSummonJob {
     private SpotPurpose spotPurpose;
     private Point3D goal;
     private double goalRadius;
+    /**The heading routes should arrive at the goal facing, or -1 for any.**/
+    private int goalHeading = -1;
     /**Arrival spots found but not yet tried, and the next direction round from in front of the player to look in.**/
     private final Deque<Placement> pendingArrivals = new ArrayDeque<>();
     private int arrivalDirection;
@@ -440,6 +442,8 @@ final class VehicleSummonJob {
                 fitSpot = spot;
                 goal = fitSpot != null ? fitSpot.getGround() : planCenter;
                 goalRadius = fitSpot != null ? 1.5 : 3;
+                //Pull up the way the spot was found to fit, which is left side to the player if it fits that way.
+                goalHeading = fitSpot != null ? fitSpot.heading : -1;
                 setPhase(Phase.PLAN_GROUND);
                 return false;
             }
@@ -553,8 +557,8 @@ final class VehicleSummonJob {
      * A search for a ground spot between min and max blocks in front of the position, within
      * {@link #FRONT_LEEWAY} of where the player is looking, where the whole vehicle fits.  Straight
      * ahead comes before the sides, and nearest first in each.  At each spot, heights nearest the
-     * position come first, and the vehicle faces the position if it fits that way, or else turns
-     * until it does.  It runs a slice at a time so it can't stall the server.
+     * position come first, and the vehicle has its left side to the position if it fits that way, or
+     * else turns until it does.  It runs a slice at a time so it can't stall the server.
      */
     private final class SpotSearch {
         private final Point3D center;
@@ -588,7 +592,8 @@ final class VehicleSummonJob {
                 int[] offset = offsets.get(index++);
                 int x = (int) Math.floor(center.x) + offset[0];
                 int z = (int) Math.floor(center.z) + offset[1];
-                int heading = GroundPathfinder.getHeading(yawTowards(new Point3D(x + 0.5, refY, z + 0.5), center));
+                //Its left is 90 degrees anticlockwise of its nose, so the nose points 90 degrees round from the position.
+                int heading = GroundPathfinder.getHeading(yawTowards(new Point3D(x + 0.5, refY, z + 0.5), center) - 90);
                 List<Placement> placements = pathfinder.findPlacements(x, z, refY, NEAR_HEIGHT_UP, NEAR_HEIGHT_DOWN, heading, true);
                 if (!placements.isEmpty()) {
                     found = placements.get(0);
@@ -643,7 +648,7 @@ final class VehicleSummonJob {
                 }
             }
             candidate = new Point3D(x + 0.5, y, z + 0.5);
-            search = pathfinder.new Search(starts, goal, goalRadius, SEARCH_EXPANSIONS);
+            search = pathfinder.new Search(starts, goal, goalRadius, goalHeading, SEARCH_EXPANSIONS);
         }
 
         if (search.step(SEARCH_BUDGET_PER_TICK, tickTime)) {
@@ -868,7 +873,7 @@ final class VehicleSummonJob {
             if (y != GroundPathfinder.NO_SURFACE) {
                 List<int[]> starts = new ArrayList<>();
                 starts.add(new int[] { x, y, z, GroundPathfinder.getHeading(vehicle.orientation.angles.y) });
-                search = pathfinder.new Search(starts, goal, goalRadius, SEARCH_EXPANSIONS);
+                search = pathfinder.new Search(starts, goal, goalRadius, goalHeading, SEARCH_EXPANSIONS);
                 setPhase(Phase.REPLAN);
                 return false;
             }

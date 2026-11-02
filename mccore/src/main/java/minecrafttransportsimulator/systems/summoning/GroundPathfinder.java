@@ -64,6 +64,13 @@ final class GroundPathfinder {
     }
     /**Extra cost of a turn on top of its length, so routes don't weave when going straight is as short.**/
     private static final double TURN_COST = 0.3;
+    /**How many headings either side of the goal heading a route may arrive at and still count as facing it.**/
+    private static final int GOAL_HEADING_TOLERANCE = 1;
+    /**
+     * Once a route has reached the goal facing the wrong way, how many more states to look at for one
+     * facing the goal heading before settling for it.
+     */
+    private static final int GOAL_HEADING_EXTRA_EXPANSIONS = 5000;
     /**How far apart the vehicle is checked along a move, in blocks.**/
     private static final double MOVE_CHECK_SPACING = 0.5;
     /**
@@ -464,22 +471,33 @@ final class GroundPathfinder {
      * A weighted A* search over states, that runs a bit at a time so a long search spreads over
      * several ticks.  It may start from several states at once, such as each way a vehicle could be
      * placed at a spot, and finds the route from whichever is best.
+     * <p>
+     * It may also be given a heading to arrive at.  Routes that reach the goal facing some other way
+     * are only settled for if no route facing the right way turns up soon after.
      */
     final class Search {
         private final PriorityQueue<Node> open = new PriorityQueue<>((a, b) -> Double.compare(a.f, b.f));
         private final Map<Long, Node> nodes = new HashMap<>();
         private final Point3D goal;
         private final double goalRadius;
+        private final int goalHeading;
         private final int maxExpansions;
         private int expansions;
         private Node best;
         private Node found;
+        /**The first state that reached the goal facing the wrong way, and how many expansions we'll do before settling for it.**/
+        private Node wrongHeadingArrival;
+        private int wrongHeadingDeadline;
         private boolean finished;
 
-        /**Starts a search from each of the states, given as {x, y, z, heading}.**/
-        Search(List<int[]> starts, Point3D goal, double goalRadius, int maxExpansions) {
+        /**
+         * Starts a search from each of the states, given as {x, y, z, heading}.  Pass a goalHeading
+         * of -1 to arrive facing any way.
+         */
+        Search(List<int[]> starts, Point3D goal, double goalRadius, int goalHeading, int maxExpansions) {
             this.goal = goal;
             this.goalRadius = goalRadius;
+            this.goalHeading = goalHeading;
             this.maxExpansions = maxExpansions;
             for (int[] start : starts) {
                 Node node = new Node(start[0], start[1], start[2], start[3], null, null, 0);
@@ -500,7 +518,9 @@ final class GroundPathfinder {
             long startTime = System.nanoTime();
             while (!finished && budget-- > 0 && System.nanoTime() - startTime < maxNanos) {
                 Node current = open.poll();
-                if (current == null || ++expansions > maxExpansions) {
+                if (current == null || ++expansions > maxExpansions || (wrongHeadingArrival != null && expansions > wrongHeadingDeadline)) {
+                    //Nothing reached the goal facing the right way.  Settle for one that reached it facing another.
+                    found = wrongHeadingArrival;
                     finished = true;
                     break;
                 }
@@ -513,15 +533,29 @@ final class GroundPathfinder {
                     best = current;
                 }
                 if (current.h <= goalRadius) {
-                    found = current;
-                    finished = true;
-                    break;
+                    if (isGoalHeading(current.heading)) {
+                        found = current;
+                        finished = true;
+                        break;
+                    }
+                    if (wrongHeadingArrival == null) {
+                        wrongHeadingArrival = current;
+                        wrongHeadingDeadline = expansions + GOAL_HEADING_EXTRA_EXPANSIONS;
+                    }
                 }
                 for (Move move : moves.get(current.heading)) {
                     expand(current, move);
                 }
             }
             return finished;
+        }
+
+        private boolean isGoalHeading(int heading) {
+            if (goalHeading < 0) {
+                return true;
+            }
+            int difference = Math.floorMod(heading - goalHeading, HEADINGS);
+            return Math.min(difference, HEADINGS - difference) <= GOAL_HEADING_TOLERANCE;
         }
 
         /**

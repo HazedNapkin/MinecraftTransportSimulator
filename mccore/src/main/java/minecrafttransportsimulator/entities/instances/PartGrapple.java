@@ -974,21 +974,22 @@ public class PartGrapple extends APart {
      */
     private void snap() {
         snapsVar.setTo(snapsVar.currentValue + 1, true);
+        breakLine();
+    }
+
+    /**
+     * Breaks the line, whether it snapped or was cut: the hook is lost if loseHookOnSnap is set, the cooldown
+     * starts, and the line is released.  Snaps and cuts only differ in the count they bump for sounds and animations.  Server only.
+     */
+    private void breakLine() {
         //Without a hook item to reload with, a lost hook could never come back, so keep it.
         if (loseHookOnSnapVar.isActive && definition.grapple.hookItem != null) {
             missingHookVar.setTo(1, true);
         }
-        startCooldown();
-        release();
-    }
-
-    /**
-     * Stops the grapple firing again for snapCooldown ticks, if it has one.  Server only.
-     */
-    private void startCooldown() {
         if (snapCooldownVar.currentValue > 0) {
             cooldownVar.setTo(snapCooldownVar.currentValue, true);
         }
+        release();
     }
 
     @Override
@@ -1000,7 +1001,7 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Reloads a hook lost to a snap if the stack is our hookItem, and returns true if it did.  Server only.
+     * Reloads a hook lost to a snap or cut if the stack is our hookItem, and returns true if it did.  Server only.
      */
     private boolean reloadHook(IWrapperItemStack stack) {
         if (!missingHookVar.isActive || definition.grapple.hookItem == null) {
@@ -1024,8 +1025,7 @@ public class PartGrapple extends APart {
      */
     private void cut() {
         cutsVar.setTo(cutsVar.currentValue + 1, true);
-        startCooldown();
-        release();
+        breakLine();
     }
 
     private void release() {

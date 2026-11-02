@@ -770,7 +770,7 @@ public class JSONPart extends AJSONPartProvider {
         public boolean disableClimb;
 
         @ModifiableValue
-        @JSONDescription("If true, the hook is lost when the line snaps, from being pulled past its breakForce or too far apart.  It's left behind rather than reeled back in, so the grapple can't be fired again until a player reloads it by right-clicking it with a hookItem, the same as loading bullets into a gun.  grapple_missing_hook is 1 until then, so packs can hide the hook.  Cutting the line doesn't lose the hook.  Defaults to false.")
+        @JSONDescription("If true, the hook is lost when the line snaps, from being pulled past its breakForce or too far apart, or is cut by a player.  It's left behind rather than reeled back in, so the grapple can't be fired again until a player reloads it by right-clicking it with a hookItem, the same as loading bullets into a gun.  grapple_missing_hook is 1 until then, so packs can hide the hook.  Defaults to false.")
         public boolean loseHookOnSnap;
 
         @JSONRequired(dependentField = "loseHookOnSnap", dependentValues = {"true"})

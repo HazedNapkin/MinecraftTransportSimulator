@@ -151,7 +151,13 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     private static final Point3D[] WALL_PUSH_DIRECTIONS = {new Point3D(1, 0, 0), new Point3D(-1, 0, 0), new Point3D(0, 0, 1), new Point3D(0, 0, -1), new Point3D(0, 1, 0)};
     /**How many times a blocked move or tilt is halved before it's dropped: full, half, then quarter.**/
     private static final int WALL_CUT_TRIES = 3;
+    /**Turns smaller than this, in degrees, aren't checked against walls.  Too small to swing anything into one, and any that creeps in is pushed back out.**/
+    private static final double MIN_WALL_TURN = 0.05;
     private static final Point3D NO_OFFSET = new Point3D();
+    /**Our boxes for the wall checks, and those of them not already inside a block.  See {@link #getFreeWallBoxes()}.**/
+    private List<BoundingBox> wallBoxes;
+    private List<BoundingBox> freeWallBoxes;
+    private long wallBoxesTick = -1;
 
     public AEntityVehicleD_Moving(AWrapperWorld world, IWrapperPlayer placingPlayer, ItemVehicle item, IWrapperNBT data) {
         super(world, placingPlayer, item, data);
@@ -506,7 +512,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
             //Only while attached, so we don't change how collisions are handled the rest of the time.
             //Not while a grapple holds our pose, as that's already clear of the wall.
             if (attached && towedByConnection == null && !climbingWithGrapple) {
-                grapplePushOut = findWallPushOut(getBoxesForWallChecks());
+                grapplePushOut = findWallPushOut();
             }
         }
         if (!grapplePulls.isEmpty()) {
@@ -1294,10 +1300,25 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
      */
 
     /**
+     * Returns our boxes for the wall checks that aren't already inside a block.  Testing every box against the world
+     * is the costly part, so it's only done on the first call each tick, and every grapple pull and the push out of
+     * walls share the result.  Our boxes don't move until we do, so it holds for the whole of the grapple updates.
+     * Only call it from them, before we move.
+     */
+    public List<BoundingBox> getFreeWallBoxes() {
+        if (wallBoxesTick != ticksExisted) {
+            wallBoxesTick = ticksExisted;
+            wallBoxes = getBoxesForWallChecks();
+            freeWallBoxes = getBoxesOutsideBlocks(wallBoxes);
+        }
+        return freeWallBoxes;
+    }
+
+    /**
      * Returns the boxes the wall checks use: the top half of each wheel at its current position,
      * plus our block collision boxes.  Call this before we move, while the collision list only holds our own boxes.
      */
-    public List<BoundingBox> getBoxesForWallChecks() {
+    private List<BoundingBox> getBoxesForWallChecks() {
         List<BoundingBox> boxes = new ArrayList<>();
         for (APart part : allParts) {
             if (part instanceof PartGroundDevice && !part.placementDefinition.isSpare) {
@@ -1314,7 +1335,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
      * Returns the boxes that aren't already inside a block.  Stuck boxes block every move, so
      * checks that should still let us move use only these, and {@link #findWallPushOut} frees the rest.
      */
-    public List<BoundingBox> getBoxesOutsideBlocks(List<BoundingBox> boxes) {
+    private List<BoundingBox> getBoxesOutsideBlocks(List<BoundingBox> boxes) {
         List<BoundingBox> free = new ArrayList<>();
         for (BoundingBox box : boxes) {
             if (!wallCollides(box, NO_OFFSET)) {
@@ -1333,8 +1354,11 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
      */
     public Point3D clampMotionToWalls(List<BoundingBox> freeBoxes) {
         Point3D before = new Point3D(motion.x, 0, motion.z);
-        motion.x = clampAxisToWalls(freeBoxes, new Point3D(1, 0, 0), motion.x);
-        motion.z = clampAxisToWalls(freeBoxes, new Point3D(0, 0, 1), motion.z);
+        //In open ground, the one check around all of it says no box can hit anything, so none need checking.
+        if (blocksNear(freeBoxes, null, null, before.copy().scale(speedFactor))) {
+            motion.x = clampAxisToWalls(freeBoxes, new Point3D(1, 0, 0), motion.x);
+            motion.z = clampAxisToWalls(freeBoxes, new Point3D(0, 0, 1), motion.z);
+        }
         return before.subtract(new Point3D(motion.x, 0, motion.z)).scale(speedFactor);
     }
 
@@ -1356,6 +1380,13 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
      * @param angle the turn to apply, in degrees, right-handed about the axis.
      */
     public double limitTurnToWalls(List<BoundingBox> freeBoxes, Point3D pivot, Point3D axis, double angle) {
+        if (Math.abs(angle) < MIN_WALL_TURN) {
+            return angle;
+        }
+        //In open ground, the one check around all of it says no box can hit anything, so the full turn fits.
+        if (!blocksNear(freeBoxes, pivot, new RotationMatrix().setToAxisAngle(axis, angle), null)) {
+            return angle;
+        }
         for (int i = 0; i < WALL_CUT_TRIES && angle != 0; ++i, angle /= 2) {
             if (!turnCollidesWithWalls(freeBoxes, pivot, new RotationMatrix().setToAxisAngle(axis, angle))) {
                 return angle;
@@ -1366,10 +1397,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
 
     private boolean turnCollidesWithWalls(List<BoundingBox> boxes, Point3D pivot, RotationMatrix turn) {
         for (BoundingBox box : boxes) {
-            //Turn the box centre about the pivot in our frame, then take it back to the world.
-            Point3D turned = box.globalCenter.copy().subtract(position).reOrigin(orientation).subtract(pivot).rotate(turn).add(pivot);
-            Point3D offset = turned.rotate(orientation).add(position).subtract(box.globalCenter);
-            if (wallCollides(box, offset)) {
+            if (wallCollides(box, getTurnOffset(box, pivot, turn))) {
                 return true;
             }
         }
@@ -1377,11 +1405,62 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     }
 
     /**
+     * Returns how far the box's centre moves when we turn about the pivot, in world coordinates.
+     *
+     * @param pivot the point we turn about, in our own frame.
+     */
+    private Point3D getTurnOffset(BoundingBox box, Point3D pivot, RotationMatrix turn) {
+        //Turn the box centre about the pivot in our frame, then take it back to the world.
+        Point3D turned = box.globalCenter.copy().subtract(position).reOrigin(orientation).subtract(pivot).rotate(turn).add(pivot);
+        return turned.rotate(orientation).add(position).subtract(box.globalCenter);
+    }
+
+    /**
+     * Returns true if any block touches one box around all the passed-in boxes, turned about the pivot or moved by
+     * each horizontal axis of the move.  That takes in everywhere the per-box checks test the boxes, so if this is
+     * false they'd all pass, and this one check stands in for all of them.  If it's true, they still have to be done,
+     * as the block may only be in a gap between the boxes.
+     *
+     * @param pivot the point we turn about, in our own frame, or null if we don't turn.
+     * @param turn the turn about it, or null if we don't turn.
+     * @param move how far we move, in blocks, or null if we don't.  Each axis is checked on its own, so each only stretches the box its own way.
+     */
+    private boolean blocksNear(List<BoundingBox> boxes, Point3D pivot, RotationMatrix turn, Point3D move) {
+        if (boxes.isEmpty()) {
+            return false;
+        }
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        for (BoundingBox box : boxes) {
+            Point3D center = box.globalCenter.copy();
+            if (turn != null) {
+                center.add(getTurnOffset(box, pivot, turn));
+            }
+            minX = Math.min(minX, center.x - box.widthRadius);
+            maxX = Math.max(maxX, center.x + box.widthRadius);
+            minY = Math.min(minY, center.y - box.heightRadius);
+            maxY = Math.max(maxY, center.y + box.heightRadius);
+            minZ = Math.min(minZ, center.z - box.depthRadius);
+            maxZ = Math.max(maxZ, center.z + box.depthRadius);
+        }
+        if (move != null) {
+            minX += Math.min(0, move.x);
+            maxX += Math.max(0, move.x);
+            minZ += Math.min(0, move.z);
+            maxZ += Math.max(0, move.z);
+        }
+        BoundingBox around = new BoundingBox(new Point3D((minX + maxX) / 2D, (minY + maxY) / 2D, (minZ + maxZ) / 2D), (maxX - minX) / 2D, (maxY - minY) / 2D, (maxZ - minZ) / 2D);
+        return wallCollides(around, NO_OFFSET);
+    }
+
+    /**
      * If any box is inside a block, returns one push step towards the nearest position where every
      * box is free.  Returns null if nothing is stuck, or if there's no free spot within reach.
      */
-    private Point3D findWallPushOut(List<BoundingBox> boxes) {
-        if (getBoxesOutsideBlocks(boxes).size() == boxes.size()) {
+    private Point3D findWallPushOut() {
+        List<BoundingBox> free = getFreeWallBoxes();
+        List<BoundingBox> boxes = wallBoxes;
+        if (free.size() == boxes.size()) {
             return null;
         }
         for (int step = 1; step <= WALL_PUSH_MAX_STEPS; ++step) {

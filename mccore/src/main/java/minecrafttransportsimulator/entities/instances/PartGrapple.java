@@ -3,9 +3,12 @@ package minecrafttransportsimulator.entities.instances;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.function.DoublePredicate;
 
 import minecrafttransportsimulator.baseclasses.BlockHitResult;
@@ -1354,6 +1357,9 @@ public class PartGrapple extends APart {
         lead.grapplePulls.add(new LinePull(pullPoint, force, null, motion, maxTurn, otherMotion, lead == hooked ? debugSource : null));
     }
 
+    /**The taut lines in each world, worked out once a tick.  See {@link #getLineCensus}.**/
+    private static final Map<AWrapperWorld, LineCensus> lineCensuses = new WeakHashMap<>();
+
     /**
      * Returns how many taut lines hold the tow chain led by the passed-in vehicle in roughly the passed-in direction,
      * counting this one.  A line pulling the other way doesn't help hold it, so it isn't counted.  The lines can be on
@@ -1363,13 +1369,11 @@ public class PartGrapple extends APart {
      */
     private int getLinesHolding(EntityVehicleF_Physics lead, Point3D towards) {
         int lines = 1;
-        for (AEntityVehicleD_Moving vehicle : world.getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
-            for (PartGrapple grapple : vehicle.grapples) {
-                if (grapple != this) {
-                    Point3D pull = grapple.getPullOn(lead);
-                    if (pull != null && pull.dotProduct(towards, false) > 0) {
-                        ++lines;
-                    }
+        List<LineHold> holds = getLineCensus(world).holds.get(lead);
+        if (holds != null) {
+            for (LineHold hold : holds) {
+                if (hold.grapple != this && hold.pull.dotProduct(towards, false) > 0) {
+                    ++lines;
                 }
             }
         }
@@ -1377,29 +1381,72 @@ public class PartGrapple extends APart {
     }
 
     /**
-     * Returns which way this grapple's line pulls the tow chain led by the passed-in vehicle, normalized, or null if
-     * the line is slack or isn't on that chain.  Either end of the line can be on it.
+     * Returns the taut lines in the passed-in world, grouped by the tow chain they hold.  Every vehicle is only
+     * looked through on the first call each tick; later calls that tick reuse it.  The client and server have
+     * their own worlds, so they each get their own.
      */
-    private Point3D getPullOn(EntityVehicleF_Physics lead) {
-        if (!isAttached()) {
-            return null;
+    private static LineCensus getLineCensus(AWrapperWorld world) {
+        long tick = world.getTickCount();
+        LineCensus census = lineCensuses.get(world);
+        if (census == null || census.tick != tick) {
+            census = new LineCensus(tick);
+            for (AEntityVehicleD_Moving vehicle : world.getEntitiesExtendingType(AEntityVehicleD_Moving.class)) {
+                for (PartGrapple grapple : vehicle.grapples) {
+                    grapple.addHolds(census);
+                }
+            }
+            lineCensuses.put(world, census);
         }
-        Point3D anchor = getLineAnchor();
-        Point3D toAnchor = anchor.copy().subtract(position);
+        return census;
+    }
+
+    /**
+     * Adds which way this grapple's line pulls each tow chain it holds to the census.  Nothing if the line is slack.
+     * Our end is held the same as in applyLineForces, and the hooked end the same as in pullVehicle.
+     */
+    private void addHolds(LineCensus census) {
+        if (!isAttached()) {
+            return;
+        }
+        Point3D toAnchor = getLineAnchor().copy().subtract(position);
         double distance = toAnchor.length();
         if (distance <= ropeVar.currentValue || distance < 1.0E-3) {
-            return null;
+            return;
         }
-        //Our end, the same as applyLineForces.  The climb moves us itself, so the line isn't holding us then.
-        if (selfShareVar.currentValue > 0 && getMantle() == MANTLE_NONE && getTowChainLead(vehicleOn) == lead) {
-            return toAnchor.scale(1D / distance);
+        toAnchor.scale(1D / distance);
+        //The climb moves us itself, so the line isn't holding us then.
+        if (selfShareVar.currentValue > 0 && getMantle() == MANTLE_NONE) {
+            census.add(getTowChainLead(vehicleOn), this, toAnchor.copy());
         }
-        //The hooked end, the same as pullVehicle.
         AEntityF_Multipart<?> hooked = getHookedMultipart();
-        if (hooked instanceof EntityVehicleF_Physics && 1 - selfShareVar.currentValue > 0 && getTowChainLead((EntityVehicleF_Physics) hooked) == lead) {
-            return toAnchor.scale(-1D / distance);
+        if (hooked instanceof EntityVehicleF_Physics && 1 - selfShareVar.currentValue > 0) {
+            census.add(getTowChainLead((EntityVehicleF_Physics) hooked), this, toAnchor.copy().scale(-1));
         }
-        return null;
+    }
+
+    /**Every taut line in a world on one tick, by the vehicle at the front of each tow chain they hold.**/
+    private static class LineCensus {
+        final long tick;
+        final Map<EntityVehicleF_Physics, List<LineHold>> holds = new HashMap<>();
+
+        LineCensus(long tick) {
+            this.tick = tick;
+        }
+
+        void add(EntityVehicleF_Physics lead, PartGrapple grapple, Point3D pull) {
+            holds.computeIfAbsent(lead, k -> new ArrayList<>()).add(new LineHold(grapple, pull));
+        }
+    }
+
+    /**One line holding one tow chain: the grapple, and which way it pulls the chain, normalized.**/
+    private static class LineHold {
+        final PartGrapple grapple;
+        final Point3D pull;
+
+        LineHold(PartGrapple grapple, Point3D pull) {
+            this.grapple = grapple;
+            this.pull = pull;
+        }
     }
 
     /**

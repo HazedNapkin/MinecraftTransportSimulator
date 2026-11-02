@@ -774,7 +774,7 @@ public class JSONPart extends AJSONPartProvider {
         public boolean loseHookOnSnap;
 
         @JSONRequired(dependentField = "loseHookOnSnap", dependentValues = {"true"})
-        @JSONDescription("The item that reloads a hook lost by loseHookOnSnap.  One is used up each reload.  Format is packID:itemName, and any variant of that item works.  Required if loseHookOnSnap is true.")
+        @JSONDescription("The item that reloads a hook lost by loseHookOnSnap.  One is used up each reload.  Format is packID:itemName, and any variant of that item works.  Add a variant's subName to the itemName, as in packID:itemName_red, to only accept that variant.  Required if loseHookOnSnap is true.")
         public String hookItem;
 
         @ModifiableValue

@@ -11,6 +11,7 @@ import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.instances.ItemItem;
+import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 import minecrafttransportsimulator.jsondefs.JSONItem.ItemComponentType;
 import minecrafttransportsimulator.mcinterface.IWrapperItemStack;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
@@ -38,6 +39,8 @@ public final class VehiclePhone {
     /**Same reach as the clicks that {@link minecrafttransportsimulator.systems.ControlSystem} sends to entities.**/
     private static final double CLICK_DISTANCE = 3.5;
     private static final String DATA_VEHICLES = "phoneVehicles";
+    /**Saved with the vehicle, and on its item when picked up, so placing it again keeps the ID phones know it by.**/
+    public static final String PHONE_UUID_TAG = "phoneUUID";
     private static final String ENTRY_SEPARATOR = ";";
 
     private VehiclePhone() {
@@ -56,15 +59,44 @@ public final class VehiclePhone {
         IWrapperItemStack stack = player.getHeldStack();
         List<PhoneEntry> entries = getEntries(stack);
         String name = getName(vehicle);
-        entries.removeIf(entry -> entry.vehicleID.equals(vehicle.uniqueUUID));
+        UUID phoneID = getPhoneID(vehicle);
+        entries.removeIf(entry -> entry.vehicleID.equals(phoneID));
         if (entries.size() >= MAX_VEHICLES) {
             message(player, LanguageSystem.INTERACT_PHONE_FULL);
             return;
         }
-        entries.add(new PhoneEntry(vehicle.uniqueUUID, name));
+        if (vehicle.phoneUUID == null) {
+            //Keep the ID it's had so far, so phones it was registered on before still know it.
+            //It only reaches clients when they next load the vehicle, but until then they fall back to the same ID.
+            vehicle.phoneUUID = phoneID;
+        }
+        entries.add(new PhoneEntry(phoneID, name));
         setEntries(stack, entries);
         VehicleLocationTracker.update(vehicle);
         message(player, LanguageSystem.INTERACT_PHONE_REGISTERED, name);
+    }
+
+    /**
+     * The ID phones know this vehicle by.  Vehicles registered before phone IDs were saved, or never
+     * registered at all, go by their {@link EntityVehicleF_Physics#uniqueUUID} until they're registered.
+     */
+    public static UUID getPhoneID(EntityVehicleF_Physics vehicle) {
+        return vehicle.phoneUUID != null ? vehicle.phoneUUID : vehicle.uniqueUUID;
+    }
+
+    /**The loaded vehicle phones know by this ID, or null if it isn't loaded.  Works on both sides.**/
+    public static EntityVehicleF_Physics getLoadedVehicle(AWrapperWorld world, UUID phoneID) {
+        Object entity = world.getEntity(phoneID);
+        if (entity instanceof EntityVehicleF_Physics && getPhoneID((EntityVehicleF_Physics) entity).equals(phoneID)) {
+            return (EntityVehicleF_Physics) entity;
+        }
+        //Vehicles that have been picked up and placed again have a new uniqueUUID, so look through them all.
+        for (EntityVehicleF_Physics vehicle : world.getEntitiesOfType(EntityVehicleF_Physics.class)) {
+            if (phoneID.equals(vehicle.phoneUUID) && vehicle.isValid) {
+                return vehicle;
+            }
+        }
+        return null;
     }
 
     /**

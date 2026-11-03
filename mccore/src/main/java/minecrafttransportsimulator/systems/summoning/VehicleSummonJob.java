@@ -387,8 +387,7 @@ final class VehicleSummonJob {
     }
 
     private EntityVehicleF_Physics getLoadedVehicle() {
-        Object entity = world.getEntity(vehicleID);
-        return entity instanceof EntityVehicleF_Physics ? (EntityVehicleF_Physics) entity : null;
+        return VehiclePhone.getLoadedVehicle(world, vehicleID);
     }
 
     /**Stops keeping the vehicle's old chunk loaded.  It unloads on its own shortly after.**/
@@ -719,7 +718,7 @@ final class VehicleSummonJob {
      * Moves the vehicle by saving it, removing it, and spawning it again from that save at the
      * new spot next tick.  Clients only see vehicle movement through MTS's movement deltas, so
      * just changing the position on the server would leave them with the vehicle in the old place.
-     * The vehicle keeps its UUID, so the phone still knows it.
+     * The vehicle keeps its phone ID, so the phone still knows it.
      */
     private void teleport(Point3D position, double yaw, Phase next, LanguageEntry doneMessage) {
         vehicle.disconnectAllConnections();

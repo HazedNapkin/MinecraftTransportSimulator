@@ -18,7 +18,7 @@ import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
 
 /**
- * Remembers where every vehicle was last seen, per world, so phones can find vehicles
+ * Remembers where every vehicle was last seen, per world, by {@link VehiclePhone#getPhoneID}, so phones can find vehicles
  * whose chunks aren't loaded.  Server only.
  * <p>
  * Positions are recorded whenever a vehicle is saved, and kept in memory until the world unloads,
@@ -44,9 +44,10 @@ public final class VehicleLocationTracker {
     /**Records the vehicle's current position now.**/
     static void update(EntityVehicleF_Physics vehicle) {
         WorldLocations locations = get(vehicle.world);
-        Point3D last = locations.positions.get(vehicle.uniqueUUID);
+        UUID phoneID = VehiclePhone.getPhoneID(vehicle);
+        Point3D last = locations.positions.get(phoneID);
         if (last == null || !last.isDistanceToCloserThan(vehicle.position, 1)) {
-            locations.positions.put(vehicle.uniqueUUID, vehicle.position.copy());
+            locations.positions.put(phoneID, vehicle.position.copy());
             locations.dirty = true;
         }
     }
@@ -54,7 +55,7 @@ public final class VehicleLocationTracker {
     /**Forgets the vehicle, for when it's been removed from the world for good, like being picked up.**/
     public static void forget(EntityVehicleF_Physics vehicle) {
         if (!vehicle.world.isClient()) {
-            forget(vehicle.world, vehicle.uniqueUUID);
+            forget(vehicle.world, VehiclePhone.getPhoneID(vehicle));
         }
     }
 

@@ -74,7 +74,7 @@ public class GUIVehiclePhone extends AGUIBase {
         super.setStates();
         //Show the distance to vehicles this client has loaded.  Others are too far away to know.
         for (int i = 0; i < distanceLabels.length; ++i) {
-            EntityVehicleF_Physics vehicle = player.getWorld().getEntity(entries.get(i).vehicleID);
+            EntityVehicleF_Physics vehicle = VehiclePhone.getLoadedVehicle(player.getWorld(), entries.get(i).vehicleID);
             distanceLabels[i].text = vehicle != null ? (int) vehicle.position.distanceTo(player.getPosition()) + "m" : LanguageSystem.GUI_PHONE_FAR.getCurrentValue();
         }
     }

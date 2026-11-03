@@ -35,6 +35,7 @@ import minecrafttransportsimulator.packets.instances.PacketVehicleServerMovement
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
 import minecrafttransportsimulator.systems.summoning.VehicleLocationTracker;
+import minecrafttransportsimulator.systems.summoning.VehiclePhone;
 import minecrafttransportsimulator.systems.summoning.VehicleSummonManager;
 
 /**
@@ -55,6 +56,8 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
     public final ComputedVariable lockedVar;
     public static final double MAX_BRAKE = 1D;
     public UUID keyUUID;
+    /**ID phones know this vehicle by.  Unlike {@link #uniqueUUID}, it's kept when the vehicle is picked up and placed again.**/
+    public UUID phoneUUID;
 
     //Internal states.
     public boolean goingInReverse;
@@ -125,6 +128,7 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
         super(world, placingPlayer, item, data);
         if (data != null) {
             this.keyUUID = data.getUUID(ItemItem.KEY_UUID_TAG);
+            this.phoneUUID = data.getUUID(VehiclePhone.PHONE_UUID_TAG);
             this.totalPathDelta = data.getDouble("totalPathDelta");
             this.prevTotalPathDelta = totalPathDelta;
             this.serverDeltaM = data.getPoint3d("serverDeltaM");
@@ -1262,6 +1266,9 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
         super.save(data);
         if (keyUUID != null) {
             data.setUUID(ItemItem.KEY_UUID_TAG, keyUUID);
+        }
+        if (phoneUUID != null) {
+            data.setUUID(VehiclePhone.PHONE_UUID_TAG, phoneUUID);
         }
         data.setPoint3d("serverDeltaM", serverDeltaM);
         data.setPoint3d("serverDeltaR", serverDeltaR);

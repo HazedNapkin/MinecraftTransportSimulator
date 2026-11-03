@@ -52,6 +52,12 @@ final class HybridSearch {
     /**How near the vehicle's current pose a route must start, in blocks and degrees, if it's already nearby.**/
     private static final double START_RADIUS = 1;
     private static final double START_YAW = 15;
+    /**
+     * How many more states to expand once there's somewhere to set off from, looking for somewhere cheaper, before
+     * settling for the cheapest found.  Without this, where nowhere is hidden from the player, it'd search everywhere
+     * near for a hidden place before settling for one in view.
+     */
+    private static final int FINISH_GRACE = 500;
     /**Estimate of the cost left from somewhere the guiding flow field didn't reach.**/
     private static final double UNREACHED_ESTIMATE = 30;
 
@@ -92,6 +98,10 @@ final class HybridSearch {
     private int expansions;
     private boolean finished;
     private Node found;
+    /**The cheapest place to set off from found so far, its cost, and how many states had been expanded when the first was found.**/
+    private Node bestFinish;
+    private double bestFinishCost = Double.MAX_VALUE;
+    private int firstFinishExpansion = -1;
 
     /**
      * Makes a search for a route to any of the goals, guided by the flow field, which may be null.  For a vehicle
@@ -135,7 +145,9 @@ final class HybridSearch {
         long startTime = System.nanoTime();
         while (!finished && budget-- > 0 && System.nanoTime() - startTime < maxNanos) {
             Entry entry = open.poll();
-            if (entry == null || ++expansions > settings.maxExpansions) {
+            if (entry == null || ++expansions > settings.maxExpansions || (firstFinishExpansion >= 0 && expansions - firstFinishExpansion > FINISH_GRACE)) {
+                //Out of states or time.  Settle for the cheapest place to set off from found, if any.
+                found = bestFinish;
                 finished = true;
                 break;
             }
@@ -152,7 +164,15 @@ final class HybridSearch {
             current.closed = true;
             double finishCost = getFinishCost(current);
             if (!Double.isNaN(finishCost)) {
-                open.add(new Entry(current, current.g + HEURISTIC_WEIGHT * finishCost, true));
+                double f = current.g + HEURISTIC_WEIGHT * finishCost;
+                open.add(new Entry(current, f, true));
+                if (f < bestFinishCost) {
+                    bestFinish = current;
+                    bestFinishCost = f;
+                }
+                if (firstFinishExpansion < 0) {
+                    firstFinishExpansion = expansions;
+                }
             }
             for (double curvature : curvatures) {
                 Node earlier = stepBack(current, curvature, settings.stepLength);

@@ -92,7 +92,7 @@ final class SpawnSelector {
         boolean visible = isVisible(checker, player, x, cell.y, z);
         double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
         double cost = Math.abs(cell.distance - settings.targetLength) * LENGTH_COST + (visible ? VISIBLE_COST : 0) + offFront / 180 * BEHIND_COST;
-        scored.add(new Target(x, cell.y, z, yaw, cost, visible));
+        scored.add(new Target(x, cell.y, z, yaw, cell.distance, cost, visible));
     }
 
     /**Takes the best, skipping any too near a better one already taken.**/
@@ -135,8 +135,11 @@ final class SpawnSelector {
         final double yaw;
         final double cost;
         final boolean visible;
+        /**How far the drive in from here is, at least, in blocks.**/
+        final double length;
 
-        Target(double x, int y, double z, double yaw, double cost, boolean visible) {
+        Target(double x, int y, double z, double yaw, double length, double cost, boolean visible) {
+            this.length = length;
             this.x = x;
             this.y = y;
             this.z = z;

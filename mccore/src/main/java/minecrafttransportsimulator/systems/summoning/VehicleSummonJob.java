@@ -598,6 +598,7 @@ final class VehicleSummonJob {
         if (!planner.step(tickTime)) {
             return false;
         }
+        reportPlanTimings(player);
         if (!planner.getGoals().isEmpty()) {
             fallbackGoal = planner.getGoals().get(0);
         }
@@ -607,6 +608,13 @@ final class VehicleSummonJob {
         }
         startRoute(player, found, LanguageSystem.INTERACT_PHONE_ONITSWAY);
         return false;
+    }
+
+    /**Tells the player how long planning took, stage by stage, if summon debugging is on.**/
+    private void reportPlanTimings(IWrapperPlayer player) {
+        if (VehicleSummonDebug.isEnabled()) {
+            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, "Summon plan: " + planner.getTimings());
+        }
     }
 
     /**No route to the player.**/
@@ -909,6 +917,7 @@ final class VehicleSummonJob {
         if (!planner.step(tickTime)) {
             return false;
         }
+        reportPlanTimings(player);
         SummonRoute found = planner.getRoute();
         if (found == null || found.poses.size() < 2) {
             planner = null;

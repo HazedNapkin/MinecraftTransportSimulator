@@ -17,6 +17,8 @@ import minecrafttransportsimulator.baseclasses.Point3D;
 final class RoutePlanner {
     /**How much further than the longest drive in the floods spread from the player, in blocks.**/
     private static final double FIELD_MARGIN = 8;
+    /**The longest drive in to set off from, as a multiple of the summon distance.**/
+    private static final double MAX_LENGTH_FACTOR = 1.4;
 
     /**What the vehicle wants, and how it drives.**/
     static final class Settings {
@@ -56,6 +58,9 @@ final class RoutePlanner {
     private FlowField spawnField;
     private HybridSearch search;
     private SummonRoute route;
+    /**Time spent in each stage, in nanoseconds, and how many times it's been stepped, for tuning.**/
+    private final long[] stageNanos = new long[Stage.values().length];
+    private int steps;
 
     /**Plans for a vehicle of the checker's shape, kinematics and settings to come to the player, who's looking along the yaw.**/
     RoutePlanner(PoseChecker checker, VehicleKinematics kinematics, Settings settings, Point3D player, double lookYaw) {
@@ -79,11 +84,14 @@ final class RoutePlanner {
     /**Plans until it's done or maxNanos pass.  Returns true once it's done, whether it found a route or not.**/
     boolean step(long maxNanos) {
         long startTime = System.nanoTime();
+        ++steps;
         while (stage != Stage.DONE) {
-            long left = maxNanos - (System.nanoTime() - startTime);
+            long stageStart = System.nanoTime();
+            long left = maxNanos - (stageStart - startTime);
             if (left <= 0) {
                 break;
             }
+            Stage stepped = stage;
             switch (stage) {
                 case ARRIVAL: {
                     if (arrival.step(left)) {
@@ -129,8 +137,24 @@ final class RoutePlanner {
                 default:
                     break;
             }
+            stageNanos[stepped.ordinal()] += System.nanoTime() - stageStart;
         }
         return stage == Stage.DONE;
+    }
+
+    /**How long each stage took and how much it did, for tuning.**/
+    String getTimings() {
+        StringBuilder timings = new StringBuilder();
+        long total = 0;
+        for (Stage each : Stage.values()) {
+            if (each != Stage.DONE) {
+                timings.append(String.format("%s %.0fms, ", each.name().toLowerCase(), stageNanos[each.ordinal()] / 1e6));
+                total += stageNanos[each.ordinal()];
+            }
+        }
+        timings.append(String.format("total %.0fms over %d ticks", total / 1e6, steps));
+        timings.append(String.format("; cells %d + %d, expansions %d", goalField != null ? goalField.getCellCount() : 0, spawnField != null ? spawnField.getCellCount() : 0, getSearchExpansions()));
+        return timings.toString();
     }
 
     void finish() {
@@ -158,8 +182,9 @@ final class RoutePlanner {
         return search != null ? search.getExpansions() : 0;
     }
 
+    /**The longest drive in to set off from, in blocks.  The floods only spread this far, as that's most of their cost.**/
     private double getMaxLength() {
-        return settings.summonDistance * 1.6;
+        return settings.summonDistance * MAX_LENGTH_FACTOR;
     }
 
     private FlowField.Settings getFieldSettings(boolean towardSources) {
@@ -170,6 +195,10 @@ final class RoutePlanner {
         field.maxDown = settings.maxDown;
         field.towardSources = towardSources;
         field.radius = fieldRadius;
+        //Room only matters to whether the vehicle fits, and to keeping it a block off things, so look no further.
+        field.clearanceRange = Math.ceil(checker.shape.side + 1);
+        //The flood to the goals only needs to reach as far as a drive in can be.
+        field.maxDistance = getMaxLength();
         return field;
     }
 
@@ -199,7 +228,19 @@ final class RoutePlanner {
 
     /**Floods out from the places to set off from, or from where the vehicle is if it's already nearby, to guide the search.**/
     private void startSpawnField(List<SpawnSelector.Target> targets) {
-        spawnField = new FlowField(checker.terrain, getFieldSettings(false), (int) Math.floor(player.x), (int) Math.floor(player.z));
+        //It only has to reach back as far as the goals, which are as far as the furthest drive in from where it sets off.
+        double reach = 0;
+        if (start != null) {
+            reach = goalField.getDistance((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), 1);
+        } else if (targets != null) {
+            for (SpawnSelector.Target target : targets) {
+                reach = Math.max(reach, target.length);
+            }
+        }
+        FlowField.Settings fieldSettings = getFieldSettings(false);
+        fieldSettings.maxDistance = (Double.isInfinite(reach) || reach == 0 ? getMaxLength() : reach) + FIELD_MARGIN;
+        spawnField = new FlowField(checker.terrain, fieldSettings, (int) Math.floor(player.x), (int) Math.floor(player.z));
+        spawnField.shareRoom(goalField);
         if (start != null) {
             spawnField.addSource((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), 0);
         } else if (targets != null) {

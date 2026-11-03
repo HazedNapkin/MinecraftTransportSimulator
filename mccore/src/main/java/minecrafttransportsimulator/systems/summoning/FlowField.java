@@ -19,7 +19,7 @@ import java.util.PriorityQueue;
  * the vehicle drives.  A vehicle drives either to the sources, as to a goal, or away from them, as from a start.
  */
 final class FlowField {
-    /**Furthest from a cell we look for things in the way when working out how much room it has, in blocks.**/
+    /**Furthest from a cell we can look for things in the way when working out how much room it has, in blocks.**/
     static final int CLEARANCE_RANGE = 4;
     /**
      * The columns within {@link #CLEARANCE_RANGE}, other than the center, as {dx, dz}, nearest first, with the
@@ -56,8 +56,15 @@ final class FlowField {
         int maxDown = 2;
         /**True if the vehicle drives to the sources, false if it drives away from them.**/
         boolean towardSources = true;
+        /**
+         * How far from a cell to look for things in the way, in blocks, up to {@link #CLEARANCE_RANGE}.  Cells with
+         * more room than this count as having this much.  Looking only as far as matters saves a lot of checks.
+         */
+        double clearanceRange = CLEARANCE_RANGE;
         /**How far from the center the flood may spread, in blocks across.**/
         double radius = 64;
+        /**Furthest drive from the sources the flood spreads to, in blocks.**/
+        double maxDistance = Double.POSITIVE_INFINITY;
         /**Most cells to reach.**/
         int maxCells = 40000;
     }
@@ -67,7 +74,9 @@ final class FlowField {
     private final int centerX;
     private final int centerZ;
     private final Map<Long, Cell> cells = new HashMap<>();
-    private final Map<Long, Double> clearanceCache = new HashMap<>();
+    /**How much room each surface has, and whether each column's open at each height.  Floods with the same settings can share these.**/
+    private Map<Long, Double> clearanceCache = new HashMap<>();
+    private Map<Long, Boolean> openCache = new HashMap<>();
     /**Cells to spread from, each with the distance it was queued at, nearest first.**/
     private final PriorityQueue<Queued> open = new PriorityQueue<>((a, b) -> Double.compare(a.distance, b.distance));
     private boolean finished;
@@ -78,6 +87,15 @@ final class FlowField {
         this.settings = settings;
         this.centerX = centerX;
         this.centerZ = centerZ;
+    }
+
+    /**
+     * Shares the other flood's record of how much room each surface has, so they don't both work it out.  Its settings
+     * for room, headroom and climbing must be the same as this one's.  Call before adding sources.
+     */
+    void shareRoom(FlowField other) {
+        clearanceCache = other.clearanceCache;
+        openCache = other.openCache;
     }
 
     /**
@@ -142,6 +160,9 @@ final class FlowField {
             return;
         }
         double distance = current.distance + (diagonal ? Math.sqrt(2) : 1);
+        if (distance > settings.maxDistance) {
+            return;
+        }
         for (int y = current.y + above; y >= current.y - below; --y) {
             if (isPassable(x, y, z)) {
                 reach(x, y, z, current, distance);
@@ -169,20 +190,21 @@ final class FlowField {
     }
 
     private boolean isOpen(int x, int y, int z) {
-        return terrain.isOpen(x, y, z, settings.maxUp, settings.maxDown, settings.headroom);
+        return openCache.computeIfAbsent(TerrainMap.blockKey(x, y, z), k -> terrain.isOpen(x, y, z, settings.maxUp, settings.maxDown, settings.headroom));
     }
 
     /**
      * How much room the vehicle has at the surface: the distance from the cell's center to the nearest edge of a
-     * column it couldn't have a wheel in at this height, up to {@link #CLEARANCE_RANGE}.
+     * column it couldn't have a wheel in at this height, up to {@link Settings#clearanceRange}.
      */
     double getClearance(int x, int y, int z) {
         long key = TerrainMap.blockKey(x, y, z);
         Double cached = clearanceCache.get(key);
         if (cached == null) {
             //Columns are checked nearest first, so the first that isn't open is the nearest.
-            cached = (double) CLEARANCE_RANGE;
-            for (int i = 0; i < CLEARANCE_OFFSETS.length; ++i) {
+            double range = Math.min(settings.clearanceRange, CLEARANCE_RANGE);
+            cached = range;
+            for (int i = 0; i < CLEARANCE_OFFSETS.length && CLEARANCE_EDGES[i] < range; ++i) {
                 if (!isOpen(x + CLEARANCE_OFFSETS[i][0], y, z + CLEARANCE_OFFSETS[i][1])) {
                     cached = CLEARANCE_EDGES[i];
                     break;
@@ -213,6 +235,11 @@ final class FlowField {
             }
         }
         return Double.POSITIVE_INFINITY;
+    }
+
+    /**How many cells the flood has reached so far.**/
+    int getCellCount() {
+        return cells.size();
     }
 
     /**Every cell the flood has reached so far.**/

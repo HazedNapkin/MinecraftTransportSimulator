@@ -172,6 +172,17 @@ public class ArrivalPlannerTest {
     }
 
     @Test
+    public void cantWalkOverAHole() {
+        //Ground everywhere but a bottomless strip across the player's way at z = 2.
+        FakeTerrain holed = new FakeTerrain().fill(-30, -1, -30, 30, -1, 1).fill(-30, -1, 3, 30, -1, 30);
+        assertFalse(planner(holed, new ArrivalPlanner.Settings()).canWalk(0, 3));
+        assertTrue(planner(holed, new ArrivalPlanner.Settings()).canWalk(180, 3));
+        //A step up a block is fine.
+        FakeTerrain stepped = FakeTerrain.flat(30).fill(-30, 0, 2, 30, 0, 30);
+        assertTrue(planner(stepped, new ArrivalPlanner.Settings()).canWalk(0, 3));
+    }
+
+    @Test
     public void comesDownToTheGroundBelowAPlayerOnABlock() {
         //The player stands on a single block, so their feet are at y = 1 and the ground round them at 0.
         FakeTerrain terrain = FakeTerrain.flat(30).fill(0, 0, 0, 0, 0, 0);

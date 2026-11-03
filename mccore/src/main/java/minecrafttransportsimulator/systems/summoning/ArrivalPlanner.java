@@ -233,7 +233,7 @@ final class ArrivalPlanner {
 
     /**
      * Returns true if the player can walk the distance out from where they stand at the bearing, to get to the vehicle
-     * pulled up there: there's room for them all the way, on their level or a step up.
+     * pulled up there: there's ground and room for them all the way, on their level, a step up, or a step down.
      */
     boolean canWalk(double bearing, double distance) {
         double alongX = Math.sin(Math.toRadians(bearing));
@@ -242,7 +242,10 @@ final class ArrivalPlanner {
         for (double along = WALK_SPACING; along <= distance + 1e-9; along += WALK_SPACING) {
             int x = (int) Math.floor(player.x + alongX * along);
             int z = (int) Math.floor(player.z + alongZ * along);
-            if (!checker.terrain.isClear(x, playerY, z, TerrainMap.STEP_CLEARANCE, PLAYER_HEIGHT) && !checker.terrain.isClear(x, playerY + 1, z, 0, PLAYER_HEIGHT)) {
+            TerrainMap terrain = checker.terrain;
+            boolean onLevel = terrain.isClear(x, playerY, z, TerrainMap.STEP_CLEARANCE, PLAYER_HEIGHT) && (terrain.isSolid(x, playerY - 1, z) || terrain.isSolid(x, playerY - 2, z));
+            boolean stepUp = terrain.isSolid(x, playerY, z) && terrain.isClear(x, playerY + 1, z, 0, PLAYER_HEIGHT);
+            if (!onLevel && !stepUp) {
                 return false;
             }
         }

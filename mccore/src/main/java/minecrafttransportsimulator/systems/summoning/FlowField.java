@@ -21,6 +21,28 @@ import java.util.PriorityQueue;
 final class FlowField {
     /**Furthest from a cell we look for things in the way when working out how much room it has, in blocks.**/
     static final int CLEARANCE_RANGE = 4;
+    /**
+     * The columns within {@link #CLEARANCE_RANGE}, other than the center, as {dx, dz}, nearest first, with the
+     * distance from the center of the middle column to the nearest edge of each.
+     */
+    private static final int[][] CLEARANCE_OFFSETS;
+    private static final double[] CLEARANCE_EDGES;
+    static {
+        List<int[]> offsets = new ArrayList<>();
+        for (int dx = -CLEARANCE_RANGE; dx <= CLEARANCE_RANGE; ++dx) {
+            for (int dz = -CLEARANCE_RANGE; dz <= CLEARANCE_RANGE; ++dz) {
+                if ((dx != 0 || dz != 0) && Math.hypot(dx, dz) - 0.5 < CLEARANCE_RANGE) {
+                    offsets.add(new int[] { dx, dz });
+                }
+            }
+        }
+        offsets.sort((a, b) -> Double.compare(Math.hypot(a[0], a[1]), Math.hypot(b[0], b[1])));
+        CLEARANCE_OFFSETS = offsets.toArray(new int[0][]);
+        CLEARANCE_EDGES = new double[CLEARANCE_OFFSETS.length];
+        for (int i = 0; i < CLEARANCE_OFFSETS.length; ++i) {
+            CLEARANCE_EDGES[i] = Math.hypot(CLEARANCE_OFFSETS[i][0], CLEARANCE_OFFSETS[i][1]) - 0.5;
+        }
+    }
     /**The 8 neighbouring columns, orthogonal first.**/
     private static final int[][] NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
 
@@ -112,12 +134,13 @@ final class FlowField {
         if (Math.hypot(x - centerX, z - centerZ) > settings.radius) {
             return;
         }
-        if (diagonal && (!isOpen(current.x + dx, current.y, current.z) || !isOpen(current.x, current.y, current.z + dz))) {
-            return;
-        }
         //Heights the neighbour may be at.  Driving from it to us climbs what it's below us, and the other way round.
         int below = settings.towardSources ? settings.maxUp : settings.maxDown;
         int above = settings.towardSources ? settings.maxDown : settings.maxUp;
+        //The columns beside the corner are passed on the way, so they're open by the same heights.
+        if (diagonal && (!terrain.isOpen(current.x + dx, current.y, current.z, above, below, settings.headroom) || !terrain.isOpen(current.x, current.y, current.z + dz, above, below, settings.headroom))) {
+            return;
+        }
         double distance = current.distance + (diagonal ? Math.sqrt(2) : 1);
         for (int y = current.y + above; y >= current.y - below; --y) {
             if (isPassable(x, y, z)) {
@@ -157,16 +180,14 @@ final class FlowField {
         long key = TerrainMap.blockKey(x, y, z);
         Double cached = clearanceCache.get(key);
         if (cached == null) {
-            double nearest = CLEARANCE_RANGE;
-            for (int dx = -CLEARANCE_RANGE; dx <= CLEARANCE_RANGE; ++dx) {
-                for (int dz = -CLEARANCE_RANGE; dz <= CLEARANCE_RANGE; ++dz) {
-                    double edge = Math.hypot(dx, dz) - 0.5;
-                    if ((dx != 0 || dz != 0) && edge < nearest && !isOpen(x + dx, y, z + dz)) {
-                        nearest = edge;
-                    }
+            //Columns are checked nearest first, so the first that isn't open is the nearest.
+            cached = (double) CLEARANCE_RANGE;
+            for (int i = 0; i < CLEARANCE_OFFSETS.length; ++i) {
+                if (!isOpen(x + CLEARANCE_OFFSETS[i][0], y, z + CLEARANCE_OFFSETS[i][1])) {
+                    cached = CLEARANCE_EDGES[i];
+                    break;
                 }
             }
-            cached = nearest;
             clearanceCache.put(key, cached);
         }
         return cached;

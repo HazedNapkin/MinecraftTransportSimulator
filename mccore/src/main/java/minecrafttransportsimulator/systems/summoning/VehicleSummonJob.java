@@ -78,6 +78,9 @@ final class VehicleSummonJob {
     /**How near the end of the route the vehicle has to get, or how far past it, to have arrived, in blocks.**/
     private static final double ARRIVE_TOLERANCE = 0.25;
     private static final int STUCK_CHECK_INTERVAL = 100;
+    /**How many ticks into the drive debug markers are first sent, once clients have the vehicle, and how often after.**/
+    private static final int DEBUG_SEND_DELAY = 5;
+    private static final int DEBUG_RESEND_INTERVAL = 100;
     /**
      * Longest a vehicle may take to drive in before it's brought straight to the player instead, in ticks.
      * Routes too long to drive in this time at {@link #TURN_SPEED} get longer: see {@link #getDriveTimeout()}.
@@ -169,7 +172,10 @@ final class VehicleSummonJob {
     private RoutePlanner planner;
     /**Where the vehicle is brought if it can't drive in: the best place by the player it fits, or null if it fits nowhere.**/
     private ArrivalPlanner.Goal fallbackGoal;
-    /**Markers showing the plan, sent once the vehicle's in place to drive it, if summon debugging is on.**/
+    /**
+     * Markers showing the plan being driven, if summon debugging is on, else null.  They're sent a few ticks into the
+     * drive and every so often after: sent as a placed vehicle is spawned, clients don't have it yet and drop them.
+     */
     private List<VehicleSummonDebug.Marker> planMarkers;
 
     //Driving.
@@ -761,10 +767,6 @@ final class VehicleSummonJob {
         lastProgressPosition = vehicle.position.copy();
         driveTimeout = getDriveTimeout();
         poseIndex = 0;
-        if (planMarkers != null) {
-            VehicleSummonDebug.send(vehicle, planMarkers);
-            planMarkers = null;
-        }
     }
 
     /**
@@ -789,6 +791,10 @@ final class VehicleSummonJob {
             if (engine.running && engine.currentGearVar.currentValue <= 0 && !isJet(engine)) {
                 engine.shiftUp();
             }
+        }
+
+        if (planMarkers != null && (phaseTicks == DEBUG_SEND_DELAY || phaseTicks % DEBUG_RESEND_INTERVAL == 0)) {
+            VehicleSummonDebug.send(vehicle, planMarkers);
         }
 
         Point3D position = vehicle.position;

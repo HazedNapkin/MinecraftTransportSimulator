@@ -19,6 +19,9 @@ interface TerrainQuery {
     /**Returns true if nothing in the block column at x,z collides between the heights, slightly inset from the column's sides.**/
     boolean isClear(int x, int z, double bottomY, double topY);
 
+    /**Returns true if the chunk holding the block column is loaded.  Nothing is known about unloaded columns, so they're treated as blocked.**/
+    boolean isLoaded(int x, int z);
+
     /**Asks the world itself.**/
     static TerrainQuery of(AWrapperWorld world) {
         return new TerrainQuery() {
@@ -36,6 +39,11 @@ interface TerrainQuery {
             public boolean isClear(int x, int z, double bottomY, double topY) {
                 BoundingBox box = new BoundingBox(new Point3D(x + 0.5, (bottomY + topY) / 2D, z + 0.5), 0.49, (topY - bottomY) / 2D, 0.49);
                 return !world.checkForCollisions(box, new Point3D(), false, false);
+            }
+
+            @Override
+            public boolean isLoaded(int x, int z) {
+                return world.chunkLoaded(new Point3D(x + 0.5, 0, z + 0.5));
             }
         };
     }

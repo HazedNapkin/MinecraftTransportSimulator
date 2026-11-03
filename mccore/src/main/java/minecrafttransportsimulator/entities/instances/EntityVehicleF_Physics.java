@@ -18,6 +18,7 @@ import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
 import minecrafttransportsimulator.systems.ConfigSystem;
+import minecrafttransportsimulator.systems.summoning.VehicleSummonDebug;
 
 /**
  * This class adds the final layer of physics calculations on top of the
@@ -1062,5 +1063,6 @@ public class EntityVehicleF_Physics extends AEntityVehicleE_Powered {
                 box.renderWireframe(this, transform, null, ColorRGB.BLUE);
             }
         }
+        VehicleSummonDebug.render(this, transform);
     }
 }

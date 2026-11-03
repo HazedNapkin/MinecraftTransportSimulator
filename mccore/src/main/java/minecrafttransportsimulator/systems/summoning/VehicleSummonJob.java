@@ -770,6 +770,17 @@ final class VehicleSummonJob {
         set(vehicle.parkingBrakeVar, 0);
         lastProgressPosition = vehicle.position.copy();
         driveTimeout = getDriveTimeout();
+        sendDebugMarkers();
+    }
+
+    /**Shows the route being driven, its start and its end, if summon debugging is on.**/
+    private void sendDebugMarkers() {
+        if (VehicleSummonDebug.isEnabled()) {
+            List<VehicleSummonDebug.Marker> markers = VehicleSummonDebug.markers(path, VehicleSummonDebug.Kind.PATH);
+            markers.add(new VehicleSummonDebug.Marker(path.get(0), VehicleSummonDebug.Kind.SPAWN));
+            markers.add(new VehicleSummonDebug.Marker(path.get(path.size() - 1), VehicleSummonDebug.Kind.GOAL));
+            VehicleSummonDebug.send(vehicle, markers);
+        }
     }
 
     /**

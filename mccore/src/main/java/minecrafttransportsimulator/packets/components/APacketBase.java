@@ -66,6 +66,7 @@ import minecrafttransportsimulator.packets.instances.PacketVehiclePhoneAction;
 import minecrafttransportsimulator.packets.instances.PacketVehicleDeployment;
 import minecrafttransportsimulator.packets.instances.PacketVehiclePacking;
 import minecrafttransportsimulator.packets.instances.PacketVehicleServerMovement;
+import minecrafttransportsimulator.packets.instances.PacketVehicleSummonDebug;
 import minecrafttransportsimulator.packets.instances.PacketWorldSavedDataRequest;
 import minecrafttransportsimulator.packets.instances.PacketWorldSavedDataUpdate;
 import minecrafttransportsimulator.packloading.PackParser;
@@ -321,5 +322,8 @@ public abstract class APacketBase {
 
         //Client effect packets.
         InterfaceManager.packetInterface.registerPacket(packetIndex++, PacketCameraShake.class);
+
+        //Debug packets.
+        InterfaceManager.packetInterface.registerPacket(packetIndex++, PacketVehicleSummonDebug.class);
     }
 }

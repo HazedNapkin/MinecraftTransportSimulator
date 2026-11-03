@@ -431,6 +431,9 @@ final class VehicleSummonJob {
             message(player, LanguageSystem.INTERACT_PHONE_NOWAYFROMHERE);
             return true;
         }
+        //Answer straight away and start up while the route's planned, so the wait for it feels like setting off.
+        message(player, LanguageSystem.INTERACT_PHONE_ONITSWAY);
+        startEngines(false);
         return false;
     }
 
@@ -606,7 +609,8 @@ final class VehicleSummonJob {
         if (found == null) {
             return groundFallback(player);
         }
-        startRoute(player, found, LanguageSystem.INTERACT_PHONE_ONITSWAY);
+        //It already said it's on its way when planning started.
+        startRoute(player, found, null);
         return false;
     }
 

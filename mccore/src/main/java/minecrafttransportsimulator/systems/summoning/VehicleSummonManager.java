@@ -24,9 +24,10 @@ import minecrafttransportsimulator.systems.summoning.VehiclePhone.PhoneEntry;
 public final class VehicleSummonManager {
     /**
      * Most time all calls together may spend searching for spots and routes each server tick, in
-     * nanoseconds.  However many players are calling vehicles, this is all the time they get.
+     * nanoseconds.  However many players are calling vehicles, this is all the time they get.  A ground
+     * vehicle's route takes about 200ms to plan, so this has it on its way in about a second.
      */
-    private static final long SEARCH_TIME_PER_TICK = 5_000_000;
+    private static final long SEARCH_TIME_PER_TICK = 10_000_000;
     private static final Map<UUID, VehicleSummonJob> jobs = new ConcurrentHashMap<>();
     /**Worlds ticked so far this server tick, and the search time left in it.**/
     private static final Set<AWrapperWorld> worldsTicked = new HashSet<>();

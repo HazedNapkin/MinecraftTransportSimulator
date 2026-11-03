@@ -177,6 +177,8 @@ final class VehicleSummonJob {
     /**The speeds planned along the route, and what steers the vehicle along it.**/
     private SpeedProfile profile;
     private PathTracker tracker;
+    /**How the drive's going, kept if summon debugging is on, else null.**/
+    private SummonDriveReport driveReport;
     /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
     private double spawnSpeed;
     private Point3D lastProgressPosition;
@@ -742,6 +744,7 @@ final class VehicleSummonJob {
         settings.braking = BRAKING;
         tracker = new PathTracker(route, profile, kinematics, settings);
         tracker.setRudder(vehicle.rudderInputVar.currentValue);
+        driveReport = VehicleSummonDebug.isEnabled() ? new SummonDriveReport(route, profile, getCruiseSpeed(), profile.speeds[0]) : null;
     }
 
     /**
@@ -775,8 +778,13 @@ final class VehicleSummonJob {
         Point3D position = vehicle.position;
         double speed = getSpeed();
         PathTracker.Command command = tracker.update(position.x, position.z, vehicle.orientation.angles.y, speed);
+        if (driveReport != null) {
+            driveReport.record(command, speed);
+        }
         boolean stalledAtEnd = command.remaining < STALLED_ARRIVE_DISTANCE && speed < STALLED_SPEED && phaseTicks > 20;
-        if (command.arrived || stalledAtEnd || isPlayerInTheWay(player)) {
+        boolean playerInTheWay = !command.arrived && !stalledAtEnd && isPlayerInTheWay(player);
+        if (command.arrived || stalledAtEnd || playerInTheWay) {
+            reportDrive(player, command.arrived ? "arrived" : stalledAtEnd ? "stalled short" : "player in the way", command, speed);
             park();
             message(player, LanguageSystem.INTERACT_PHONE_ARRIVED);
             return true;
@@ -818,7 +826,26 @@ final class VehicleSummonJob {
         return atHeight && local.z > 0 && local.z < shape.front + STOP_FRONT_DISTANCE && Math.abs(local.x) < shape.side + STOP_SIDE_MARGIN;
     }
 
+    /**
+     * Tells the player how the drive went, if summon debugging is on: where it stopped against where it should have,
+     * for the reason, and how it drove on the way.  A drive that got stuck has no stop to tell of.
+     */
+    private void reportDrive(IWrapperPlayer player, String reason, PathTracker.Command command, double speed) {
+        if (driveReport == null) {
+            return;
+        }
+        if (command != null) {
+            double gap = vehicle.summonArrivalGapVar.currentValue > 0 ? vehicle.summonArrivalGapVar.currentValue : new ArrivalPlanner.Settings().gap;
+            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, driveReport.getStop(reason, command, vehicle, shape, player.getPosition(), vehicle.summonArrivalAngleVar.currentValue, gap, speed));
+        } else {
+            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, "Summon stopped: " + reason);
+        }
+        player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, driveReport.getDrive(replans));
+        driveReport = null;
+    }
+
     private boolean onStuck(IWrapperPlayer player) {
+        reportDrive(player, phaseTicks > driveTimeout ? "took too long" : "stuck", null, getSpeed());
         stopControls();
         if (replans == 0 && phaseTicks <= driveTimeout) {
             ++replans;

@@ -22,6 +22,9 @@ interface TerrainQuery {
     /**Returns true if the chunk holding the block column is loaded.  Nothing is known about unloaded columns, so they're treated as blocked.**/
     boolean isLoaded(int x, int z);
 
+    /**Returns true if no block is in the way on the straight line between the points.**/
+    boolean isLineClear(double x1, double y1, double z1, double x2, double y2, double z2);
+
     /**Asks the world itself.**/
     static TerrainQuery of(AWrapperWorld world) {
         return new TerrainQuery() {
@@ -44,6 +47,11 @@ interface TerrainQuery {
             @Override
             public boolean isLoaded(int x, int z) {
                 return world.chunkLoaded(new Point3D(x + 0.5, 0, z + 0.5));
+            }
+
+            @Override
+            public boolean isLineClear(double x1, double y1, double z1, double x2, double y2, double z2) {
+                return world.getBlockHit(new Point3D(x1, y1, z1), new Point3D(x2 - x1, y2 - y1, z2 - z1)) == null;
             }
         };
     }

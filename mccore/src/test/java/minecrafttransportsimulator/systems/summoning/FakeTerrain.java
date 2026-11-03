@@ -58,4 +58,17 @@ final class FakeTerrain implements TerrainQuery {
     public boolean isLoaded(int x, int z) {
         return true;
     }
+
+    @Override
+    public boolean isLineClear(double x1, double y1, double z1, double x2, double y2, double z2) {
+        double length = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) + (z2 - z1) * (z2 - z1));
+        int samples = Math.max(1, (int) Math.ceil(length / 0.05));
+        for (int i = 0; i <= samples; ++i) {
+            double fraction = (double) i / samples;
+            if (isSolid((int) Math.floor(x1 + (x2 - x1) * fraction), (int) Math.floor(y1 + (y2 - y1) * fraction), (int) Math.floor(z1 + (z2 - z1) * fraction))) {
+                return false;
+            }
+        }
+        return true;
+    }
 }

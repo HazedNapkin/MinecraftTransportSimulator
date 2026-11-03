@@ -3,6 +3,8 @@ package minecrafttransportsimulator.systems.summoning;
 import java.util.HashMap;
 import java.util.Map;
 
+import minecrafttransportsimulator.baseclasses.Point3D;
+
 /**
  * What summon planning knows about the blocks round the player, cached, as planning asks about the same blocks
  * again and again.  One is made per summon, so the cache never goes stale by much.
@@ -94,6 +96,11 @@ final class TerrainMap {
      */
     boolean isOpen(int x, int y, int z, int up, int down, double headroom) {
         return findSurface(x, z, y, up, down, headroom) != NO_SURFACE;
+    }
+
+    /**Returns true if no block is in the way on the straight line between the points.  Not cached, as lines are rarely asked twice.**/
+    boolean isLineClear(Point3D from, Point3D to) {
+        return query.isLineClear(from.x, from.y, from.z, to.x, to.y, to.z);
     }
 
     static long blockKey(int x, int y, int z) {

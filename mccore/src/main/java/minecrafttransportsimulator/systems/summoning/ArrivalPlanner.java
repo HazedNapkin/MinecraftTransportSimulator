@@ -154,6 +154,11 @@ final class ArrivalPlanner {
         }
     }
 
+    /**The gap being aimed for: the one in the settings, or {@link #TIGHT_GAP} if nothing fitted at that.**/
+    double getGap() {
+        return gap;
+    }
+
     /**The goals found, cheapest first, at most {@link #MAX_GOALS}.  Empty if the vehicle fits nowhere by the player.**/
     List<Goal> getGoals() {
         return goals;

@@ -181,6 +181,16 @@ final class RoutePlanner {
         return goals;
     }
 
+    /**What found where the vehicle pulls up.  For debugging.**/
+    ArrivalPlanner getArrival() {
+        return arrival;
+    }
+
+    /**How the player was looking when planning started, as a yaw.  For debugging.**/
+    double getLookYaw() {
+        return lookYaw;
+    }
+
     /**The places picked to set off from, or null if none were picked.  For debugging.**/
     List<SpawnSelector.Target> getSpawnTargets() {
         return spawns != null ? spawns.getTargets() : null;

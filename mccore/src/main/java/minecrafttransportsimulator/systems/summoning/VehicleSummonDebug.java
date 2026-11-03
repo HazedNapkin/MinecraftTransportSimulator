@@ -38,7 +38,9 @@ public final class VehicleSummonDebug {
         /**A place the planner aimed to set off from.**/
         TARGET(ColorRGB.CYAN),
         /**A spot that was ruled out.**/
-        REJECTED(ColorRGB.RED);
+        REJECTED(ColorRGB.RED),
+        /**The outline of the shape planning thinks the vehicle has, where it pulls up.**/
+        SHAPE(ColorRGB.MAGENTA);
 
         final ColorRGB color;
 

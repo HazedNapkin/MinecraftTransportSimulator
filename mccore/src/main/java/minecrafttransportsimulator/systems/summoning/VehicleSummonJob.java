@@ -366,6 +366,7 @@ final class VehicleSummonJob {
             return true;
         }
         shape = VehicleShape.of(vehicle);
+        reportShape(player);
         planCenter = player.getPosition().copy();
         frontAngle = getLookAngle(player);
         //Already loaded and within range: it makes its own way over, no teleporting.
@@ -562,6 +563,7 @@ final class VehicleSummonJob {
             return false;
         }
         reportPlanTimings(player);
+        reportGoal(player);
         if (!planner.getGoals().isEmpty()) {
             fallbackGoal = planner.getGoals().get(0);
         }
@@ -572,6 +574,36 @@ final class VehicleSummonJob {
         //It already said it's on its way when planning started.
         startRoute(player, found, null);
         return false;
+    }
+
+    /**
+     * Tells the player what shape planning thinks the vehicle has, if summon debugging is on, and logs every box of it.
+     * Everything that keeps the vehicle off blocks and the player goes by this shape.
+     */
+    private void reportShape(IWrapperPlayer player) {
+        if (VehicleSummonDebug.isEnabled()) {
+            for (String line : SummonPlanReport.getShape(vehicle, shape)) {
+                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, line);
+            }
+            for (String line : SummonPlanReport.getShapeBoxes(vehicle, shape)) {
+                InterfaceManager.coreInterface.logError(line);
+            }
+        }
+    }
+
+    /**Tells the player where the vehicle's to pull up, and how near the player that is, if summon debugging is on.**/
+    private void reportGoal(IWrapperPlayer player) {
+        if (VehicleSummonDebug.isEnabled()) {
+            List<ArrivalPlanner.Goal> goals = planner.getGoals();
+            if (goals.isEmpty()) {
+                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, String.format("Summon goal: none fits by the player, even pulling up %.2f away", planner.getArrival().getGap()));
+                return;
+            }
+            ArrivalPlanner.Goal goal = planner.getRoute() != null ? planner.getRoute().goal : goals.get(0);
+            for (String line : SummonPlanReport.getGoal(goal, planner.getArrival(), shape, planCenter, planner.getLookYaw(), goals.size())) {
+                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, line);
+            }
+        }
     }
 
     /**Tells the player how long planning took, stage by stage, if summon debugging is on.**/
@@ -657,6 +689,7 @@ final class VehicleSummonJob {
         List<VehicleSummonDebug.Marker> markers = VehicleSummonDebug.markers(route.getPoints(), VehicleSummonDebug.Kind.PATH);
         markers.add(new VehicleSummonDebug.Marker(route.getStart().getGround(), VehicleSummonDebug.Kind.SPAWN));
         markers.add(new VehicleSummonDebug.Marker(route.getEnd().getGround(), VehicleSummonDebug.Kind.GOAL));
+        markers.addAll(SummonPlanReport.getShapeMarkers(shape, route.goal));
         for (ArrivalPlanner.Goal goal : planner.getGoals()) {
             if (goal != route.goal) {
                 markers.add(new VehicleSummonDebug.Marker(goal.getGround(), VehicleSummonDebug.Kind.CANDIDATE));

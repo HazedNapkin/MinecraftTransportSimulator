@@ -47,8 +47,12 @@ final class HybridSearch {
     private static final double STEP_COST = 1;
     /**Cost of each block driven with no room to spare either side, falling to nothing with a block of room.**/
     private static final double CLEARANCE_COST = 0.5;
-    /**Costs of setting off from a place, for each block the route is off the summon distance.**/
-    private static final double LENGTH_COST = 0.2;
+    /**
+     * Costs of setting off from a place, for each block the route is short of or over the summon distance.  Short
+     * costs more than a block of driving, or the shortest route allowed would always be cheapest.
+     */
+    private static final double SHORT_LENGTH_COST = 1.5;
+    private static final double LONG_LENGTH_COST = 0.2;
     /**How near the vehicle's current pose a route must start, in blocks and degrees, if it's already nearby.**/
     private static final double START_RADIUS = 1;
     private static final double START_YAW = 15;
@@ -211,7 +215,8 @@ final class HybridSearch {
             return Double.NaN;
         }
         boolean visible = visibleCache.computeIfAbsent(node.key, k -> SpawnSelector.isVisible(checker, player, node.x, node.y, node.z));
-        return Math.abs(node.length - settings.targetLength) * LENGTH_COST + (visible ? SpawnSelector.VISIBLE_COST : 0);
+        double off = node.length - settings.targetLength;
+        return (off < 0 ? -off * SHORT_LENGTH_COST : off * LONG_LENGTH_COST) + (visible ? SpawnSelector.VISIBLE_COST : 0);
     }
 
     /**

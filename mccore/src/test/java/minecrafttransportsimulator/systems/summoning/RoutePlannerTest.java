@@ -86,6 +86,15 @@ public class RoutePlannerTest {
     }
 
     @Test
+    public void drivesInFromTheSummonDistanceInTheOpen() {
+        //Nowhere to hide, so nothing should pull it nearer than the summon distance.
+        FakeTerrain terrain = FakeTerrain.flat(60);
+        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, null));
+        assertTrue(route.placed);
+        assertEquals(new RoutePlanner.Settings().summonDistance, route.getLength(), 4);
+    }
+
+    @Test
     public void findsTheWayOutOfAWalledYard() {
         //Walls 12 out all round the player, with one gap on the +X side.
         FakeTerrain terrain = FakeTerrain.flat(60).fill(-12, 0, -12, 12, 2, -12).fill(-12, 0, 12, 12, 2, 12).fill(-12, 0, -12, -12, 2, 12).fill(12, 0, -12, 12, 2, -4).fill(12, 0, 4, 12, 2, 12);

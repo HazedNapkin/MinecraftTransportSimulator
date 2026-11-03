@@ -7,10 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 
-import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
-import minecrafttransportsimulator.blocks.components.ABlockBase.Axis;
-import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 import minecrafttransportsimulator.systems.summoning.VehicleShape.Column;
 
 /**
@@ -85,7 +82,7 @@ final class GroundPathfinder {
      */
     private static final double HEURISTIC_WEIGHT = 1.5;
 
-    final AWrapperWorld world;
+    final TerrainQuery terrain;
     final VehicleShape shape;
     /**The vehicle's footprint and wheel columns at each heading, for its origin at the center of cell 0,0.  Worked out when first needed.**/
     @SuppressWarnings("unchecked")
@@ -104,8 +101,8 @@ final class GroundPathfinder {
      * Makes a pathfinder for a vehicle of the shape, which turns on a circle of turnRadius blocks.
      * Pass {@link Double#POSITIVE_INFINITY} for a vehicle that can't turn, or one that won't be driven.
      */
-    GroundPathfinder(AWrapperWorld world, VehicleShape shape, double turnRadius) {
-        this.world = world;
+    GroundPathfinder(TerrainQuery terrain, VehicleShape shape, double turnRadius) {
+        this.terrain = terrain;
         this.shape = shape;
         for (int heading = 0; heading < HEADINGS; ++heading) {
             drivableCache[heading] = new HashMap<>();
@@ -332,10 +329,7 @@ final class GroundPathfinder {
         int rangeKey = (lowEighths << 16) | (highEighths & 0xFFFF);
         Boolean clear = results.get(rangeKey);
         if (clear == null) {
-            double bottomY = y + lowEighths / 8D;
-            double topY = y + highEighths / 8D;
-            BoundingBox box = new BoundingBox(new Point3D(x + 0.5, (bottomY + topY) / 2D, z + 0.5), 0.49, (topY - bottomY) / 2D, 0.49);
-            clear = !world.checkForCollisions(box, new Point3D(), false, false);
+            clear = terrain.isClear(x, z, y + lowEighths / 8D, y + highEighths / 8D);
             results.put(rangeKey, clear);
         }
         return clear;
@@ -343,11 +337,11 @@ final class GroundPathfinder {
 
     /**Returns true if the block at the position has a solid top to stand on.**/
     boolean isSolid(int x, int y, int z) {
-        return solidCache.computeIfAbsent(blockKey(x, y, z), k -> world.isBlockSolid(new Point3D(x + 0.5, y + 0.5, z + 0.5), Axis.UP));
+        return solidCache.computeIfAbsent(blockKey(x, y, z), k -> terrain.isSolid(x, y, z));
     }
 
     private boolean isLiquid(int x, int y, int z) {
-        return liquidCache.computeIfAbsent(blockKey(x, y, z), k -> world.isBlockLiquid(new Point3D(x + 0.5, y + 0.5, z + 0.5)));
+        return liquidCache.computeIfAbsent(blockKey(x, y, z), k -> terrain.isLiquid(x, y, z));
     }
 
     private static long blockKey(int x, int y, int z) {

@@ -67,8 +67,8 @@ final class VehicleSummonJob {
     private static final double FIT_SPOT_MIN = 3;
     private static final double FIT_SPOT_MAX = 8;
     private static final double FALLBACK_SPOT_MAX = 16;
-    /**Cruise speed, in m/s (about 30 km/h).**/
-    private static final double CRUISE_SPEED = 8.3;
+    /**Speed to drive in at, in km/h, if the vehicle doesn't set its own summonSpeed.**/
+    private static final double DEFAULT_SUMMON_SPEED = 30;
     /**
      * Speed routes plan their turns for, in m/s.  Vehicles steer less the faster they go, so the
      * drive slows to this before turns to make them as tight as planned.
@@ -402,6 +402,21 @@ final class VehicleSummonJob {
         return distance > 0 ? distance : DEFAULT_SUMMON_DISTANCE;
     }
 
+    /**How fast the vehicle drives in, in m/s.**/
+    private double getCruiseSpeed() {
+        double speed = vehicle.summonSpeedVar.currentValue;
+        return (speed > 0 ? speed : DEFAULT_SUMMON_SPEED) / 3.6;
+    }
+
+    /**
+     * The yaw for the vehicle to pull up at with the side its summonArrivalAngle says facing the target.  Its left is
+     * 90 degrees anticlockwise of its nose, so with the left side to the target the nose points 90 degrees round from
+     * it, and each degree the angle goes round towards the front turns the nose a degree towards the target.
+     */
+    private double getArrivalYaw(Point3D from, Point3D target) {
+        return yawTowards(from, target) - 90 + vehicle.summonArrivalAngleVar.currentValue;
+    }
+
     private boolean isFar(IWrapperPlayer player) {
         Point3D playerPosition = player.getPosition();
         return Math.hypot(vehicle.position.x - playerPosition.x, vehicle.position.z - playerPosition.z) > getSummonDistance() + 8 || Math.abs(vehicle.position.y - playerPosition.y) > 30;
@@ -410,7 +425,7 @@ final class VehicleSummonJob {
     //-----GROUND PLANNING-----
 
     private void startGroundPlanning(IWrapperPlayer player) {
-        pathfinder = new GroundPathfinder(world, shape, getTurnRadius());
+        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, getTurnRadius());
 
         //Already within driving range: drive from where it is, never teleport.
         //Otherwise try arrival spots in front of the player, so they see it coming.  These are found as we go.
@@ -485,29 +500,9 @@ final class VehicleSummonJob {
     /**
      * Returns the radius of the tightest circle the vehicle can drive round at {@link #TURN_SPEED},
      * plus {@link #TURN_RADIUS_MARGIN}, or infinity if it can't steer.
-     * <p>
-     * This follows the vehicle's own steering: at full lock it turns 45 / wheelbase * groundVelocity
-     * * (speedFactor / 0.35) / 2 degrees a tick, scaled down above a ground velocity of 0.35 unless
-     * it ignores speed, while moving groundVelocity * speedFactor blocks.  The speeds cancel out,
-     * leaving a radius proportional to the wheelbase.
      */
     private double getTurnRadius() {
-        double wheelbase = vehicle.definition.motorized.hasPermanentSkidSteer ? 1 : vehicle.groundDeviceCollective.getTurningWheelbase();
-        if (wheelbase <= 0) {
-            return Double.POSITIVE_INFINITY;
-        }
-        double groundVelocity = TURN_SPEED / 20D / vehicle.speedFactor;
-        double steeringFactor = vehicle.steeringForceFactorVar.currentValue;
-        double steeringScale;
-        if (vehicle.steeringForceIgnoresSpeedVar.isActive) {
-            steeringScale = steeringFactor;
-        } else {
-            steeringScale = groundVelocity > 0.35 ? Math.pow(0.3, groundVelocity * (1 - steeringFactor) - 0.35) : 1;
-        }
-        if (steeringScale <= 0) {
-            return Double.POSITIVE_INFINITY;
-        }
-        return TURN_RADIUS_MARGIN * 0.7 * Math.toDegrees(1) * wheelbase / (EntityVehicleF_Physics.MAX_RUDDER_ANGLE * steeringScale);
+        return TURN_RADIUS_MARGIN * VehicleKinematics.of(vehicle).getTurnRadius(TURN_SPEED);
     }
 
     /**
@@ -591,8 +586,7 @@ final class VehicleSummonJob {
                 int[] offset = offsets.get(index++);
                 int x = (int) Math.floor(center.x) + offset[0];
                 int z = (int) Math.floor(center.z) + offset[1];
-                //Its left is 90 degrees anticlockwise of its nose, so the nose points 90 degrees round from the position.
-                int heading = GroundPathfinder.getHeading(yawTowards(new Point3D(x + 0.5, refY, z + 0.5), center) - 90);
+                int heading = GroundPathfinder.getHeading(getArrivalYaw(new Point3D(x + 0.5, refY, z + 0.5), center));
                 List<Placement> placements = pathfinder.findPlacements(x, z, refY, NEAR_HEIGHT_UP, NEAR_HEIGHT_DOWN, heading, true);
                 if (!placements.isEmpty()) {
                     found = placements.get(0);
@@ -829,7 +823,7 @@ final class VehicleSummonJob {
         //Slow for turns and for the end of the path.  Routes plan their turns for TURN_SPEED, so be down
         //to that by the time we reach one, or we'd steer wider than planned.
         double speed = vehicle.velocity * vehicle.speedFactor * 20;
-        double targetSpeed = CRUISE_SPEED * Math.max(0.35, Math.min(1, 1 - Math.abs(angle) / 120));
+        double targetSpeed = getCruiseSpeed() * Math.max(0.35, Math.min(1, 1 - Math.abs(angle) / 120));
         for (int i = pathIndex + 1; i <= Math.min(pathIndex + TURN_LOOKAHEAD, path.size() - 1); ++i) {
             Point3D ahead = path.get(i).copy().subtract(position).reOrigin(vehicle.orientation);
             if (Math.abs(Math.toDegrees(Math.atan2(ahead.x, ahead.z))) > 20) {
@@ -912,7 +906,7 @@ final class VehicleSummonJob {
      * far enough out that none of it lands on them.
      */
     private boolean teleportAircraftToGround(IWrapperPlayer player) {
-        pathfinder = new GroundPathfinder(world, shape, Double.POSITIVE_INFINITY);
+        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
         //Far enough out that none of it lands on the player, whichever way it faces.
         double minDistance = shape.radius() + 1.5;
         startSpotSearch(player.getPosition(), minDistance, minDistance + FALLBACK_SPOT_MAX, SpotPurpose.AIRCRAFT);
@@ -921,7 +915,7 @@ final class VehicleSummonJob {
 
     private boolean startFlight(IWrapperPlayer player) {
         Point3D playerPosition = player.getPosition();
-        pathfinder = new GroundPathfinder(world, shape, Double.POSITIVE_INFINITY);
+        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
         cruiseY = getCruiseHeight(playerPosition);
         startEngines(true);
         //A new call takes over from any earlier one that left it in the sky.
@@ -1076,9 +1070,8 @@ final class VehicleSummonJob {
             if (groundY == GroundPathfinder.NO_SURFACE) {
                 continue;
             }
-            //Land with its left side to the player if it fits, or else turned whichever way it does.
-            //Its left is 90 degrees anticlockwise of its nose, so the nose points 90 degrees round from the player.
-            int preferredHeading = GroundPathfinder.getHeading(yawTowards(spot, player.getPosition()) - 90);
+            //Land with the side its arrival angle says to the player if it fits, or else turned whichever way it does.
+            int preferredHeading = GroundPathfinder.getHeading(getArrivalYaw(spot, player.getPosition()));
             int[] heading = pathfinder.findLandingHeading(x, groundY, z, preferredHeading, GroundPathfinder.getHeading(vehicle.orientation.angles.y), cruiseY);
             if (heading != null) {
                 landingSpot = new Point3D(spot.x, groundY, spot.z);

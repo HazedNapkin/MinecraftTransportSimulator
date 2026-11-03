@@ -212,6 +212,18 @@ public class JSONVehicle extends AJSONPartProvider {
         public float summonDistance;
 
         @ModifiableValue
+        @JSONDescription("Which side of this vehicle faces the player when it pulls up after being called with a vehicle phone, as an angle in degrees round from its left side towards its front.  0 (the default) pulls up with the left side to the player, 90 nose first, 180 with the right side to them (for right-hand drive vehicles), and 270 tail first.  Fly-in aircraft land facing the same way.")
+        public float summonArrivalAngle;
+
+        @ModifiableValue
+        @JSONDescription("How fast this vehicle drives in when called with a vehicle phone, in km/h.  It still slows for turns, steps and the end of the route.  0 (the default) uses 30.")
+        public float summonSpeed;
+
+        @ModifiableValue
+        @JSONDescription("How far from the player the nearest part of this vehicle stops when called with a vehicle phone, in blocks.  0 (the default) uses 1.2.")
+        public float summonArrivalGap;
+
+        @ModifiableValue
         @JSONDescription("The factor of which to apply gravity to this vehicle. If defined, will override the main mtsconfig file value.")
         public float gravityFactor;
 

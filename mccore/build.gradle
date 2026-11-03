@@ -58,6 +58,9 @@ dependencies {
     //Set sound code bits as embeds so they are included into the jar.  These don't come with MC.
     embed("com.googlecode.soundlibs:jlayer:${project.jlayer_version}")
     embed("org.jcraft:jorbis:${project.jorbis_version}")
+
+    //Unit tests for code that doesn't need Minecraft running.
+    testImplementation("junit:junit:4.13.2")
 }
 
 //Here is where we zip up all embeds and add them to our jar.

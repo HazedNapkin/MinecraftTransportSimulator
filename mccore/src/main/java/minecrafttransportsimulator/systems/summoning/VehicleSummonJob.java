@@ -66,16 +66,16 @@ final class VehicleSummonJob {
     /**How hard the drive plans to brake, in m/s per second, so it slows smoothly to a stop at the end.**/
     private static final double BRAKING = 2.5;
     /**
-     * How far down the route the vehicle steers at: this many seconds ahead at its speed, between the least and most
-     * distances, in blocks.  Further ahead is smoother, and nearer keeps closer to the route in tight turns.
+     * If set, a vehicle placed to drive in is placed already moving at the speed planned for where it sets off, so it
+     * rolls in rather than pulling away from a standstill.
      */
-    private static final double LOOKAHEAD_TIME = 0.5;
-    private static final double MIN_LOOKAHEAD = 2.5;
-    private static final double MAX_LOOKAHEAD = 7;
-    /**How many route poses on from the last nearest one the drive looks for the nearest one now.**/
-    private static final int TRACK_WINDOW = 24;
-    /**How near the end of the route the vehicle has to get, or how far past it, to have arrived, in blocks.**/
-    private static final double ARRIVE_TOLERANCE = 0.25;
+    private static final boolean SPAWN_MOVING = true;
+    /**
+     * How near the end a vehicle that's all but stopped counts as there, in blocks, and how slow is all but stopped,
+     * in m/s.  Braking can bring it to rest just short, and it shouldn't sit there until it's called stuck.
+     */
+    private static final double STALLED_ARRIVE_DISTANCE = 1;
+    private static final double STALLED_SPEED = 0.3;
     private static final int STUCK_CHECK_INTERVAL = 100;
     /**How many ticks into the drive debug markers are first sent, once clients have the vehicle, and how often after.**/
     private static final int DEBUG_SEND_DELAY = 5;
@@ -179,11 +179,11 @@ final class VehicleSummonJob {
 
     //Driving.
     private SummonRoute route;
-    /**How far along the route each of its poses is, in blocks, and the speed to be doing there, in m/s.**/
-    private double[] routeDistances;
-    private double[] routeSpeeds;
-    /**The route pose nearest the vehicle.**/
-    private int poseIndex;
+    /**The speeds planned along the route, and what steers the vehicle along it.**/
+    private SpeedProfile profile;
+    private PathTracker tracker;
+    /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
+    private double spawnSpeed;
     private Point3D lastProgressPosition;
     private int replans;
     /**How long the current route may take to drive, in ticks.**/
@@ -652,7 +652,7 @@ final class VehicleSummonJob {
         planner = null;
         if (route.placed) {
             SummonRoute.Pose start = route.getStart();
-            teleportToGround(start.getGround(), start.yaw, Phase.DRIVE, startMessage);
+            teleport(new Point3D(start.x, start.y + shape.groundOffset(), start.z), start.yaw, spawnSpeed, Phase.DRIVE, startMessage);
         } else {
             if (startMessage != null) {
                 message(player, startMessage);
@@ -661,17 +661,29 @@ final class VehicleSummonJob {
         }
     }
 
-    /**Works out how far along the route each pose is, and the speed to be doing there.  See {@link SpeedProfile}.**/
+    /**
+     * Plans the speed to be doing along the route: see {@link SpeedProfile}.  A vehicle that's placed to drive in sets
+     * off at the speed planned for there, if it's placed moving, and one already on its way at the speed it's doing.
+     */
     private void planRouteSpeeds() {
         SpeedProfile.Settings settings = new SpeedProfile.Settings();
         settings.cruiseSpeed = getCruiseSpeed();
         settings.steeringMargin = TURN_RADIUS_MARGIN;
         settings.braking = BRAKING;
         settings.minSpeed = MIN_SPEED;
-        double speed = vehicle != null ? vehicle.velocity * vehicle.speedFactor * 20 : 0;
-        SpeedProfile profile = SpeedProfile.plan(route, kinematics, settings, route.placed ? 0 : speed);
-        routeDistances = profile.distances;
-        routeSpeeds = profile.speeds;
+        double startSpeed;
+        if (route.placed) {
+            startSpeed = SPAWN_MOVING ? Double.MAX_VALUE : 0;
+        } else {
+            startSpeed = getSpeed();
+        }
+        profile = SpeedProfile.plan(route, kinematics, settings, startSpeed);
+        spawnSpeed = route.placed && SPAWN_MOVING ? profile.speeds[0] : 0;
+    }
+
+    /**How fast the vehicle's going, in m/s.**/
+    private double getSpeed() {
+        return vehicle.velocity * vehicle.speedFactor * 20;
     }
 
     /**
@@ -701,21 +713,28 @@ final class VehicleSummonJob {
     //-----TELEPORTING-----
 
     private void teleportToGround(Point3D groundSpot, double yaw, Phase next, LanguageEntry doneMessage) {
-        teleport(new Point3D(groundSpot.x, groundSpot.y + shape.groundOffset(), groundSpot.z), yaw, next, doneMessage);
+        teleport(new Point3D(groundSpot.x, groundSpot.y + shape.groundOffset(), groundSpot.z), yaw, 0, next, doneMessage);
+    }
+
+    private void teleport(Point3D position, double yaw, Phase next, LanguageEntry doneMessage) {
+        teleport(position, yaw, 0, next, doneMessage);
     }
 
     /**
      * Moves the vehicle by saving it, removing it, and spawning it again from that save at the
      * new spot next tick.  Clients only see vehicle movement through MTS's movement deltas, so
      * just changing the position on the server would leave them with the vehicle in the old place.
-     * The vehicle keeps its phone ID, so the phone still knows it.
+     * The vehicle keeps its phone ID, so the phone still knows it, and anything else it saves, like its engines
+     * running.  It's placed moving forwards at the speed, in m/s.
      */
-    private void teleport(Point3D position, double yaw, Phase next, LanguageEntry doneMessage) {
+    private void teleport(Point3D position, double yaw, double speed, Phase next, LanguageEntry doneMessage) {
         vehicle.disconnectAllConnections();
         IWrapperNBT data = vehicle.save(InterfaceManager.coreInterface.getNewNBTWrapper());
         data.setPoint3d("position", position);
         data.setPoint3d("angles", new Point3D(0, yaw, 0));
-        data.setPoint3d("motion", new Point3D());
+        //Motion is per tick, before the speed factor MTS scales it by.
+        double motion = speed / 20D / vehicle.speedFactor;
+        data.setPoint3d("motion", new Point3D(Math.sin(Math.toRadians(yaw)) * motion, 0, Math.cos(Math.toRadians(yaw)) * motion));
         data.setPoint3d("serverDeltaM", new Point3D());
         data.setPoint3d("serverDeltaR", new Point3D());
         data.setDouble("serverDeltaP", 0);
@@ -761,7 +780,10 @@ final class VehicleSummonJob {
         set(vehicle.parkingBrakeVar, 0);
         lastProgressPosition = vehicle.position.copy();
         driveTimeout = getDriveTimeout();
-        poseIndex = 0;
+        PathTracker.Settings settings = new PathTracker.Settings();
+        settings.braking = BRAKING;
+        tracker = new PathTracker(route, profile, kinematics, settings);
+        tracker.setRudder(vehicle.rudderInputVar.currentValue);
     }
 
     /**
@@ -793,28 +815,18 @@ final class VehicleSummonJob {
         }
 
         Point3D position = vehicle.position;
-        updatePoseIndex();
-        int last = route.poses.size() - 1;
-        //How far the end is ahead of the vehicle, along the way it's facing.
-        Point3D endLocal = route.getEnd().getGround().subtract(position).reOrigin(vehicle.orientation);
-        boolean nearEnd = poseIndex >= last - 2;
-        double remaining = nearEnd ? Math.max(0, endLocal.z) : routeDistances[last] - routeDistances[poseIndex];
-        if ((nearEnd && endLocal.z < ARRIVE_TOLERANCE) || isPlayerInTheWay(player)) {
+        double speed = getSpeed();
+        PathTracker.Command command = tracker.update(position.x, position.z, vehicle.orientation.angles.y, speed);
+        boolean stalledAtEnd = command.remaining < STALLED_ARRIVE_DISTANCE && speed < STALLED_SPEED && phaseTicks > 20;
+        if (command.arrived || stalledAtEnd || isPlayerInTheWay(player)) {
             park();
             message(player, LanguageSystem.INTERACT_PHONE_ARRIVED);
             return true;
         }
-
-        //Steer for the arc through a point down the route, further ahead the faster it's going.
-        double speed = vehicle.velocity * vehicle.speedFactor * 20;
-        Point3D target = getLookahead(Math.max(MIN_LOOKAHEAD, Math.min(MAX_LOOKAHEAD, speed * LOOKAHEAD_TIME)));
-        Point3D local = target.subtract(position).reOrigin(vehicle.orientation);
-        double distanceSquared = local.x * local.x + local.z * local.z;
-        double curvature = distanceSquared > 0.01 ? 2 * local.x / distanceSquared : 0;
-        set(vehicle.rudderInputVar, kinematics.getRudderInput(curvature, Math.max(speed, MIN_SPEED)));
+        set(vehicle.rudderInputVar, command.rudder);
 
         //Keep to the planned speed, which slows for turns and steps, and brakes to a stop at the end.
-        double targetSpeed = Math.min(routeSpeeds[poseIndex], Math.sqrt(2 * BRAKING * remaining));
+        double targetSpeed = command.targetSpeed;
         if (speed < targetSpeed) {
             set(vehicle.throttleVar, Math.max(0, Math.min(0.8, 0.25 + (targetSpeed - speed) * 0.15)));
             set(vehicle.brakeVar, 0);
@@ -835,43 +847,6 @@ final class VehicleSummonJob {
             }
         }
         return false;
-    }
-
-    /**
-     * Moves on to the route pose nearest the vehicle, looking up to {@link #TRACK_WINDOW} poses on.  Going by the
-     * nearest, rather than waiting to pass close to each one, means cutting inside a bend can't leave the vehicle
-     * steering back for a pose it's already past.
-     */
-    private void updatePoseIndex() {
-        int nearest = poseIndex;
-        double nearestDistance = Double.MAX_VALUE;
-        for (int i = poseIndex; i < Math.min(route.poses.size(), poseIndex + TRACK_WINDOW); ++i) {
-            SummonRoute.Pose pose = route.poses.get(i);
-            double distance = Math.hypot(pose.x - vehicle.position.x, pose.z - vehicle.position.z);
-            if (distance < nearestDistance) {
-                nearest = i;
-                nearestDistance = distance;
-            }
-        }
-        poseIndex = nearest;
-    }
-
-    /**
-     * The point to steer at: the first route pose at least distance blocks along from the nearest one.  Near the end,
-     * it's that far on past the end in the way the route ends, so the vehicle straightens up into its final yaw.
-     */
-    private Point3D getLookahead(double distance) {
-        double wanted = routeDistances[poseIndex] + distance;
-        int last = route.poses.size() - 1;
-        for (int i = poseIndex; i <= last; ++i) {
-            if (routeDistances[i] >= wanted) {
-                return route.poses.get(i).getGround();
-            }
-        }
-        SummonRoute.Pose end = route.getEnd();
-        double beyond = wanted - routeDistances[last];
-        double yaw = Math.toRadians(end.yaw);
-        return new Point3D(end.x + Math.sin(yaw) * beyond, end.y, end.z + Math.cos(yaw) * beyond);
     }
 
     /**

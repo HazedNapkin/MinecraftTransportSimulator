@@ -112,6 +112,11 @@ final class VehicleKinematics {
         return -Math.max(-EntityVehicleF_Physics.MAX_RUDDER_ANGLE, Math.min(EntityVehicleF_Physics.MAX_RUDDER_ANGLE, steering));
     }
 
+    /**The curvature the vehicle drives with the rudder input at the speed.  The opposite of {@link #getRudderInput}.**/
+    double getCurvature(double rudderInput, double speed) {
+        return -rudderInput / EntityVehicleF_Physics.MAX_RUDDER_ANGLE * getMaxCurvature(speed);
+    }
+
     double getWheelbase() {
         return wheelbase;
     }

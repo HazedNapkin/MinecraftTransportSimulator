@@ -18,6 +18,13 @@ import minecrafttransportsimulator.systems.summoning.VehicleShape.Column;
 final class PoseChecker {
     /**Height the vehicle is placed above the ground when teleported, so nothing lower needs to be clear.**/
     static final double PARKING_CLEARANCE = 0.1;
+    /**
+     * Yaws to try landing an aircraft at, as offsets from the one it'd like: as it'd like, side-on both ways,
+     * reversed, then the diagonals.
+     */
+    private static final double[] LANDING_YAW_ORDER = { 0, 90, -90, 180, 45, -45, 135, -135 };
+    /**How far apart the yaws an aircraft turns through on its way down are checked, in degrees.**/
+    private static final double LANDING_TURN_STEP = 15;
 
     final TerrainMap terrain;
     final VehicleShape shape;
@@ -80,6 +87,74 @@ final class PoseChecker {
         List<Column> supports = shape.getSupports(x, z, yaw);
         for (Column support : supports) {
             if (!terrain.isSolid(support.x, y - 1, support.z) && !terrain.isSolid(support.x, y, support.z) && !terrain.isSolid(support.x, y - 2, support.z)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns true if an aircraft facing the yaw can come straight down from its origin being at fromY to land with its
+     * origin over x,z and its wheels on the ground at height y.  Every column it covers must be clear all the way down,
+     * and each wheel must come down within a block of that ground, so it doesn't land half off a ledge.
+     */
+    boolean canLand(double x, int y, double z, double yaw, double fromY) {
+        if (!isClearDown(x, y, z, yaw, fromY)) {
+            return false;
+        }
+        for (Column support : shape.getSupports(x, z, yaw)) {
+            if (!terrain.isSolid(support.x, y - 1, support.z) && !terrain.isSolid(support.x, y - 2, support.z)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Picks the yaw for an aircraft facing currentYaw to land at over x,z on the ground at y, coming down from its
+     * origin being at fromY (see {@link #canLand}).  Yaws are tried round from the one it'd like.
+     * <p>
+     * It prefers a yaw it can turn to smoothly on the way down, which needs every yaw it turns through to be clear all
+     * the way down too.  Returns {yaw, 1} for one of those.  Failing that, it returns {yaw, 0} for the first it can land
+     * at once it's finished turning, as it can turn up at cruise height where there's nothing in the way.  Returns null
+     * if it can't land here at all.
+     */
+    double[] findLandingYaw(double x, int y, double z, double preferredYaw, double currentYaw, double fromY) {
+        double[] turnFirst = null;
+        for (double offset : LANDING_YAW_ORDER) {
+            double yaw = VehicleSummonFlight.clampAngle(preferredYaw + offset);
+            if (canLand(x, y, z, yaw, fromY)) {
+                if (canTurnOnWayDown(x, y, z, currentYaw, yaw, fromY)) {
+                    return new double[] { yaw, 1 };
+                }
+                if (turnFirst == null) {
+                    turnFirst = new double[] { yaw, 0 };
+                }
+            }
+        }
+        return turnFirst;
+    }
+
+    /**
+     * Returns true if every yaw an aircraft turns through from fromYaw to toYaw, the short way round as the flight
+     * turns, has room all the way down from its origin being at fromY to the ground at height y.
+     */
+    private boolean canTurnOnWayDown(double x, int y, double z, double fromYaw, double toYaw, double fromY) {
+        double turn = VehicleSummonFlight.clampAngle(toYaw - fromYaw);
+        int steps = (int) Math.ceil(Math.abs(turn) / LANDING_TURN_STEP);
+        for (int i = 0; i < steps; ++i) {
+            if (!isClearDown(x, y, z, fromYaw + turn * i / steps, fromY)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**Returns true if every column the aircraft covers facing the yaw is clear from the ground at y up to it, from its origin being at fromY.**/
+    private boolean isClearDown(double x, int y, double z, double yaw, double fromY) {
+        double descent = fromY + shape.bottom - y;
+        for (Column column : shape.getFootprint(x, z, yaw).values()) {
+            if (terrain.isLiquid(column.x, y, column.z) || !terrain.isClear(column.x, y, column.z, Math.max(column.low, PARKING_CLEARANCE), descent + column.high)) {
                 return false;
             }
         }

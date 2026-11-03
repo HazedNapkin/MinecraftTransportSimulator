@@ -21,7 +21,6 @@ import minecrafttransportsimulator.packets.instances.PacketPartEngine.Signal;
 import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem;
 import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
-import minecrafttransportsimulator.systems.summoning.GroundPathfinder.Placement;
 
 /**
  * One vehicle answering one phone call.  Runs on the server, one step per tick.
@@ -30,12 +29,14 @@ import minecrafttransportsimulator.systems.summoning.GroundPathfinder.Placement;
  * from somewhere hidden about the vehicle's summonDistance blocks away, teleport there and drive in with the real
  * controls, following the route's curves and slowing for its turns, steps and the end.  A vehicle that's already
  * nearby drives over from where it is.  If no route exists, teleport to where it would have pulled up.  If there's no
- * room by the player, teleport to the nearest spot further out.  If stuck, re-plan once, then teleport.
+ * room by the player, teleport to the nearest place further out it fits.  If stuck, re-plan once, then teleport.
  * <p>
  * Aircraft that fly in (see {@link VehiclePhone#canFlyIn}): teleport in above the buildings, fly over the
  * player, and land straight down in the first clear spot within {@link #LANDING_RADIUS} blocks, trying in front
  * of the player first, then the sides, then behind.  If there's nowhere to land, the summon flight holds it above
  * the player until a player gets in.  Other aircraft are teleported straight onto the ground near the player.
+ * <p>
+ * Wherever a vehicle ends up by the player, it has the side its summonArrivalAngle says towards them.
  */
 final class VehicleSummonJob {
     private static final int DEFAULT_SUMMON_DISTANCE = 30;
@@ -43,15 +44,10 @@ final class VehicleSummonJob {
     /**How often to renew the chunk loading for a vehicle we're waking up, in ticks.**/
     private static final int CHUNK_LOAD_INTERVAL = 20;
     /**
-     * How far either side of straight ahead of the player an aircraft may be placed, or a ground vehicle when there's no
-     * room right by the player, in degrees.
+     * How much further out than its arrival gap a vehicle that's put by the player rather than driving in may go to
+     * find somewhere it fits, in blocks: aircraft that don't fly in, and anything with no room right by the player.
      */
-    private static final double FRONT_LEEWAY = 45;
-    /**How far above and below the player a spot next to them may be, in blocks.**/
-    private static final int NEAR_HEIGHT_UP = 2;
-    private static final int NEAR_HEIGHT_DOWN = 3;
-    private static final double FIT_SPOT_MIN = 3;
-    private static final double FALLBACK_SPOT_MAX = 16;
+    private static final double PLACEMENT_MAX_EXTRA_GAP = 16;
     /**Speed to drive in at, in km/h, if the vehicle doesn't set its own summonSpeed.**/
     private static final double DEFAULT_SUMMON_SPEED = 30;
     /**
@@ -163,9 +159,8 @@ final class VehicleSummonJob {
     /**Where the player was, and the way they were looking, when planning started.  Spots are ranked from in front of them.**/
     private Point3D planCenter;
     private double frontAngle;
-    /**For spot searches by the player: where aircraft are placed, and ground vehicles when there's no room right by them.**/
-    private GroundPathfinder pathfinder;
-    private SpotSearch spotSearch;
+    /**Finds where to put a vehicle by the player that doesn't drive in, and what for.**/
+    private ArrivalPlanner placementSearch;
     private SpotPurpose spotPurpose;
     private VehicleKinematics kinematics;
     private RoutePlanner planner;
@@ -193,8 +188,10 @@ final class VehicleSummonJob {
     private double cruiseY;
     private final List<Point3D> landingCandidates = new ArrayList<>();
     private int landingIndex;
+    /**Checks where an aircraft can land, and where it's landing, facing the yaw.**/
+    private PoseChecker landingChecker;
     private Point3D landingSpot;
-    private int landingHeading;
+    private double landingYaw;
     /**True if the aircraft can turn to its landing heading as it comes down, rather than having to finish turning first.**/
     private boolean landingTurnsOnWayDown;
     /**True while the descent is held just above the ground for the aircraft to finish turning.**/
@@ -263,8 +260,7 @@ final class VehicleSummonJob {
                 flightTimedOut = true;
                 VehicleSummonFlight.flyTo(vehicle, vehicle.position.copy(), FLY_SPEED);
                 frontAngle = getLookAngle(player);
-                double minDistance = shape.radius() + 1.5;
-                startSpotSearch(player.getPosition(), minDistance, minDistance + FALLBACK_SPOT_MAX, SpotPurpose.FLIGHT_TIMEOUT);
+                startSpotSearch(player.getPosition(), SpotPurpose.FLIGHT_TIMEOUT);
                 return false;
             }
         }
@@ -446,13 +442,7 @@ final class VehicleSummonJob {
         settings.summonDistance = getSummonDistance();
         settings.cruiseSpeed = getCruiseSpeed();
         settings.turnRadius = getTurnRadius();
-        settings.arrival.arrivalAngle = vehicle.summonArrivalAngleVar.currentValue;
-        if (vehicle.summonArrivalGapVar.currentValue > 0) {
-            settings.arrival.gap = vehicle.summonArrivalGapVar.currentValue;
-        }
-        double[] align = ArrivalPlanner.getAlignPoint(vehicle, settings.arrival.arrivalAngle);
-        settings.arrival.alignX = align[0];
-        settings.arrival.alignZ = align[1];
+        setArrival(settings.arrival);
         planner = new RoutePlanner(new PoseChecker(terrain, shape), kinematics, settings, planCenter, Math.toDegrees(frontAngle));
         if (fromHere) {
             int x = (int) Math.floor(vehicle.position.x);
@@ -468,30 +458,49 @@ final class VehicleSummonJob {
         return true;
     }
 
-    private void startSpotSearch(Point3D center, double min, double max, SpotPurpose purpose) {
-        spotSearch = new SpotSearch(center, min, max);
+    /**Sets the arrival settings to pull up the way the vehicle says: which side to the player, how far off, lined up how.**/
+    private void setArrival(ArrivalPlanner.Settings settings) {
+        settings.arrivalAngle = vehicle.summonArrivalAngleVar.currentValue;
+        if (vehicle.summonArrivalGapVar.currentValue > 0) {
+            settings.gap = vehicle.summonArrivalGapVar.currentValue;
+        }
+        double[] align = ArrivalPlanner.getAlignPoint(vehicle, settings.arrivalAngle);
+        settings.alignX = align[0];
+        settings.alignZ = align[1];
+    }
+
+    /**
+     * Starts looking for somewhere by the player at the center to put the vehicle, rather than drive it, for the
+     * purpose.  It's pulled up the way it would be driving in, but may go further out to find somewhere it fits.
+     */
+    private void startSpotSearch(Point3D center, SpotPurpose purpose) {
+        ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
+        setArrival(settings);
+        settings.drivesIn = false;
+        settings.maxExtraGap = PLACEMENT_MAX_EXTRA_GAP;
+        placementSearch = new ArrivalPlanner(new PoseChecker(new TerrainMap(TerrainQuery.of(world)), shape), settings, center, Math.toDegrees(frontAngle));
         spotPurpose = purpose;
         setPhase(Phase.FIND_SPOT);
     }
 
     /**Carries on the spot search, and acts on its result when it's done.**/
     private boolean findSpot(IWrapperPlayer player) {
-        if (!spotSearch.step(tickTime)) {
+        if (!placementSearch.step(tickTime)) {
             return false;
         }
-        Placement spot = spotSearch.found;
-        spotSearch = null;
+        ArrivalPlanner.Goal spot = placementSearch.getGoals().isEmpty() ? null : placementSearch.getGoals().get(0);
+        placementSearch = null;
         switch (spotPurpose) {
             case FALLBACK: {
                 if (spot != null) {
-                    teleportToGround(spot.getGround(), spot.getYaw(), null, LanguageSystem.INTERACT_PHONE_PARKEDCLOSEST);
+                    teleportToGround(spot.getGround(), spot.yaw, null, LanguageSystem.INTERACT_PHONE_PARKEDCLOSEST);
                     return false;
                 }
                 break;
             }
             case AIRCRAFT: {
                 if (spot != null) {
-                    teleportToGround(spot.getGround(), spot.getYaw(), null, LanguageSystem.INTERACT_PHONE_BROUGHT);
+                    teleportToGround(spot.getGround(), spot.yaw, null, LanguageSystem.INTERACT_PHONE_BROUGHT);
                     return false;
                 }
                 break;
@@ -502,7 +511,7 @@ final class VehicleSummonJob {
                 if (spot != null) {
                     //It'll be on the ground, so gear down.
                     set(vehicle.getOrCreateVariable(VehiclePhone.VAR_GEAR), 0);
-                    teleportToGround(spot.getGround(), spot.getYaw(), null, LanguageSystem.INTERACT_PHONE_BROUGHT);
+                    teleportToGround(spot.getGround(), spot.yaw, null, LanguageSystem.INTERACT_PHONE_BROUGHT);
                     return false;
                 }
                 //Nowhere on the ground either.  Stay up where it is until a player gets in.
@@ -546,56 +555,6 @@ final class VehicleSummonJob {
         return Math.atan2(look.x, look.z);
     }
 
-    /**
-     * A search for a ground spot between min and max blocks in front of the position, within
-     * {@link #FRONT_LEEWAY} of where the player is looking, where the whole vehicle fits.  Straight
-     * ahead comes before the sides, and nearest first in each.  At each spot, heights nearest the
-     * position come first, and the vehicle has its left side to the position if it fits that way, or
-     * else turns until it does.  It runs a slice at a time so it can't stall the server.
-     */
-    private final class SpotSearch {
-        private final Point3D center;
-        private final int refY;
-        private final List<int[]> offsets = new ArrayList<>();
-        private int index;
-        /**The spot found, or null if there isn't one or the search isn't done.**/
-        Placement found;
-
-        SpotSearch(Point3D center, double min, double max) {
-            this.center = center.copy();
-            this.refY = (int) Math.floor(center.y);
-            int range = (int) Math.ceil(max);
-            //Big aircraft search a wide area, so check fewer columns.
-            int step = Math.max(1, range / 16);
-            for (int dx = -range; dx <= range; dx += step) {
-                for (int dz = -range; dz <= range; dz += step) {
-                    double distance = Math.hypot(dx, dz);
-                    if (distance >= min && distance <= max && getAngleOffFront(dx, dz) <= FRONT_LEEWAY + 0.01) {
-                        offsets.add(new int[] { dx, dz, getSector(dx, dz) });
-                    }
-                }
-            }
-            offsets.sort((a, b) -> a[2] != b[2] ? Integer.compare(a[2], b[2]) : Double.compare(Math.hypot(a[0], a[1]), Math.hypot(b[0], b[1])));
-        }
-
-        /**Checks spots until one fits, they run out, or maxNanos pass.  Returns true once it's done.**/
-        boolean step(long maxNanos) {
-            long startTime = System.nanoTime();
-            while (index < offsets.size() && System.nanoTime() - startTime < maxNanos) {
-                int[] offset = offsets.get(index++);
-                int x = (int) Math.floor(center.x) + offset[0];
-                int z = (int) Math.floor(center.z) + offset[1];
-                int heading = GroundPathfinder.getHeading(getArrivalYaw(new Point3D(x + 0.5, refY, z + 0.5), center));
-                List<Placement> placements = pathfinder.findPlacements(x, z, refY, NEAR_HEIGHT_UP, NEAR_HEIGHT_DOWN, heading, true);
-                if (!placements.isEmpty()) {
-                    found = placements.get(0);
-                    return true;
-                }
-            }
-            return index >= offsets.size();
-        }
-    }
-
     private boolean planGround(IWrapperPlayer player) {
         if (!planner.step(tickTime)) {
             return false;
@@ -635,9 +594,8 @@ final class VehicleSummonJob {
             teleportToGround(fallbackGoal.getGround(), fallbackGoal.yaw, null, LanguageSystem.INTERACT_PHONE_NOWAYTELEPORT);
             return false;
         }
-        //No room right by the player.  Look a bit further out in front of them for anywhere it fits.
-        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
-        startSpotSearch(player.getPosition(), FIT_SPOT_MIN, FALLBACK_SPOT_MAX, SpotPurpose.FALLBACK);
+        //No room right by the player.  Look further out for anywhere it fits.
+        startSpotSearch(player.getPosition(), SpotPurpose.FALLBACK);
         return false;
     }
 
@@ -906,16 +864,13 @@ final class VehicleSummonJob {
      * far enough out that none of it lands on them.
      */
     private boolean teleportAircraftToGround(IWrapperPlayer player) {
-        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
-        //Far enough out that none of it lands on the player, whichever way it faces.
-        double minDistance = shape.radius() + 1.5;
-        startSpotSearch(player.getPosition(), minDistance, minDistance + FALLBACK_SPOT_MAX, SpotPurpose.AIRCRAFT);
+        startSpotSearch(player.getPosition(), SpotPurpose.AIRCRAFT);
         return false;
     }
 
     private boolean startFlight(IWrapperPlayer player) {
         Point3D playerPosition = player.getPosition();
-        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
+        landingChecker = new PoseChecker(new TerrainMap(TerrainQuery.of(world)), shape);
         cruiseY = getCruiseHeight(playerPosition);
         startEngines(true);
         //A new call takes over from any earlier one that left it in the sky.
@@ -1013,7 +968,7 @@ final class VehicleSummonJob {
     }
 
     private boolean isFacingLandingHeading() {
-        return VehicleSummonFlight.isFacing(vehicle, GroundPathfinder.getHeadingYaw(landingHeading));
+        return VehicleSummonFlight.isFacing(vehicle, landingYaw);
     }
 
     /**
@@ -1067,18 +1022,17 @@ final class VehicleSummonJob {
             int x = (int) Math.floor(spot.x);
             int z = (int) Math.floor(spot.z);
             int groundY = getLandingGround(x, z);
-            if (groundY == GroundPathfinder.NO_SURFACE) {
+            if (groundY == TerrainMap.NO_SURFACE) {
                 continue;
             }
             //Land with the side its arrival angle says to the player if it fits, or else turned whichever way it does.
-            int preferredHeading = GroundPathfinder.getHeading(getArrivalYaw(spot, player.getPosition()));
-            int[] heading = pathfinder.findLandingHeading(x, groundY, z, preferredHeading, GroundPathfinder.getHeading(vehicle.orientation.angles.y), cruiseY);
-            if (heading != null) {
+            double[] yaw = landingChecker.findLandingYaw(spot.x, groundY, spot.z, getArrivalYaw(spot, player.getPosition()), vehicle.orientation.angles.y, cruiseY);
+            if (yaw != null) {
                 landingSpot = new Point3D(spot.x, groundY, spot.z);
-                landingHeading = heading[0];
-                landingTurnsOnWayDown = heading[1] == 1;
+                landingYaw = yaw[0];
+                landingTurnsOnWayDown = yaw[1] == 1;
                 //Start turning now, smoothly, as it flies over to the spot.
-                VehicleSummonFlight.turnTo(vehicle, GroundPathfinder.getHeadingYaw(landingHeading));
+                VehicleSummonFlight.turnTo(vehicle, landingYaw);
                 VehicleSummonFlight.flyTo(vehicle, new Point3D(spot.x, cruiseY, spot.z), FLY_SPEED * 0.4);
                 setPhase(Phase.FLY_TO_LANDING);
                 return false;
@@ -1089,16 +1043,16 @@ final class VehicleSummonJob {
 
     /**
      * Returns the height of the ground under the cruising aircraft in this column, or
-     * {@link GroundPathfinder#NO_SURFACE} if it's liquid or something it can't stand on.
+     * {@link TerrainMap#NO_SURFACE} if it's liquid or something it can't stand on.
      */
     private int getLandingGround(int x, int z) {
         for (int y = (int) Math.floor(cruiseY); y > cruiseY - 128; --y) {
             Point3D block = new Point3D(x + 0.5, y + 0.5, z + 0.5);
             if (!world.isAir(block)) {
-                return world.isBlockLiquid(block) || !world.isBlockSolid(block, Axis.UP) ? GroundPathfinder.NO_SURFACE : y + 1;
+                return world.isBlockLiquid(block) || !world.isBlockSolid(block, Axis.UP) ? TerrainMap.NO_SURFACE : y + 1;
             }
         }
-        return GroundPathfinder.NO_SURFACE;
+        return TerrainMap.NO_SURFACE;
     }
 
     /**Height for the aircraft origin that clears everything around the position and the player.**/

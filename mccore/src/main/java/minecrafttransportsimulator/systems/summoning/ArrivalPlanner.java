@@ -50,8 +50,7 @@ final class ArrivalPlanner {
     private static final double GAP_SEARCH_STEP = 0.05;
     /**How far apart the turn in is checked, in blocks along it.**/
     private static final double TURN_IN_SPACING = 0.5;
-    /**How much further out than the gap a goal may go to have room to turn in, and in what steps, in blocks.**/
-    private static final double MAX_EXTRA_GAP = 4;
+    /**How far apart the distances further out than the gap a goal is tried at are, in blocks.**/
     private static final double EXTRA_GAP_STEP = 0.5;
     /**Half the width of the player, which the vehicle must keep out of the block columns of.**/
     private static final double PLAYER_RADIUS = 0.3;
@@ -79,6 +78,13 @@ final class ArrivalPlanner {
         double preferredRunIn = 8;
         /**Radius of the turns the vehicle makes coming in to the run-in, in blocks, with any margin for steering error.**/
         double turnRadius = 4;
+        /**
+         * True if the vehicle drives in, so goals need a run-in and room to turn in to it.  False if it's only put there,
+         * like an aircraft placed on the ground or a vehicle that can't drive in, so it only needs room to park.
+         */
+        boolean drivesIn = true;
+        /**How much further out than the gap a goal may go, to have room to turn in or to fit at all, in blocks.**/
+        double maxExtraGap = 4;
         /**How far above and below the player a goal may be, in blocks.**/
         int heightUp = 2;
         int heightDown = 3;
@@ -217,7 +223,7 @@ final class ArrivalPlanner {
      * room to turn in, and at the height nearest the player's it fits at there.
      */
     private void tryBearing(double offset) {
-        for (double extraGap = 0; extraGap <= MAX_EXTRA_GAP + 1e-9; extraGap += EXTRA_GAP_STEP) {
+        for (double extraGap = 0; extraGap <= settings.maxExtraGap + 1e-9; extraGap += EXTRA_GAP_STEP) {
             if (!canWalk(lookYaw + offset, settings.gap + extraGap)) {
                 //Something's in the way, so anywhere further out is past it, where the player can't get to the vehicle.
                 return;
@@ -254,7 +260,7 @@ final class ArrivalPlanner {
 
     /**
      * Returns the goal with the vehicle's origin over x,z facing the yaw, at the height nearest the player's it can
-     * park, has a long enough run-in, and can turn in at, or null if there isn't one.
+     * park, and if it drives in, has a long enough run-in and can turn in at, or null if there isn't one.
      */
     private Goal tryOrigin(double x, double z, double yaw, double cost) {
         int playerY = (int) Math.floor(player.y);
@@ -262,6 +268,9 @@ final class ArrivalPlanner {
             for (int y : dy == 0 ? new int[] { playerY } : new int[] { playerY + dy, playerY - dy }) {
                 if ((y > playerY && y - playerY > settings.heightUp) || (y < playerY && playerY - y > settings.heightDown) || !checker.canPark(x, y, z, yaw)) {
                     continue;
+                }
+                if (!settings.drivesIn) {
+                    return new Goal(x, y, z, yaw, 0, cost + Math.abs(y - playerY) * HEIGHT_COST);
                 }
                 double[] runIn = measureRunIn(x, y, z, yaw);
                 if (runIn[0] < minRunIn) {

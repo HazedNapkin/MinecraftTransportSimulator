@@ -183,6 +183,37 @@ public class ArrivalPlannerTest {
     }
 
     @Test
+    public void placingNeedsNoRunIn() {
+        //A wall just behind where it'd pull up straight ahead, leaving no run-in to drive in along.
+        FakeTerrain terrain = FakeTerrain.flat(30).fill(-4, 0, 1, -4, 3, 4);
+        ArrivalPlanner.Settings placing = new ArrivalPlanner.Settings();
+        placing.drivesIn = false;
+        ArrivalPlanner placed = planner(terrain, placing);
+        placed.finish();
+        //Driving in, there's no run-in there.  Put there, it fits, the gap away, with the left side to the player.
+        double[] origin = placed.getOrigin(0);
+        assertTrue(placed.measureRunIn(origin[0], 0, origin[1], origin[2])[0] < 3);
+        ArrivalPlanner.Goal goal = placed.getGoals().get(0);
+        assertEquals(0, bearingOf(goal), 1);
+        assertEquals(90, goal.yaw, 1e-9);
+        assertEquals(placing.gap, placed.getNearestDistance(goal.x, goal.z, goal.yaw), 0.06);
+    }
+
+    @Test
+    public void placingGoesFurtherOutToFit() {
+        //Low walls a block high all round the player 3 blocks out, which they can step over but a vehicle can't park on.
+        FakeTerrain terrain = FakeTerrain.flat(30).fill(-3, 0, -3, 3, 0, -3).fill(-3, 0, 3, 3, 0, 3).fill(-3, 0, -3, -3, 0, 3).fill(3, 0, -3, 3, 0, 3);
+        ArrivalPlanner.Settings placing = new ArrivalPlanner.Settings();
+        placing.drivesIn = false;
+        placing.maxExtraGap = 16;
+        ArrivalPlanner placed = planner(terrain, placing);
+        placed.finish();
+        assertFalse(placed.getGoals().isEmpty());
+        ArrivalPlanner.Goal goal = placed.getGoals().get(0);
+        assertTrue(placed.getNearestDistance(goal.x, goal.z, goal.yaw) > 2);
+    }
+
+    @Test
     public void comesDownToTheGroundBelowAPlayerOnABlock() {
         //The player stands on a single block, so their feet are at y = 1 and the ground round them at 0.
         FakeTerrain terrain = FakeTerrain.flat(30).fill(0, 0, 0, 0, 0, 0);

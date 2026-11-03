@@ -1,6 +1,7 @@
 package minecrafttransportsimulator.systems.summoning;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,15 +35,21 @@ final class VehicleShape {
     final double top;
     /**Furthest point forwards of the vehicle origin.**/
     final double front;
+    /**Furthest point behind the vehicle origin, as a distance behind it.**/
+    final double back;
+    /**Furthest point to either side of the vehicle origin.**/
+    final double side;
     /**Distance from the origin to the furthest point of the vehicle, so it fits in this circle at any yaw.**/
     private final double radius;
 
-    private VehicleShape(List<ShapeBox> boxes, List<ShapeBox> supports, double bottom, double top, double front, double radius) {
+    private VehicleShape(List<ShapeBox> boxes, List<ShapeBox> supports, double bottom, double top, double front, double back, double side, double radius) {
         this.boxes = boxes;
         this.supports = supports;
         this.bottom = bottom;
         this.top = top;
         this.front = front;
+        this.back = back;
+        this.side = side;
         this.radius = radius;
     }
 
@@ -130,9 +137,17 @@ final class VehicleShape {
                 rawWheels.add(toLocal(vehicle, part.position, Math.max(part.getWidth(), part.getHeight()) / 2D, part.getHeight() / 2D));
             }
         }
+        return of(rawBoxes, rawWheels);
+    }
+
+    /**
+     * Makes the shape from boxes and wheels in the vehicle's local space, each as {x, y, z, horizontal radius,
+     * vertical radius}.  Also used to make shapes for tests.
+     */
+    static VehicleShape of(List<double[]> rawBoxes, List<double[]> rawWheels) {
         if (rawBoxes.isEmpty() && rawWheels.isEmpty()) {
             //Nothing to go on.  Treat it as a block-sized box.
-            rawBoxes.add(new double[] { 0, 0, 0, 0.5, 0.5 });
+            rawBoxes = Collections.singletonList(new double[] { 0, 0, 0, 0.5, 0.5 });
         }
 
         //The ground is where the wheels touch it, or failing that, the bottom of the lowest box.
@@ -149,6 +164,8 @@ final class VehicleShape {
         List<ShapeBox> boxes = new ArrayList<>();
         double top = bottom + 1;
         double front = 0;
+        double back = 0;
+        double side = 0;
         double radius = 0;
         double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE, minZ = Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
         for (double[] raw : rawBoxes) {
@@ -160,6 +177,8 @@ final class VehicleShape {
         for (ShapeBox box : boxes) {
             top = Math.max(top, bottom + box.high);
             front = Math.max(front, box.z + box.radius);
+            back = Math.max(back, box.radius - box.z);
+            side = Math.max(side, Math.abs(box.x) + box.radius);
             //Corner furthest from the origin.
             radius = Math.max(radius, Math.hypot(Math.abs(box.x) + box.radius, Math.abs(box.z) + box.radius));
             minX = Math.min(minX, box.x - box.radius);
@@ -183,7 +202,7 @@ final class VehicleShape {
                 }
             }
         }
-        return new VehicleShape(boxes, supports, bottom, top, Math.max(0.5, front), radius);
+        return new VehicleShape(boxes, supports, bottom, top, Math.max(0.5, front), Math.max(0.5, back), Math.max(0.5, side), radius);
     }
 
     /**Returns the box as {x, y, z, horizontal radius, vertical radius} in the vehicle's local space.**/

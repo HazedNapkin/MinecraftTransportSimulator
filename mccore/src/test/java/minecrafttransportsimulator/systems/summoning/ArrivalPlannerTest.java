@@ -108,6 +108,70 @@ public class ArrivalPlannerTest {
     }
 
     @Test
+    public void turnInNeedsRoomOnOneSide() {
+        //A straight starting well in front of the player facing +Z, between two walls.  Its quarter turns in end
+        //4 blocks either side of it, facing across, so the walls block them when 4 or 5 blocks out but not when 9 or 10.
+        ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
+        FakeTerrain narrow = FakeTerrain.flat(30).fill(-4, 0, 8, -4, 3, 20).fill(5, 0, 8, 5, 3, 20);
+        FakeTerrain wide = FakeTerrain.flat(30).fill(-9, 0, 8, -9, 3, 20).fill(10, 0, 8, 10, 3, 20);
+        assertFalse(planner(narrow, settings).canTurnIn(0.5, 0, 20.5, 0));
+        assertTrue(planner(wide, settings).canTurnIn(0.5, 0, 20.5, 0));
+        //Only one side needs room.
+        FakeTerrain oneSide = FakeTerrain.flat(30).fill(-4, 0, 8, -4, 3, 20);
+        assertTrue(planner(oneSide, settings).canTurnIn(0.5, 0, 20.5, 0));
+    }
+
+    @Test
+    public void movesOutWhenItCantTurnIn() {
+        //Facing +X from bearing 0, the run-in goes back towards -X.  A wall across it at x = -7 cuts it to 4.5 blocks,
+        //long enough on its own, but leaves no room to turn onto it either way that close to the player.
+        ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
+        FakeTerrain terrain = FakeTerrain.flat(30).fill(-7, 0, 1, -7, 3, 3);
+        ArrivalPlanner planner = planner(terrain, settings);
+        double[] origin = planner.getOrigin(0);
+        double[] runIn = planner.measureRunIn(origin[0], 0, origin[1], origin[2]);
+        assertEquals(4.5, runIn[0], 1e-9);
+        assertFalse(planner.canTurnIn(origin[0] - runIn[0], 0, origin[1], origin[2]));
+        //So straight ahead it pulls up further out, where it can get in.
+        planner.finish();
+        for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+            if (Math.abs(bearingOf(goal)) < 1) {
+                assertTrue(planner.getNearestDistance(goal.x, goal.z, goal.yaw) > settings.gap + 0.4);
+            }
+        }
+    }
+
+    @Test
+    public void everyGoalCanBeDrivenInto() {
+        //Scattered pillars, kept off the player.
+        java.util.Random random = new java.util.Random(1);
+        for (int layout = 0; layout < 10; ++layout) {
+            FakeTerrain terrain = FakeTerrain.flat(30);
+            for (int i = 0; i < 25; ++i) {
+                int x = random.nextInt(31) - 15;
+                int z = random.nextInt(31) - 15;
+                if (Math.abs(x) > 1 || Math.abs(z) > 1) {
+                    terrain.fill(x, 0, z, x, 2, z);
+                }
+            }
+            ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
+            ArrivalPlanner planner = planner(terrain, settings);
+            planner.finish();
+            for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+                assertTrue(planner.getNearestDistance(goal.x, goal.z, goal.yaw) >= settings.gap);
+                double[] runIn = planner.measureRunIn(goal.x, goal.y, goal.z, goal.yaw);
+                //The car is 4 long, so its run-in has to be at least that, and it should be twice that.
+                assertTrue(runIn[0] >= 4);
+                if (runIn[0] < 8) {
+                    double forwardX = Math.sin(Math.toRadians(goal.yaw));
+                    double forwardZ = Math.cos(Math.toRadians(goal.yaw));
+                    assertTrue(planner.canTurnIn(goal.x - forwardX * runIn[0], (int) runIn[2], goal.z - forwardZ * runIn[0], goal.yaw));
+                }
+            }
+        }
+    }
+
+    @Test
     public void comesDownToTheGroundBelowAPlayerOnABlock() {
         //The player stands on a single block, so their feet are at y = 1 and the ground round them at 0.
         FakeTerrain terrain = FakeTerrain.flat(30).fill(0, 0, 0, 0, 0, 0);

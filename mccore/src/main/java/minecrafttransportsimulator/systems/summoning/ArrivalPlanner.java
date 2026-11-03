@@ -18,8 +18,14 @@ import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
  * the sides, then behind, and at heights near theirs.
  * <p>
  * A goal also needs a clear straight run-in behind it, which the vehicle drives along to pull up, so it settles
- * straight rather than stopping mid-turn.  Goals are ranked by how far round from straight ahead they are, how far
- * above or below the player, and how short or bumpy their run-in is.
+ * straight rather than stopping mid-turn.  If the run-in is shorter than it should be, the vehicle has to turn onto
+ * it close by, so there must be room for that turn too: a quarter turn either way at the vehicle's turn radius,
+ * sweeping its whole shape, without touching the player.  If a goal hasn't the room, it's moved further out from
+ * the player until it has, as a vehicle can't pull up lined up with the player if it can't turn in.  It only moves
+ * out as far as the player can still walk to it, so it never ends up on the far side of a wall from them.
+ * <p>
+ * Goals are ranked by how far round from straight ahead they are, how far above or below the player, how much
+ * further out than the gap they had to go, and how short or bumpy their run-in is.
  */
 final class ArrivalPlanner {
     /**How far apart the bearings tried round the player are, in degrees.**/
@@ -31,13 +37,27 @@ final class ArrivalPlanner {
     private static final double BEARING_COST = 1;
     private static final double SIDE_COST = 4;
     private static final double BEHIND_COST = 12;
-    /**Costs of goals for each block above or below the player, for each block their run-in is short, and for each step in it.**/
+    /**
+     * Costs of goals for each block above or below the player, for each block further out than the gap, for each
+     * block their run-in is short, and for each step in it.
+     */
     private static final double HEIGHT_COST = 1;
+    private static final double EXTRA_GAP_COST = 1;
     private static final double RUN_IN_SHORT_COST = 1;
     private static final double RUN_IN_STEP_COST = 0.5;
     /**How far apart the run-in is checked, and how finely the gap is found, in blocks.**/
     private static final double RUN_IN_SPACING = 0.5;
     private static final double GAP_SEARCH_STEP = 0.05;
+    /**How far apart the turn in is checked, in blocks along it.**/
+    private static final double TURN_IN_SPACING = 0.5;
+    /**How much further out than the gap a goal may go to have room to turn in, and in what steps, in blocks.**/
+    private static final double MAX_EXTRA_GAP = 4;
+    private static final double EXTRA_GAP_STEP = 0.5;
+    /**Half the width of the player, which the vehicle must keep out of the block columns of.**/
+    private static final double PLAYER_RADIUS = 0.3;
+    /**How tall the player is, which they need clear to walk to the vehicle, and how far apart that's checked, in blocks.**/
+    private static final double PLAYER_HEIGHT = 1.8;
+    private static final double WALK_SPACING = 0.25;
     /**Most goals to keep, best first.**/
     static final int MAX_GOALS = 8;
 
@@ -50,9 +70,15 @@ final class ArrivalPlanner {
         /**The point on the vehicle to line up opposite the player, in its local space, usually the driver's seat.**/
         double alignX;
         double alignZ;
-        /**Shortest straight run-in a goal must have, and the length it should have, in blocks.**/
+        /**
+         * Shortest straight run-in a goal must have, and the length it should have, in blocks.  The shortest is
+         * raised to the vehicle's length, and the length it should have to twice that, so long vehicles have the
+         * room to straighten up.
+         */
         double minRunIn = 3;
         double preferredRunIn = 8;
+        /**Radius of the turns the vehicle makes coming in to the run-in, in blocks, with any margin for steering error.**/
+        double turnRadius = 4;
         /**How far above and below the player a goal may be, in blocks.**/
         int heightUp = 2;
         int heightDown = 3;
@@ -67,6 +93,8 @@ final class ArrivalPlanner {
     private final Point3D player;
     private final double lookYaw;
     private final double headroom;
+    private final double minRunIn;
+    private final double preferredRunIn;
     /**Bearings to try, as offsets from straight ahead, nearest straight ahead first, and the next to try.**/
     private final List<Double> offsets = new ArrayList<>();
     private int offsetIndex;
@@ -79,6 +107,11 @@ final class ArrivalPlanner {
         this.player = player.copy();
         this.lookYaw = lookYaw;
         this.headroom = shape.top - shape.bottom;
+        double length = shape.front + shape.back;
+        this.minRunIn = Math.max(settings.minRunIn, length);
+        this.preferredRunIn = Math.max(settings.preferredRunIn, 2 * length);
+        //Nothing may drive through the player, coming in or pulling up.
+        checker.keepClear(player, PLAYER_RADIUS);
         offsets.add(0D);
         for (double offset = BEARING_STEP; offset < 180; offset += BEARING_STEP) {
             offsets.add(offset);
@@ -134,6 +167,11 @@ final class ArrivalPlanner {
      * opposite the player, and as near as it can be with every part of it at least the gap away from them.
      */
     double[] getOrigin(double bearing) {
+        return getOrigin(bearing, settings.gap);
+    }
+
+    /**Like {@link #getOrigin(double)}, but with this gap rather than the one in the settings.**/
+    double[] getOrigin(double bearing, double gap) {
         double yaw = getArrivalYaw(bearing, settings.arrivalAngle);
         double sin = Math.sin(Math.toRadians(yaw));
         double cos = Math.cos(Math.toRadians(yaw));
@@ -143,7 +181,7 @@ final class ArrivalPlanner {
         double along = settings.alignX * towardsX + settings.alignZ * towardsZ;
         double acrossX = settings.alignX - along * towardsX;
         double acrossZ = settings.alignZ - along * towardsZ;
-        double limit = shape.radius() + settings.gap + 1;
+        double limit = shape.radius() + gap + 1;
         double originX = player.x;
         double originZ = player.z;
         for (double distance = 0; distance <= limit; distance += GAP_SEARCH_STEP) {
@@ -152,7 +190,7 @@ final class ArrivalPlanner {
             double localZ = acrossZ + towardsZ * distance;
             originX = player.x - (localX * cos + localZ * sin);
             originZ = player.z - (-localX * sin + localZ * cos);
-            if (getNearestDistance(originX, originZ, yaw) >= settings.gap) {
+            if (getNearestDistance(originX, originZ, yaw) >= gap) {
                 break;
             }
         }
@@ -174,42 +212,126 @@ final class ArrivalPlanner {
         return nearest;
     }
 
-    /**Finds the goal at the bearing offset from straight ahead, if there is one, at the height nearest the player's it fits at.**/
+    /**
+     * Finds the goal at the bearing offset from straight ahead, if there is one: as near the player as it can be with
+     * room to turn in, and at the height nearest the player's it fits at there.
+     */
     private void tryBearing(double offset) {
-        double[] origin = getOrigin(lookYaw + offset);
-        double x = origin[0];
-        double z = origin[1];
-        double yaw = origin[2];
-        int playerY = (int) Math.floor(player.y);
-        for (int dy = 0; dy <= Math.max(settings.heightUp, settings.heightDown); ++dy) {
-            for (int y : dy == 0 ? new int[] { playerY } : new int[] { playerY + dy, playerY - dy }) {
-                if ((y > playerY && y - playerY > settings.heightUp) || (y < playerY && playerY - y > settings.heightDown)) {
-                    continue;
-                }
-                if (checker.canPark(x, y, z, yaw)) {
-                    double[] runIn = measureRunIn(x, y, z, yaw);
-                    if (runIn[0] >= settings.minRunIn) {
-                        double cost = getBearingCost(offset) + Math.abs(y - playerY) * HEIGHT_COST + (settings.preferredRunIn - runIn[0]) * RUN_IN_SHORT_COST + runIn[1] * RUN_IN_STEP_COST;
-                        addGoal(new Goal(x, y, z, yaw, runIn[0], cost));
-                        return;
-                    }
-                }
+        for (double extraGap = 0; extraGap <= MAX_EXTRA_GAP + 1e-9; extraGap += EXTRA_GAP_STEP) {
+            if (!canWalk(lookYaw + offset, settings.gap + extraGap)) {
+                //Something's in the way, so anywhere further out is past it, where the player can't get to the vehicle.
+                return;
+            }
+            double[] origin = getOrigin(lookYaw + offset, settings.gap + extraGap);
+            Goal goal = tryOrigin(origin[0], origin[1], origin[2], getBearingCost(offset) + extraGap * EXTRA_GAP_COST);
+            if (goal != null) {
+                addGoal(goal);
+                return;
             }
         }
     }
 
     /**
-     * How far back from the goal the vehicle can drive straight in from, up to the preferred run-in, and how many
-     * steps up or down there are along it, as {length, steps}.  Walking back, each point's ground is found from the
+     * Returns true if the player can walk the distance out from where they stand at the bearing, to get to the vehicle
+     * pulled up there: there's room for them all the way, on their level or a step up.
+     */
+    boolean canWalk(double bearing, double distance) {
+        double alongX = Math.sin(Math.toRadians(bearing));
+        double alongZ = Math.cos(Math.toRadians(bearing));
+        int playerY = (int) Math.floor(player.y);
+        for (double along = WALK_SPACING; along <= distance + 1e-9; along += WALK_SPACING) {
+            int x = (int) Math.floor(player.x + alongX * along);
+            int z = (int) Math.floor(player.z + alongZ * along);
+            if (!checker.terrain.isClear(x, playerY, z, TerrainMap.STEP_CLEARANCE, PLAYER_HEIGHT) && !checker.terrain.isClear(x, playerY + 1, z, 0, PLAYER_HEIGHT)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns the goal with the vehicle's origin over x,z facing the yaw, at the height nearest the player's it can
+     * park, has a long enough run-in, and can turn in at, or null if there isn't one.
+     */
+    private Goal tryOrigin(double x, double z, double yaw, double cost) {
+        int playerY = (int) Math.floor(player.y);
+        for (int dy = 0; dy <= Math.max(settings.heightUp, settings.heightDown); ++dy) {
+            for (int y : dy == 0 ? new int[] { playerY } : new int[] { playerY + dy, playerY - dy }) {
+                if ((y > playerY && y - playerY > settings.heightUp) || (y < playerY && playerY - y > settings.heightDown) || !checker.canPark(x, y, z, yaw)) {
+                    continue;
+                }
+                double[] runIn = measureRunIn(x, y, z, yaw);
+                if (runIn[0] < minRunIn) {
+                    continue;
+                }
+                if (runIn[0] < preferredRunIn) {
+                    //It turns onto the run-in close by, so it needs room to.
+                    double forwardX = Math.sin(Math.toRadians(yaw));
+                    double forwardZ = Math.cos(Math.toRadians(yaw));
+                    if (!canTurnIn(x - forwardX * runIn[0], (int) runIn[2], z - forwardZ * runIn[0], yaw)) {
+                        continue;
+                    }
+                }
+                return new Goal(x, y, z, yaw, runIn[0], cost + Math.abs(y - playerY) * HEIGHT_COST + (preferredRunIn - runIn[0]) * RUN_IN_SHORT_COST + runIn[1] * RUN_IN_STEP_COST);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if the vehicle can turn onto a straight that starts with its origin at x,z on the ground at y,
+     * facing the yaw: a quarter turn at the turn radius, either way, has room for the vehicle all along it.
+     */
+    boolean canTurnIn(double x, int y, double z, double yaw) {
+        return canTurnIn(x, y, z, yaw, 1) || canTurnIn(x, y, z, yaw, -1);
+    }
+
+    /**
+     * Returns true if the quarter turn onto the straight has room, turning left onto it if side is 1, right if -1.
+     * Turning left onto it, the vehicle came in from its left heading across to its right, round a circle centered
+     * on its left.  It's walked back from the straight, finding the ground at each point from the one after it, the
+     * way driving it climbs and drops.
+     */
+    private boolean canTurnIn(double x, int y, double z, double yaw, int side) {
+        double radius = settings.turnRadius;
+        if (Double.isInfinite(radius) || Double.isNaN(radius)) {
+            return false;
+        }
+        double forwardX = Math.sin(Math.toRadians(yaw));
+        double forwardZ = Math.cos(Math.toRadians(yaw));
+        //The vehicle's left, in the world.
+        double leftX = forwardZ;
+        double leftZ = -forwardX;
+        int samples = Math.max(1, (int) Math.ceil(radius * Math.PI / 2 / TURN_IN_SPACING));
+        int laterY = y;
+        for (int i = 1; i <= samples; ++i) {
+            double angle = Math.PI / 2 * i / samples;
+            double across = side * radius * (1 - Math.cos(angle));
+            double back = radius * Math.sin(angle);
+            double pointX = x + leftX * across - forwardX * back;
+            double pointZ = z + leftZ * across - forwardZ * back;
+            int pointY = checker.terrain.findSurface((int) Math.floor(pointX), (int) Math.floor(pointZ), laterY, settings.maxDown, settings.maxUp, headroom);
+            if (pointY == TerrainMap.NO_SURFACE || !checker.canDrive(pointX, pointY, pointZ, yaw - side * Math.toDegrees(angle))) {
+                return false;
+            }
+            laterY = pointY;
+        }
+        return true;
+    }
+
+    /**
+     * How far back from the goal the vehicle can drive straight in from, up to the preferred run-in, how many
+     * steps up or down there are along it, and the ground height where it starts, as {length, steps, height}.  Walking back, each point's ground is found from the
      * one after it, the way driving in climbs and drops.
      */
     double[] measureRunIn(double x, int y, double z, double yaw) {
         double forwardX = Math.sin(Math.toRadians(yaw));
         double forwardZ = Math.cos(Math.toRadians(yaw));
         int laterY = y;
+        int startY = y;
         double length = 0;
         int steps = 0;
-        for (double back = RUN_IN_SPACING; back <= settings.preferredRunIn + 1e-9; back += RUN_IN_SPACING) {
+        for (double back = RUN_IN_SPACING; back <= preferredRunIn + 1e-9; back += RUN_IN_SPACING) {
             double pointX = x - forwardX * back;
             double pointZ = z - forwardZ * back;
             //Driving on from here climbs to the later point if it's below it, and drops if above.
@@ -221,9 +343,10 @@ final class ArrivalPlanner {
                 ++steps;
             }
             laterY = pointY;
+            startY = pointY;
             length = back;
         }
-        return new double[] { length, steps };
+        return new double[] { length, steps, startY };
     }
 
     private void addGoal(Goal goal) {

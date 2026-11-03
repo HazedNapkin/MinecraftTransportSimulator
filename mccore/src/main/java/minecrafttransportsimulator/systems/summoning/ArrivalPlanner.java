@@ -50,6 +50,11 @@ final class ArrivalPlanner {
     private static final double GAP_SEARCH_STEP = 0.05;
     /**How far apart the turn in is checked, in blocks along it.**/
     private static final double TURN_IN_SPACING = 0.5;
+    /**
+     * The gap to try again with if the vehicle fits nowhere at the one it'd like, in blocks.  A wide vehicle by a player
+     * in the middle of a narrow street can't leave much of a gap, and pulling up closer beats not pulling up at all.
+     */
+    static final double TIGHT_GAP = 0.5;
     /**How far apart the distances further out than the gap a goal is tried at are, in blocks.**/
     private static final double EXTRA_GAP_STEP = 0.5;
     /**Half the width of the player, which the vehicle must keep out of the block columns of.**/
@@ -104,6 +109,8 @@ final class ArrivalPlanner {
     /**Bearings to try, as offsets from straight ahead, nearest straight ahead first, and the next to try.**/
     private final List<Double> offsets = new ArrayList<>();
     private int offsetIndex;
+    /**The gap being tried, which is the one in the settings until nothing fits at that.**/
+    private double gap;
     private final List<Goal> goals = new ArrayList<>();
 
     ArrivalPlanner(PoseChecker checker, Settings settings, Point3D player, double lookYaw) {
@@ -113,6 +120,7 @@ final class ArrivalPlanner {
         this.player = player.copy();
         this.lookYaw = lookYaw;
         this.headroom = shape.top - shape.bottom;
+        this.gap = settings.gap;
         double length = shape.front + shape.back;
         this.minRunIn = Math.max(settings.minRunIn, length);
         this.preferredRunIn = Math.max(settings.preferredRunIn, 2 * length);
@@ -131,6 +139,11 @@ final class ArrivalPlanner {
         long startTime = System.nanoTime();
         while (offsetIndex < offsets.size() && System.nanoTime() - startTime < maxNanos) {
             tryBearing(offsets.get(offsetIndex++));
+            if (offsetIndex >= offsets.size() && goals.isEmpty() && gap > TIGHT_GAP) {
+                //It fits nowhere.  Try every bearing again, pulling up closer.
+                gap = TIGHT_GAP;
+                offsetIndex = 0;
+            }
         }
         return offsetIndex >= offsets.size();
     }
@@ -173,7 +186,7 @@ final class ArrivalPlanner {
      * opposite the player, and as near as it can be with every part of it at least the gap away from them.
      */
     double[] getOrigin(double bearing) {
-        return getOrigin(bearing, settings.gap);
+        return getOrigin(bearing, gap);
     }
 
     /**Like {@link #getOrigin(double)}, but with this gap rather than the one in the settings.**/
@@ -224,11 +237,11 @@ final class ArrivalPlanner {
      */
     private void tryBearing(double offset) {
         for (double extraGap = 0; extraGap <= settings.maxExtraGap + 1e-9; extraGap += EXTRA_GAP_STEP) {
-            if (!canWalk(lookYaw + offset, settings.gap + extraGap)) {
+            if (!canWalk(lookYaw + offset, gap + extraGap)) {
                 //Something's in the way, so anywhere further out is past it, where the player can't get to the vehicle.
                 return;
             }
-            double[] origin = getOrigin(lookYaw + offset, settings.gap + extraGap);
+            double[] origin = getOrigin(lookYaw + offset, gap + extraGap);
             Goal goal = tryOrigin(origin[0], origin[1], origin[2], getBearingCost(offset) + extraGap * EXTRA_GAP_COST);
             if (goal != null) {
                 addGoal(goal);

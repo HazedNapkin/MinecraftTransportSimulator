@@ -17,6 +17,8 @@ import minecrafttransportsimulator.baseclasses.Point3D;
 final class RoutePlanner {
     /**How much further than the longest drive in the floods spread from the player, in blocks.**/
     private static final double FIELD_MARGIN = 8;
+    /**The least straight run-in a route ends with, in blocks, however short the vehicle.**/
+    private static final double MIN_RUN_IN = 4;
     /**The longest drive in to set off from, as a multiple of the summon distance.**/
     private static final double MAX_LENGTH_FACTOR = 1.4;
 
@@ -264,7 +266,8 @@ final class RoutePlanner {
         search.cruiseSpeed = settings.cruiseSpeed;
         search.maxUp = settings.maxUp;
         search.maxDown = settings.maxDown;
-        search.runIn = checker.shape.front + checker.shape.back;
+        //Drive at least a vehicle's length straight in, and never less than a few blocks, or small vehicles can't settle straight.
+        search.runIn = Math.max(MIN_RUN_IN, checker.shape.front + checker.shape.back);
         search.minLength = settings.summonDistance * 0.6;
         search.minDistance = settings.summonDistance / 2;
         search.targetLength = settings.summonDistance;

@@ -23,8 +23,8 @@ final class PathTracker {
          * Distance over which errors are corrected: this many seconds of travel at the speed, but no shorter than the
          * least, in blocks.  Longer is smoother, shorter holds the route more tightly.
          */
-        double correctionTime = 0.7;
-        double minCorrectionDistance = 2.5;
+        double correctionTime = 0.5;
+        double minCorrectionDistance = 2;
         /**The most the steering may change in a tick, in degrees of rudder input.**/
         double maxSteeringRate = 5;
         /**How near the end counts as there, in blocks.**/

@@ -1,8 +1,6 @@
 package minecrafttransportsimulator.systems.summoning;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.UUID;
 
@@ -28,10 +26,11 @@ import minecrafttransportsimulator.systems.summoning.GroundPathfinder.Placement;
 /**
  * One vehicle answering one phone call.  Runs on the server, one step per tick.
  * <p>
- * Ground vehicles: find (force-loading the chunk if needed), plan a route from a spot about
- * the vehicle's summonDistance blocks away, teleport there and drive in with the
- * real controls.  If no route exists, teleport next to the player.  If there's no room by the
- * player, drive as close as possible.  If stuck, re-plan once, then teleport.
+ * Ground vehicles: find (force-loading the chunk if needed), plan a route in to the player with a {@link RoutePlanner},
+ * from somewhere hidden about the vehicle's summonDistance blocks away, teleport there and drive in with the real
+ * controls, following the route's curves and slowing for its turns, steps and the end.  A vehicle that's already
+ * nearby drives over from where it is.  If no route exists, teleport to where it would have pulled up.  If there's no
+ * room by the player, teleport to the nearest spot further out.  If stuck, re-plan once, then teleport.
  * <p>
  * Aircraft that fly in (see {@link VehiclePhone#canFlyIn}): teleport in above the buildings, fly over the
  * player, and land straight down in the first clear spot within {@link #LANDING_RADIUS} blocks, trying in front
@@ -44,28 +43,14 @@ final class VehicleSummonJob {
     /**How often to renew the chunk loading for a vehicle we're waking up, in ticks.**/
     private static final int CHUNK_LOAD_INTERVAL = 20;
     /**
-     * How far either side of straight ahead of the player a vehicle may arrive or be placed, in degrees.
-     * Vehicles only come from in front, so players see them coming and searches stay small.
+     * How far either side of straight ahead of the player an aircraft may be placed, or a ground vehicle when there's no
+     * room right by the player, in degrees.
      */
     private static final double FRONT_LEEWAY = 45;
-    /**Arrival directions are straight ahead, then this far round either side in turn, out to {@link #FRONT_LEEWAY}.**/
-    private static final double ARRIVAL_ANGLE_STEP = 22.5;
-    private static final int ARRIVAL_DIRECTIONS = 1 + 2 * (int) (FRONT_LEEWAY / ARRIVAL_ANGLE_STEP);
-    /**How much nearer each arrival distance tried in a direction is, from the summon distance inwards, in blocks.**/
-    private static final double ARRIVAL_DISTANCE_STEP = 6;
-    /**Closest to the player a vehicle arrives before driving in, in blocks.**/
-    private static final double MIN_ARRIVAL_DISTANCE = 12;
-    /**How far above or below the player an arrival spot may be, in blocks.**/
-    private static final int ARRIVAL_HEIGHT_RANGE = 8;
     /**How far above and below the player a spot next to them may be, in blocks.**/
     private static final int NEAR_HEIGHT_UP = 2;
     private static final int NEAR_HEIGHT_DOWN = 3;
-    /**Most states a route search looks at.  States include the heading, so this is more than the blocks searched.**/
-    private static final int SEARCH_EXPANSIONS = 20000;
-    /**Most route states to look at each tick.  Each checks the vehicle's whole footprint, so keep this modest.**/
-    private static final int SEARCH_BUDGET_PER_TICK = 500;
     private static final double FIT_SPOT_MIN = 3;
-    private static final double FIT_SPOT_MAX = 8;
     private static final double FALLBACK_SPOT_MAX = 16;
     /**Speed to drive in at, in km/h, if the vehicle doesn't set its own summonSpeed.**/
     private static final double DEFAULT_SUMMON_SPEED = 30;
@@ -76,8 +61,22 @@ final class VehicleSummonJob {
     private static final double TURN_SPEED = 3;
     /**How much wider than the vehicle's tightest turn the route's turns are, to leave room for steering error.**/
     private static final double TURN_RADIUS_MARGIN = 1.25;
-    /**How many route blocks ahead the drive looks for turns to slow down for.**/
-    private static final int TURN_LOOKAHEAD = 10;
+    /**Speed to be down to by a step up or down, and the least to drive at short of the end, in m/s.**/
+    private static final double STEP_SPEED = 2.5;
+    private static final double MIN_SPEED = 1;
+    /**How hard the drive plans to brake, in m/s per second, so it slows smoothly to a stop at the end.**/
+    private static final double BRAKING = 2.5;
+    /**
+     * How far down the route the vehicle steers at: this many seconds ahead at its speed, between the least and most
+     * distances, in blocks.  Further ahead is smoother, and nearer keeps closer to the route in tight turns.
+     */
+    private static final double LOOKAHEAD_TIME = 0.5;
+    private static final double MIN_LOOKAHEAD = 2.5;
+    private static final double MAX_LOOKAHEAD = 7;
+    /**How many route poses on from the last nearest one the drive looks for the nearest one now.**/
+    private static final int TRACK_WINDOW = 24;
+    /**How near the end of the route the vehicle has to get, or how far past it, to have arrived, in blocks.**/
+    private static final double ARRIVE_TOLERANCE = 0.25;
     private static final int STUCK_CHECK_INTERVAL = 100;
     /**
      * Longest a vehicle may take to drive in before it's brought straight to the player instead, in ticks.
@@ -86,7 +85,13 @@ final class VehicleSummonJob {
     private static final int MIN_DRIVE_TIMEOUT = 20 * 30;
     /**Extra time allowed on long routes for starting the engine and slowing down at the end, in seconds.**/
     private static final double DRIVE_TIMEOUT_MARGIN = 10;
-    private static final double STOP_FRONT_DISTANCE = 3.5;
+    /**
+     * How close the front of a vehicle driving in may get to a player in its way before it stops, in blocks, and how
+     * far beyond its sides they still count as in its way.  Routes keep off the player, so this is only for when
+     * they've walked into its way.
+     */
+    private static final double STOP_FRONT_DISTANCE = 1.5;
+    private static final double STOP_SIDE_MARGIN = 0.3;
     private static final int LANDING_RADIUS = 20;
     /**
      * Longest an aircraft may spend flying in before it's put on the ground in front of the player instead, in ticks.
@@ -122,8 +127,6 @@ final class VehicleSummonJob {
 
     /**What a spot search near the player is for, which says what to do with what it finds.**/
     private enum SpotPurpose {
-        /**Where a ground vehicle drives to.**/
-        GOAL,
         /**Where a ground vehicle is teleported when it can't drive in.**/
         FALLBACK,
         /**Where an aircraft that can't fly in is teleported.**/
@@ -155,40 +158,31 @@ final class VehicleSummonJob {
     private LanguageEntry afterTeleportMessage;
 
     //Ground planning.
-    private GroundPathfinder pathfinder;
     /**Where the player was, and the way they were looking, when planning started.  Spots are ranked from in front of them.**/
     private Point3D planCenter;
     private double frontAngle;
-    private Placement fitSpot;
+    /**For spot searches by the player: where aircraft are placed, and ground vehicles when there's no room right by them.**/
+    private GroundPathfinder pathfinder;
     private SpotSearch spotSearch;
     private SpotPurpose spotPurpose;
-    private Point3D goal;
-    private double goalRadius;
-    /**The heading routes should arrive at the goal facing, or -1 for any.**/
-    private int goalHeading = -1;
-    /**Arrival spots found but not yet tried, and the next direction round from in front of the player to look in.**/
-    private final Deque<Placement> pendingArrivals = new ArrayDeque<>();
-    private int arrivalDirection;
-    private boolean triedDrivingFromHere;
-    private Point3D candidate;
-    private boolean candidateNeedsTeleport;
-    /**The heading the candidate was checked to fit at, if it's a teleport spot.**/
-    private int candidateHeading;
-    private GroundPathfinder.Search search;
-    private Point3D bestCandidate;
-    private boolean bestCandidateNeedsTeleport;
-    private int bestCandidateHeading;
-    private List<Point3D> bestCandidatePath;
-    private double bestCandidateDistance = Double.MAX_VALUE;
+    private VehicleKinematics kinematics;
+    private RoutePlanner planner;
+    /**Where the vehicle is brought if it can't drive in: the best place by the player it fits, or null if it fits nowhere.**/
+    private ArrivalPlanner.Goal fallbackGoal;
+    /**Markers showing the plan, sent once the vehicle's in place to drive it, if summon debugging is on.**/
+    private List<VehicleSummonDebug.Marker> planMarkers;
 
     //Driving.
-    private List<Point3D> path;
-    private int pathIndex;
+    private SummonRoute route;
+    /**How far along the route each of its poses is, in blocks, and the speed to be doing there, in m/s.**/
+    private double[] routeDistances;
+    private double[] routeSpeeds;
+    /**The route pose nearest the vehicle.**/
+    private int poseIndex;
     private Point3D lastProgressPosition;
     private int replans;
     /**How long the current route may take to drive, in ticks.**/
     private int driveTimeout;
-    private boolean drivingToClosest;
 
     //Flying.
     private double cruiseY;
@@ -384,8 +378,7 @@ final class VehicleSummonJob {
         if (isAircraft) {
             return teleportAircraftToGround(player);
         }
-        startGroundPlanning(player);
-        return false;
+        return startGroundPlanning(player);
     }
 
     private EntityVehicleF_Physics getLoadedVehicle() {
@@ -424,18 +417,47 @@ final class VehicleSummonJob {
 
     //-----GROUND PLANNING-----
 
-    private void startGroundPlanning(IWrapperPlayer player) {
-        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, getTurnRadius());
+    /**Starts planning the drive in.  Returns true if the job's over, as it's nearby but not on ground it can drive from.**/
+    private boolean startGroundPlanning(IWrapperPlayer player) {
+        kinematics = VehicleKinematics.of(vehicle);
+        if (!startPlanner(driveOnly)) {
+            park();
+            message(player, LanguageSystem.INTERACT_PHONE_NOWAYFROMHERE);
+            return true;
+        }
+        return false;
+    }
 
-        //Already within driving range: drive from where it is, never teleport.
-        //Otherwise try arrival spots in front of the player, so they see it coming.  These are found as we go.
-        pendingArrivals.clear();
-        arrivalDirection = 0;
-        triedDrivingFromHere = false;
-        search = null;
-
-        //First find somewhere in front of the player the whole vehicle fits, to drive to.
-        startSpotSearch(planCenter, FIT_SPOT_MIN, FIT_SPOT_MAX, SpotPurpose.GOAL);
+    /**
+     * Starts planning the drive in to planCenter, from where the vehicle is if fromHere is set, or else from anywhere it
+     * can be placed.  Returns false, and starts nothing, if it's to set off from here but isn't on ground it can drive from.
+     */
+    private boolean startPlanner(boolean fromHere) {
+        TerrainMap terrain = new TerrainMap(TerrainQuery.of(world));
+        RoutePlanner.Settings settings = new RoutePlanner.Settings();
+        settings.summonDistance = getSummonDistance();
+        settings.cruiseSpeed = getCruiseSpeed();
+        settings.turnRadius = getTurnRadius();
+        settings.arrival.arrivalAngle = vehicle.summonArrivalAngleVar.currentValue;
+        if (vehicle.summonArrivalGapVar.currentValue > 0) {
+            settings.arrival.gap = vehicle.summonArrivalGapVar.currentValue;
+        }
+        double[] align = ArrivalPlanner.getAlignPoint(vehicle, settings.arrival.arrivalAngle);
+        settings.arrival.alignX = align[0];
+        settings.arrival.alignZ = align[1];
+        planner = new RoutePlanner(new PoseChecker(terrain, shape), kinematics, settings, planCenter, Math.toDegrees(frontAngle));
+        if (fromHere) {
+            int x = (int) Math.floor(vehicle.position.x);
+            int z = (int) Math.floor(vehicle.position.z);
+            int y = terrain.findSurface(x, z, (int) Math.floor(vehicle.position.y + shape.bottom + 0.5), 1, 2, shape.top - shape.bottom);
+            if (y == TerrainMap.NO_SURFACE) {
+                planner = null;
+                return false;
+            }
+            planner.setStart(vehicle.position.x, y, vehicle.position.z, vehicle.orientation.angles.y);
+        }
+        setPhase(Phase.PLAN_GROUND);
+        return true;
     }
 
     private void startSpotSearch(Point3D center, double min, double max, SpotPurpose purpose) {
@@ -452,15 +474,6 @@ final class VehicleSummonJob {
         Placement spot = spotSearch.found;
         spotSearch = null;
         switch (spotPurpose) {
-            case GOAL: {
-                fitSpot = spot;
-                goal = fitSpot != null ? fitSpot.getGround() : planCenter;
-                goalRadius = fitSpot != null ? 1.5 : 3;
-                //Pull up the way the spot was found to fit, which is left side to the player if it fits that way.
-                goalHeading = fitSpot != null ? fitSpot.heading : -1;
-                setPhase(Phase.PLAN_GROUND);
-                return false;
-            }
             case FALLBACK: {
                 if (spot != null) {
                     teleportToGround(spot.getGround(), spot.getYaw(), null, LanguageSystem.INTERACT_PHONE_PARKEDCLOSEST);
@@ -492,6 +505,7 @@ final class VehicleSummonJob {
             }
         }
         //Nothing fits in front of the player.
+        park();
         message(player, LanguageSystem.INTERACT_PHONE_NOROOM);
         releaseChunk();
         return true;
@@ -503,29 +517,6 @@ final class VehicleSummonJob {
      */
     private double getTurnRadius() {
         return TURN_RADIUS_MARGIN * VehicleKinematics.of(vehicle).getTurnRadius(TURN_SPEED);
-    }
-
-    /**
-     * Queues the spots the vehicle could arrive at in a direction in front of the player: 0 is straight
-     * ahead, then alternately either side, out to {@link #FRONT_LEEWAY}.  It tries the summon distance,
-     * then nearer, down to {@link #MIN_ARRIVAL_DISTANCE}, and queues every height it fits at the first
-     * distance it fits at all, nearest the player's height first.
-     */
-    private void queueArrivals(int direction) {
-        int step = (direction + 1) / 2;
-        double angle = frontAngle + Math.toRadians((direction % 2 == 0 ? step : -step) * ARRIVAL_ANGLE_STEP);
-        int playerY = (int) Math.floor(planCenter.y);
-        double summonDistance = getSummonDistance();
-        for (double distance = summonDistance; distance >= Math.min(summonDistance, MIN_ARRIVAL_DISTANCE); distance -= ARRIVAL_DISTANCE_STEP) {
-            Point3D spot = new Point3D(planCenter.x + Math.sin(angle) * distance, playerY, planCenter.z + Math.cos(angle) * distance);
-            //Arrive facing the player if it fits, so it sets off towards them.
-            int heading = GroundPathfinder.getHeading(yawTowards(spot, planCenter));
-            List<Placement> placements = pathfinder.findPlacements((int) Math.floor(spot.x), (int) Math.floor(spot.z), playerY, ARRIVAL_HEIGHT_RANGE, ARRIVAL_HEIGHT_RANGE, heading, false);
-            if (!placements.isEmpty()) {
-                pendingArrivals.addAll(placements);
-                return;
-            }
-        }
     }
 
     /**
@@ -598,113 +589,112 @@ final class VehicleSummonJob {
     }
 
     private boolean planGround(IWrapperPlayer player) {
-        if (search == null) {
-            int x, y, z;
-            List<int[]> starts = new ArrayList<>();
-            if (driveOnly) {
-                //Drive from where it is now.
-                if (triedDrivingFromHere) {
-                    return groundFallback(player);
-                }
-                triedDrivingFromHere = true;
-                x = (int) Math.floor(vehicle.position.x);
-                z = (int) Math.floor(vehicle.position.z);
-                y = pathfinder.findSurface(x, z, (int) Math.floor(vehicle.position.y + shape.bottom + 0.5), 1, 2, GroundPathfinder.getHeading(vehicle.orientation.angles.y));
-                if (y == GroundPathfinder.NO_SURFACE) {
-                    return groundFallback(player);
-                }
-                //It has to set off the way it's facing.
-                starts.add(new int[] { x, y, z, GroundPathfinder.getHeading(vehicle.orientation.angles.y) });
-                candidateNeedsTeleport = false;
-            } else {
-                if (pendingArrivals.isEmpty()) {
-                    if (arrivalDirection >= ARRIVAL_DIRECTIONS) {
-                        return groundFallback(player);
-                    }
-                    //One direction a tick, as each can try several distances, heights and headings.
-                    if (tickTime > 0) {
-                        queueArrivals(arrivalDirection++);
-                    }
-                    return false;
-                }
-                Placement next = pendingArrivals.poll();
-                x = next.x;
-                y = next.y;
-                z = next.z;
-                candidateHeading = next.heading;
-                candidateNeedsTeleport = true;
-                //It can be placed facing whichever way suits the route best, of the ways it fits.
-                for (int heading = 0; heading < GroundPathfinder.HEADINGS; ++heading) {
-                    if (pathfinder.canParkAt(x, y, z, heading)) {
-                        starts.add(new int[] { x, y, z, heading });
-                    }
-                }
-            }
-            candidate = new Point3D(x + 0.5, y, z + 0.5);
-            search = pathfinder.new Search(starts, goal, goalRadius, goalHeading, SEARCH_EXPANSIONS);
+        if (!planner.step(tickTime)) {
+            return false;
         }
-
-        if (search.step(SEARCH_BUDGET_PER_TICK, tickTime)) {
-            if (search.succeeded()) {
-                List<Point3D> foundPath = search.getPath();
-                int heading = search.getStartHeading();
-                search = null;
-                startRoute(player, candidate, candidateNeedsTeleport, heading, foundPath, false, LanguageSystem.INTERACT_PHONE_ONITSWAY);
-                return false;
-            }
-            if (search.getBestDistance() < bestCandidateDistance) {
-                bestCandidateDistance = search.getBestDistance();
-                bestCandidate = candidate;
-                bestCandidateNeedsTeleport = candidateNeedsTeleport;
-                bestCandidateHeading = search.getBestStartHeading();
-                bestCandidatePath = search.getBestPath();
-            }
-            search = null;
+        if (!planner.getGoals().isEmpty()) {
+            fallbackGoal = planner.getGoals().get(0);
         }
+        SummonRoute found = planner.getRoute();
+        if (found == null) {
+            return groundFallback(player);
+        }
+        startRoute(player, found, LanguageSystem.INTERACT_PHONE_ONITSWAY);
         return false;
     }
 
-    /**No route to the player from anywhere we tried.**/
+    /**No route to the player.**/
     private boolean groundFallback(IWrapperPlayer player) {
+        boolean noRoom = planner.getGoals().isEmpty();
+        planner = null;
         if (driveOnly) {
-            //Close by, so no teleporting.  Get as near as the roads allow.
-            if (bestCandidate != null && bestCandidatePath.size() > 1) {
-                startRoute(player, bestCandidate, false, 0, bestCandidatePath, true, LanguageSystem.INTERACT_PHONE_NOWAYCLOSEST);
-                return false;
-            }
+            //Close by, so no teleporting.
             park();
-            message(player, LanguageSystem.INTERACT_PHONE_NOWAYFROMHERE);
+            message(player, noRoom ? LanguageSystem.INTERACT_PHONE_NOROOM : LanguageSystem.INTERACT_PHONE_NOWAYFROMHERE);
             return true;
         }
-        if (fitSpot != null) {
+        if (fallbackGoal != null) {
             //There's room by the player, we just can't drive there.  Bring it straight to them.
-            teleportToGround(fitSpot.getGround(), fitSpot.getYaw(), null, LanguageSystem.INTERACT_PHONE_NOWAYTELEPORT);
+            teleportToGround(fallbackGoal.getGround(), fallbackGoal.yaw, null, LanguageSystem.INTERACT_PHONE_NOWAYTELEPORT);
             return false;
         }
-        if (bestCandidate != null && bestCandidatePath.size() > 1) {
-            //No room by the player.  Get as close as we can.
-            startRoute(player, bestCandidate, bestCandidateNeedsTeleport, bestCandidateHeading, bestCandidatePath, true, LanguageSystem.INTERACT_PHONE_NOROOMCLOSEST);
-            return false;
-        }
-        //Look a bit further out in front of the player for anywhere it fits.
+        //No room right by the player.  Look a bit further out in front of them for anywhere it fits.
+        pathfinder = new GroundPathfinder(TerrainQuery.of(world), shape, Double.POSITIVE_INFINITY);
         startSpotSearch(player.getPosition(), FIT_SPOT_MIN, FALLBACK_SPOT_MAX, SpotPurpose.FALLBACK);
         return false;
     }
 
     /**
-     * Sets off along the route.  If teleporting to its start, the vehicle is placed facing the heading
-     * the route was planned from.
+     * Sets off along the route, placing the vehicle at its start first if that's where it starts from.  The message
+     * is sent as it sets off, unless it's null.
      */
-    private void startRoute(IWrapperPlayer player, Point3D start, boolean teleport, int heading, List<Point3D> route, boolean toClosest, LanguageEntry startMessage) {
-        path = route;
-        pathIndex = 0;
-        drivingToClosest = toClosest;
-        if (teleport) {
-            teleportToGround(start, GroundPathfinder.getHeadingYaw(heading), Phase.DRIVE, startMessage);
+    private void startRoute(IWrapperPlayer player, SummonRoute newRoute, LanguageEntry startMessage) {
+        route = newRoute;
+        planRouteSpeeds();
+        planMarkers = getPlanMarkers();
+        planner = null;
+        if (route.placed) {
+            SummonRoute.Pose start = route.getStart();
+            teleportToGround(start.getGround(), start.yaw, Phase.DRIVE, startMessage);
         } else {
-            message(player, startMessage);
+            if (startMessage != null) {
+                message(player, startMessage);
+            }
             beginDriving();
         }
+    }
+
+    /**
+     * Works out how far along the route each pose is, and the speed to be doing there: the cruise speed, or slower
+     * where a turn is too tight to take faster with steering to spare, or there's a step.  Then working back from
+     * the end, where it stops, each is slowed to what braking gently from it gets down to the speeds after it.
+     */
+    private void planRouteSpeeds() {
+        int count = route.poses.size();
+        routeDistances = new double[count];
+        routeSpeeds = new double[count];
+        double cruiseSpeed = getCruiseSpeed();
+        for (int i = 0; i < count; ++i) {
+            SummonRoute.Pose pose = route.poses.get(i);
+            double speed = Math.min(cruiseSpeed, kinematics.getMaxSpeed(pose.curvature * TURN_RADIUS_MARGIN));
+            if (i > 0) {
+                SummonRoute.Pose last = route.poses.get(i - 1);
+                routeDistances[i] = routeDistances[i - 1] + Math.hypot(pose.x - last.x, pose.z - last.z);
+                if (pose.y != last.y) {
+                    speed = Math.min(speed, STEP_SPEED);
+                }
+            }
+            routeSpeeds[i] = Math.max(MIN_SPEED, speed);
+        }
+        routeSpeeds[count - 1] = 0;
+        for (int i = count - 2; i >= 0; --i) {
+            double braked = Math.sqrt(routeSpeeds[i + 1] * routeSpeeds[i + 1] + 2 * BRAKING * (routeDistances[i + 1] - routeDistances[i]));
+            routeSpeeds[i] = Math.min(routeSpeeds[i], braked);
+        }
+    }
+
+    /**
+     * Markers showing the plan, if summon debugging is on: the route, where it sets off and pulls up, the other places
+     * it could have pulled up, and the places the planner aimed to set off from.  Null if debugging is off.
+     */
+    private List<VehicleSummonDebug.Marker> getPlanMarkers() {
+        if (!VehicleSummonDebug.isEnabled()) {
+            return null;
+        }
+        List<VehicleSummonDebug.Marker> markers = VehicleSummonDebug.markers(route.getPoints(), VehicleSummonDebug.Kind.PATH);
+        markers.add(new VehicleSummonDebug.Marker(route.getStart().getGround(), VehicleSummonDebug.Kind.SPAWN));
+        markers.add(new VehicleSummonDebug.Marker(route.getEnd().getGround(), VehicleSummonDebug.Kind.GOAL));
+        for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+            if (goal != route.goal) {
+                markers.add(new VehicleSummonDebug.Marker(goal.getGround(), VehicleSummonDebug.Kind.CANDIDATE));
+            }
+        }
+        if (planner.getSpawnTargets() != null) {
+            for (SpawnSelector.Target target : planner.getSpawnTargets()) {
+                markers.add(new VehicleSummonDebug.Marker(new Point3D(target.x, target.y, target.z), VehicleSummonDebug.Kind.TARGET));
+            }
+        }
+        return markers;
     }
 
     //-----TELEPORTING-----
@@ -770,30 +760,20 @@ final class VehicleSummonJob {
         set(vehicle.parkingBrakeVar, 0);
         lastProgressPosition = vehicle.position.copy();
         driveTimeout = getDriveTimeout();
-        sendDebugMarkers();
-    }
-
-    /**Shows the route being driven, its start and its end, if summon debugging is on.**/
-    private void sendDebugMarkers() {
-        if (VehicleSummonDebug.isEnabled()) {
-            List<VehicleSummonDebug.Marker> markers = VehicleSummonDebug.markers(path, VehicleSummonDebug.Kind.PATH);
-            markers.add(new VehicleSummonDebug.Marker(path.get(0), VehicleSummonDebug.Kind.SPAWN));
-            markers.add(new VehicleSummonDebug.Marker(path.get(path.size() - 1), VehicleSummonDebug.Kind.GOAL));
-            VehicleSummonDebug.send(vehicle, markers);
+        poseIndex = 0;
+        if (planMarkers != null) {
+            VehicleSummonDebug.send(vehicle, planMarkers);
+            planMarkers = null;
         }
     }
 
     /**
      * How long the vehicle may take to drive the current route, in ticks: {@link #MIN_DRIVE_TIMEOUT}, or longer for
-     * routes that need more time than that at {@link #TURN_SPEED}, the slowest it drives, plus {@link #DRIVE_TIMEOUT_MARGIN}.
+     * routes that need more time than that at {@link #TURN_SPEED}, plus {@link #DRIVE_TIMEOUT_MARGIN}.
      * So it's 30 seconds for any route up to 60 blocks, and a long winding route still gets time to finish.
      */
     private int getDriveTimeout() {
-        double routeLength = 0;
-        for (int i = 1; i < path.size(); ++i) {
-            routeLength += horizontalDistance(path.get(i - 1), path.get(i));
-        }
-        return Math.max(MIN_DRIVE_TIMEOUT, (int) Math.ceil((routeLength / TURN_SPEED + DRIVE_TIMEOUT_MARGIN) * 20));
+        return Math.max(MIN_DRIVE_TIMEOUT, (int) Math.ceil((route.getLength() / TURN_SPEED + DRIVE_TIMEOUT_MARGIN) * 20));
     }
 
     private boolean drive(IWrapperPlayer player) {
@@ -812,47 +792,36 @@ final class VehicleSummonJob {
         }
 
         Point3D position = vehicle.position;
-        while (pathIndex < path.size() - 1 && horizontalDistance(path.get(pathIndex), position) < 2.5) {
-            ++pathIndex;
-        }
-        Point3D end = path.get(path.size() - 1);
-        double remaining = horizontalDistance(end, position);
-        Point3D front = vehicle.headingVector.copy().scale(shape.front).add(position);
-        if ((pathIndex >= path.size() - 1 && remaining < 1.5) || horizontalDistance(front, player.getPosition()) < STOP_FRONT_DISTANCE) {
+        updatePoseIndex();
+        int last = route.poses.size() - 1;
+        //How far the end is ahead of the vehicle, along the way it's facing.
+        Point3D endLocal = route.getEnd().getGround().subtract(position).reOrigin(vehicle.orientation);
+        boolean nearEnd = poseIndex >= last - 2;
+        double remaining = nearEnd ? Math.max(0, endLocal.z) : routeDistances[last] - routeDistances[poseIndex];
+        if ((nearEnd && endLocal.z < ARRIVE_TOLERANCE) || isPlayerInTheWay(player)) {
             park();
-            message(player, drivingToClosest ? LanguageSystem.INTERACT_PHONE_CLOSEST : LanguageSystem.INTERACT_PHONE_ARRIVED);
+            message(player, LanguageSystem.INTERACT_PHONE_ARRIVED);
             return true;
         }
 
-        //Steer at a point a few blocks down the path.
-        Point3D lookahead = path.get(Math.min(pathIndex + 3, path.size() - 1));
-        Point3D local = lookahead.copy().subtract(position).reOrigin(vehicle.orientation);
-        double angle = Math.toDegrees(Math.atan2(local.x, local.z));
-        //Positive rudder input steers right, and +X is left, so steer against the angle.
-        set(vehicle.rudderInputVar, Math.max(-EntityVehicleF_Physics.MAX_RUDDER_ANGLE, Math.min(EntityVehicleF_Physics.MAX_RUDDER_ANGLE, -angle * 1.2)));
-
-        //Slow for turns and for the end of the path.  Routes plan their turns for TURN_SPEED, so be down
-        //to that by the time we reach one, or we'd steer wider than planned.
+        //Steer for the arc through a point down the route, further ahead the faster it's going.
         double speed = vehicle.velocity * vehicle.speedFactor * 20;
-        double targetSpeed = getCruiseSpeed() * Math.max(0.35, Math.min(1, 1 - Math.abs(angle) / 120));
-        for (int i = pathIndex + 1; i <= Math.min(pathIndex + TURN_LOOKAHEAD, path.size() - 1); ++i) {
-            Point3D ahead = path.get(i).copy().subtract(position).reOrigin(vehicle.orientation);
-            if (Math.abs(Math.toDegrees(Math.atan2(ahead.x, ahead.z))) > 20) {
-                targetSpeed = Math.min(targetSpeed, TURN_SPEED);
-                break;
-            }
-        }
-        if (remaining < 12) {
-            targetSpeed = Math.min(targetSpeed, Math.max(1.5, remaining * 0.7));
-        }
+        Point3D target = getLookahead(Math.max(MIN_LOOKAHEAD, Math.min(MAX_LOOKAHEAD, speed * LOOKAHEAD_TIME)));
+        Point3D local = target.subtract(position).reOrigin(vehicle.orientation);
+        double distanceSquared = local.x * local.x + local.z * local.z;
+        double curvature = distanceSquared > 0.01 ? 2 * local.x / distanceSquared : 0;
+        set(vehicle.rudderInputVar, kinematics.getRudderInput(curvature, Math.max(speed, MIN_SPEED)));
+
+        //Keep to the planned speed, which slows for turns and steps, and brakes to a stop at the end.
+        double targetSpeed = Math.min(routeSpeeds[poseIndex], Math.sqrt(2 * BRAKING * remaining));
         if (speed < targetSpeed) {
             set(vehicle.throttleVar, Math.max(0, Math.min(0.8, 0.25 + (targetSpeed - speed) * 0.15)));
             set(vehicle.brakeVar, 0);
-        } else if (speed > targetSpeed + 1.5) {
+        } else if (speed > targetSpeed + 1) {
             set(vehicle.throttleVar, 0);
-            set(vehicle.brakeVar, Math.min(1, (speed - targetSpeed) * 0.15));
+            set(vehicle.brakeVar, Math.min(1, (speed - targetSpeed) * 0.25));
         } else {
-            set(vehicle.throttleVar, 0.15);
+            set(vehicle.throttleVar, targetSpeed > 0.5 ? 0.15 : 0);
             set(vehicle.brakeVar, 0);
         }
 
@@ -867,17 +836,62 @@ final class VehicleSummonJob {
         return false;
     }
 
+    /**
+     * Moves on to the route pose nearest the vehicle, looking up to {@link #TRACK_WINDOW} poses on.  Going by the
+     * nearest, rather than waiting to pass close to each one, means cutting inside a bend can't leave the vehicle
+     * steering back for a pose it's already past.
+     */
+    private void updatePoseIndex() {
+        int nearest = poseIndex;
+        double nearestDistance = Double.MAX_VALUE;
+        for (int i = poseIndex; i < Math.min(route.poses.size(), poseIndex + TRACK_WINDOW); ++i) {
+            SummonRoute.Pose pose = route.poses.get(i);
+            double distance = Math.hypot(pose.x - vehicle.position.x, pose.z - vehicle.position.z);
+            if (distance < nearestDistance) {
+                nearest = i;
+                nearestDistance = distance;
+            }
+        }
+        poseIndex = nearest;
+    }
+
+    /**
+     * The point to steer at: the first route pose at least distance blocks along from the nearest one.  Near the end,
+     * it's that far on past the end in the way the route ends, so the vehicle straightens up into its final yaw.
+     */
+    private Point3D getLookahead(double distance) {
+        double wanted = routeDistances[poseIndex] + distance;
+        int last = route.poses.size() - 1;
+        for (int i = poseIndex; i <= last; ++i) {
+            if (routeDistances[i] >= wanted) {
+                return route.poses.get(i).getGround();
+            }
+        }
+        SummonRoute.Pose end = route.getEnd();
+        double beyond = wanted - routeDistances[last];
+        double yaw = Math.toRadians(end.yaw);
+        return new Point3D(end.x + Math.sin(yaw) * beyond, end.y, end.z + Math.cos(yaw) * beyond);
+    }
+
+    /**
+     * True if the player is right in front of the vehicle, where it's about to drive into them.  Routes keep off the
+     * player, but they may have moved since it was planned.  Only just ahead counts: a vehicle pulling up alongside
+     * them passes its nose close by, and stopping then would leave it short.
+     */
+    private boolean isPlayerInTheWay(IWrapperPlayer player) {
+        Point3D local = player.getPosition().copy().subtract(vehicle.position).reOrigin(vehicle.orientation);
+        boolean atHeight = local.y > shape.bottom - 2 && local.y < shape.top;
+        return atHeight && local.z > 0 && local.z < shape.front + STOP_FRONT_DISTANCE && Math.abs(local.x) < shape.side + STOP_SIDE_MARGIN;
+    }
+
     private boolean onStuck(IWrapperPlayer player) {
         stopControls();
         if (replans == 0 && phaseTicks <= driveTimeout) {
             ++replans;
-            int x = (int) Math.floor(vehicle.position.x);
-            int z = (int) Math.floor(vehicle.position.z);
-            int y = pathfinder.findSurface(x, z, (int) Math.floor(vehicle.position.y + shape.bottom + 0.5), 1, 2, GroundPathfinder.getHeading(vehicle.orientation.angles.y));
-            if (y != GroundPathfinder.NO_SURFACE) {
-                List<int[]> starts = new ArrayList<>();
-                starts.add(new int[] { x, y, z, GroundPathfinder.getHeading(vehicle.orientation.angles.y) });
-                search = pathfinder.new Search(starts, goal, goalRadius, goalHeading, SEARCH_EXPANSIONS);
+            //Plan again from where it is, to wherever the player is now.
+            planCenter = player.getPosition().copy();
+            frontAngle = getLookAngle(player);
+            if (startPlanner(true)) {
                 setPhase(Phase.REPLAN);
                 return false;
             }
@@ -886,23 +900,21 @@ final class VehicleSummonJob {
     }
 
     private boolean replan(IWrapperPlayer player) {
-        if (search.step(SEARCH_BUDGET_PER_TICK, tickTime)) {
-            List<Point3D> newPath = search.succeeded() ? search.getPath() : (drivingToClosest ? search.getBestPath() : null);
-            search = null;
-            if (newPath != null && newPath.size() > 1) {
-                path = newPath;
-                pathIndex = 0;
-                beginDriving();
-                return false;
-            }
+        if (!planner.step(tickTime)) {
+            return false;
+        }
+        SummonRoute found = planner.getRoute();
+        if (found == null || found.poses.size() < 2) {
+            planner = null;
             return stuckFallback(player);
         }
+        startRoute(player, found, null);
         return false;
     }
 
     private boolean stuckFallback(IWrapperPlayer player) {
-        if (fitSpot != null && !driveOnly) {
-            teleportToGround(fitSpot.getGround(), fitSpot.getYaw(), null, LanguageSystem.INTERACT_PHONE_STUCKTELEPORT);
+        if (fallbackGoal != null && !driveOnly) {
+            teleportToGround(fallbackGoal.getGround(), fallbackGoal.yaw, null, LanguageSystem.INTERACT_PHONE_STUCKTELEPORT);
             return false;
         }
         park();

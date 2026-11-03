@@ -35,6 +35,8 @@ public final class VehicleSummonDebug {
         SPAWN(ColorRGB.YELLOW),
         /**A spot that was considered.**/
         CANDIDATE(ColorRGB.ORANGE),
+        /**A place the planner aimed to set off from.**/
+        TARGET(ColorRGB.CYAN),
         /**A spot that was ruled out.**/
         REJECTED(ColorRGB.RED);
 

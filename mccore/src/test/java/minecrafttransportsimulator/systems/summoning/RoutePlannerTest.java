@@ -35,7 +35,8 @@ public class RoutePlannerTest {
             if (i > 0) {
                 SummonRoute.Pose last = route.poses.get(i - 1);
                 double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);
-                assertTrue("spacing at pose " + i, spacing > 0.1 && spacing <= HybridSearch.SAMPLE_SPACING + 1e-6);
+                //Smoothing evens out the poses a little, so they may be a touch further apart than the search put them.
+                assertTrue("spacing at pose " + i, spacing > 0.1 && spacing <= HybridSearch.SAMPLE_SPACING * 1.2);
                 double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
                 //Points are a chord apart, a touch shorter than the arc between them.
                 assertTrue("turn at pose " + i, turn / spacing <= 1.01 / settings.turnRadius);
@@ -47,7 +48,8 @@ public class RoutePlannerTest {
         assertEquals(route.goal.x, end.x, 1e-9);
         assertEquals(route.goal.z, end.z, 1e-9);
         assertEquals(route.goal.yaw, end.yaw, 1e-9);
-        SummonRoute.Pose runInStart = route.poses.get(route.poses.size() - 1 - 8);
+        //The last 2 blocks of the run-in are always held straight; the start of it eases out of the last turn.
+        SummonRoute.Pose runInStart = route.poses.get(route.poses.size() - 1 - 4);
         assertEquals(end.yaw, runInStart.yaw, 1e-9);
         if (route.placed) {
             SummonRoute.Pose start = route.getStart();

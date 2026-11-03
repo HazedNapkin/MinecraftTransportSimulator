@@ -40,6 +40,7 @@ final class RoutePlanner {
         SPAWNS,
         SPAWN_FIELD,
         SEARCH,
+        SMOOTH,
         DONE
     }
 
@@ -130,8 +131,14 @@ final class RoutePlanner {
                 case SEARCH: {
                     if (search.step(Integer.MAX_VALUE, left)) {
                         route = search.getRoute();
-                        stage = Stage.DONE;
+                        stage = route != null ? Stage.SMOOTH : Stage.DONE;
                     }
+                    break;
+                }
+                case SMOOTH: {
+                    //Smooth the run-in the search started from no further than it drove it, as that's all that's straight.
+                    route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
+                    stage = Stage.DONE;
                     break;
                 }
                 default:

@@ -61,8 +61,7 @@ final class VehicleSummonJob {
     private static final double TURN_SPEED = 3;
     /**How much wider than the vehicle's tightest turn the route's turns are, to leave room for steering error.**/
     private static final double TURN_RADIUS_MARGIN = 1.25;
-    /**Speed to be down to by a step up or down, and the least to drive at short of the end, in m/s.**/
-    private static final double STEP_SPEED = 2.5;
+    /**The least to drive at short of the end, in m/s.**/
     private static final double MIN_SPEED = 1;
     /**How hard the drive plans to brake, in m/s per second, so it slows smoothly to a stop at the end.**/
     private static final double BRAKING = 2.5;
@@ -662,33 +661,17 @@ final class VehicleSummonJob {
         }
     }
 
-    /**
-     * Works out how far along the route each pose is, and the speed to be doing there: the cruise speed, or slower
-     * where a turn is too tight to take faster with steering to spare, or there's a step.  Then working back from
-     * the end, where it stops, each is slowed to what braking gently from it gets down to the speeds after it.
-     */
+    /**Works out how far along the route each pose is, and the speed to be doing there.  See {@link SpeedProfile}.**/
     private void planRouteSpeeds() {
-        int count = route.poses.size();
-        routeDistances = new double[count];
-        routeSpeeds = new double[count];
-        double cruiseSpeed = getCruiseSpeed();
-        for (int i = 0; i < count; ++i) {
-            SummonRoute.Pose pose = route.poses.get(i);
-            double speed = Math.min(cruiseSpeed, kinematics.getMaxSpeed(pose.curvature * TURN_RADIUS_MARGIN));
-            if (i > 0) {
-                SummonRoute.Pose last = route.poses.get(i - 1);
-                routeDistances[i] = routeDistances[i - 1] + Math.hypot(pose.x - last.x, pose.z - last.z);
-                if (pose.y != last.y) {
-                    speed = Math.min(speed, STEP_SPEED);
-                }
-            }
-            routeSpeeds[i] = Math.max(MIN_SPEED, speed);
-        }
-        routeSpeeds[count - 1] = 0;
-        for (int i = count - 2; i >= 0; --i) {
-            double braked = Math.sqrt(routeSpeeds[i + 1] * routeSpeeds[i + 1] + 2 * BRAKING * (routeDistances[i + 1] - routeDistances[i]));
-            routeSpeeds[i] = Math.min(routeSpeeds[i], braked);
-        }
+        SpeedProfile.Settings settings = new SpeedProfile.Settings();
+        settings.cruiseSpeed = getCruiseSpeed();
+        settings.steeringMargin = TURN_RADIUS_MARGIN;
+        settings.braking = BRAKING;
+        settings.minSpeed = MIN_SPEED;
+        double speed = vehicle != null ? vehicle.velocity * vehicle.speedFactor * 20 : 0;
+        SpeedProfile profile = SpeedProfile.plan(route, kinematics, settings, route.placed ? 0 : speed);
+        routeDistances = profile.distances;
+        routeSpeeds = profile.speeds;
     }
 
     /**

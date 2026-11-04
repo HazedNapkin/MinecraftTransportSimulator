@@ -121,7 +121,7 @@ final class ArrivalPlanner {
         this.lookYaw = lookYaw;
         this.headroom = shape.top - shape.bottom;
         this.gap = settings.gap;
-        double length = shape.front + shape.back;
+        double length = shape.bodyLength;
         this.minRunIn = Math.max(settings.minRunIn, length);
         this.preferredRunIn = Math.max(settings.preferredRunIn, 2 * length);
         //Nothing may drive through the player, coming in or pulling up.

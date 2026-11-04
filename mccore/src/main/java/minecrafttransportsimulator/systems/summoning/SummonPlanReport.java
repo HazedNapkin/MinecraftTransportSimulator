@@ -55,7 +55,7 @@ final class SummonPlanReport {
         }
         List<String> lines = new ArrayList<>();
         lines.add(String.format("Summon shape: from %d block, entity or vehicle collision boxes, %d wheels and the space between them; left out %d other collision boxes (types %s)", used, wheels, skipped, skippedTypes.isEmpty() ? "-" : String.join(", ", skippedTypes)));
-        lines.add(String.format("Summon shape: reaches %.2f forward, %.2f back, %.2f each side, %.2f high, all within %.2f of the origin.  The whole vehicle's box reaches %.2f across x, %.2f across z, %.2f up", shape.front, shape.back, shape.side, shape.top - shape.bottom, shape.radius(), vehicle.encompassingBox.widthRadius, vehicle.encompassingBox.depthRadius, vehicle.encompassingBox.heightRadius));
+        lines.add(String.format("Summon shape: reaches %.2f forward, %.2f back, %.2f each side, %.2f high, all within %.2f of the origin, body %.2f long.  The whole vehicle's box reaches %.2f across x, %.2f across z, %.2f up", shape.front, shape.back, shape.side, shape.top - shape.bottom, shape.radius(), shape.bodyLength, vehicle.encompassingBox.widthRadius, vehicle.encompassingBox.depthRadius, vehicle.encompassingBox.heightRadius));
         double shapeReach = Math.max(shape.side, Math.max(shape.front, shape.back));
         double vehicleReach = Math.max(vehicle.encompassingBox.widthRadius, vehicle.encompassingBox.depthRadius);
         if (shapeReach < vehicleReach * SMALL_SHAPE_RATIO) {

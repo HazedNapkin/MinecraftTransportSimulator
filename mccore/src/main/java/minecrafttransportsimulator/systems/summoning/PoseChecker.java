@@ -1,7 +1,9 @@
 package minecrafttransportsimulator.systems.summoning;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
@@ -30,6 +32,12 @@ final class PoseChecker {
     final VehicleShape shape;
     /**Block columns no part of the vehicle may be in, keyed by {@link VehicleShape#columnKey(int, int)}.**/
     private final Set<Long> keptClear = new HashSet<>();
+    /**
+     * Whether a column can be driven through at a height, by {@link TerrainMap#blockKey} and then the height range
+     * needed clear in eighths, as {@link TerrainMap#isClear} rounds it.  Driving checks the same columns over and
+     * over, and this answers each in one lookup rather than the several the check takes.
+     */
+    private final Map<Long, Map<Integer, Boolean>> drivableColumns = new HashMap<>();
 
     PoseChecker(TerrainMap terrain, VehicleShape shape) {
         this.terrain = terrain;
@@ -46,6 +54,7 @@ final class PoseChecker {
                 keptClear.add(VehicleShape.columnKey(x, z));
             }
         }
+        drivableColumns.clear();
     }
 
     /**Returns true if the vehicle can be placed with its origin over x,z, its wheels on the ground at height y, facing the yaw.**/
@@ -53,7 +62,7 @@ final class PoseChecker {
         if (!terrain.isSolid((int) Math.floor(x), y - 1, (int) Math.floor(z))) {
             return false;
         }
-        for (Column column : shape.getFootprint(x, z, yaw).values()) {
+        for (Column column : shape.getFootprint(x, z, yaw)) {
             if (isBlocked(column, y) || !terrain.isClear(column.x, y, column.z, Math.max(column.low, PARKING_CLEARANCE), column.high)) {
                 return false;
             }
@@ -75,12 +84,8 @@ final class PoseChecker {
         if (!terrain.isSolid((int) Math.floor(x), y - 1, (int) Math.floor(z))) {
             return false;
         }
-        for (Column column : shape.getFootprint(x, z, yaw).values()) {
-            if (isBlocked(column, y)) {
-                return false;
-            }
-            double low = Math.max(column.low, TerrainMap.STEP_CLEARANCE);
-            if (!terrain.isClear(column.x, y, column.z, low, column.high) && !(terrain.isSolid(column.x, y, column.z) && terrain.isClear(column.x, y + 1, column.z, low, column.high))) {
+        for (Column column : shape.getFootprint(x, z, yaw)) {
+            if (!canDriveThrough(column, y)) {
                 return false;
             }
         }
@@ -153,12 +158,28 @@ final class PoseChecker {
     /**Returns true if every column the aircraft covers facing the yaw is clear from the ground at y up to it, from its origin being at fromY.**/
     private boolean isClearDown(double x, int y, double z, double yaw, double fromY) {
         double descent = fromY + shape.bottom - y;
-        for (Column column : shape.getFootprint(x, z, yaw).values()) {
+        for (Column column : shape.getFootprint(x, z, yaw)) {
             if (terrain.isLiquid(column.x, y, column.z) || !terrain.isClear(column.x, y, column.z, Math.max(column.low, PARKING_CLEARANCE), descent + column.high)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * True if the vehicle can drive through the column at height y: it's not blocked, and the part of the vehicle over
+     * it clears the terrain there, or would on a step it can pitch up onto.
+     */
+    private boolean canDriveThrough(Column column, int y) {
+        double low = Math.max(column.low, TerrainMap.STEP_CLEARANCE);
+        int rangeKey = ((int) Math.floor(low * 8) << 16) | ((int) Math.ceil(column.high * 8) & 0xFFFF);
+        Map<Integer, Boolean> ranges = drivableColumns.computeIfAbsent(TerrainMap.blockKey(column.x, y, column.z), k -> new HashMap<>());
+        Boolean drivable = ranges.get(rangeKey);
+        if (drivable == null) {
+            drivable = !isBlocked(column, y) && (terrain.isClear(column.x, y, column.z, low, column.high) || (terrain.isSolid(column.x, y, column.z) && terrain.isClear(column.x, y + 1, column.z, low, column.high)));
+            ranges.put(rangeKey, drivable);
+        }
+        return drivable;
     }
 
     /**True if the vehicle can't be in the column at all at height y: it's kept clear, unloaded, or liquid.**/

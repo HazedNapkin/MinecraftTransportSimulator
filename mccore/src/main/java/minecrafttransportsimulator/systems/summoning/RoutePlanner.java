@@ -277,7 +277,7 @@ final class RoutePlanner {
         search.maxUp = settings.maxUp;
         search.maxDown = settings.maxDown;
         //Drive at least a vehicle's length straight in, and never less than a few blocks, or small vehicles can't settle straight.
-        search.runIn = Math.max(MIN_RUN_IN, checker.shape.front + checker.shape.back);
+        search.runIn = Math.max(MIN_RUN_IN, checker.shape.bodyLength);
         search.minLength = settings.summonDistance * 0.6;
         search.minDistance = settings.summonDistance / 2;
         search.targetLength = settings.summonDistance;

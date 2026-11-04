@@ -108,7 +108,9 @@ public class PathSmootherTest {
     private static java.util.Set<Long> getColumns(SummonRoute route, VehicleShape shape) {
         java.util.Set<Long> columns = new java.util.HashSet<>();
         for (SummonRoute.Pose pose : route.poses) {
-            columns.addAll(shape.getFootprint(pose.x, pose.z, pose.yaw).keySet());
+            for (VehicleShape.Column column : shape.getFootprint(pose.x, pose.z, pose.yaw)) {
+                columns.add(VehicleShape.columnKey(column.x, column.z));
+            }
         }
         return columns;
     }

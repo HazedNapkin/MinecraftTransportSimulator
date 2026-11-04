@@ -2,9 +2,7 @@ package minecrafttransportsimulator.systems.summoning;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
@@ -25,6 +23,11 @@ import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
 final class VehicleShape {
     /**Boxes that overlap a block by less than this are not counted as being in it.**/
     private static final double CELL_OVERLAP_TOLERANCE = 0.15;
+    /**
+     * Boxes starting this high above the ground or higher aren't counted in the length of the vehicle's body: they're
+     * things up over it, like a gun barrel or a roof rack, that stick out past it.
+     */
+    static final double BODY_HEIGHT = 1.5;
 
     /**Everything that needs room: the collision boxes and the wheels.**/
     final List<ShapeBox> boxes;
@@ -40,10 +43,16 @@ final class VehicleShape {
     final double back;
     /**Furthest point to either side of the vehicle origin.**/
     final double side;
+    /**
+     * Length of the vehicle's body, front to back, leaving out things up over it that stick out past it (see
+     * {@link #BODY_HEIGHT}).  It's how far the vehicle drives straight to settle lined up, which a long gun barrel
+     * shouldn't stretch.
+     */
+    final double bodyLength;
     /**Distance from the origin to the furthest point of the vehicle, so it fits in this circle at any yaw.**/
     private final double radius;
 
-    private VehicleShape(List<ShapeBox> boxes, List<ShapeBox> supports, double bottom, double top, double front, double back, double side, double radius) {
+    private VehicleShape(List<ShapeBox> boxes, List<ShapeBox> supports, double bottom, double top, double front, double back, double side, double bodyLength, double radius) {
         this.boxes = boxes;
         this.supports = supports;
         this.bottom = bottom;
@@ -51,6 +60,7 @@ final class VehicleShape {
         this.front = front;
         this.back = back;
         this.side = side;
+        this.bodyLength = bodyLength;
         this.radius = radius;
     }
 
@@ -67,12 +77,20 @@ final class VehicleShape {
     /**
      * Returns the block columns the vehicle covers with its origin at the passed-in point and
      * facing the passed-in yaw, with the height range each column needs clear above the ground.
-     * Columns are keyed by {@link #columnKey(int, int)}.
+     * <p>
+     * This is the hot path of planning, run for every pose checked, so it gathers the columns in a flat
+     * grid round the origin rather than a map.  Nothing reaches further than {@link #radius} from the origin.
      */
-    Map<Long, Column> getFootprint(double originX, double originZ, double yaw) {
-        Map<Long, Column> footprint = new HashMap<>();
+    List<Column> getFootprint(double originX, double originZ, double yaw) {
         double sin = Math.sin(Math.toRadians(yaw));
         double cos = Math.cos(Math.toRadians(yaw));
+        int baseX = (int) Math.floor(originX - radius) - 1;
+        int baseZ = (int) Math.floor(originZ - radius) - 1;
+        int size = (int) Math.ceil(2 * radius) + 3;
+        double[] lows = new double[size * size];
+        double[] highs = new double[size * size];
+        boolean[] used = new boolean[size * size];
+        int count = 0;
         for (ShapeBox box : boxes) {
             double centerX = originX + box.x * cos + box.z * sin;
             double centerZ = originZ - box.x * sin + box.z * cos;
@@ -89,15 +107,23 @@ final class VehicleShape {
             }
             for (int x = minX; x <= maxX; ++x) {
                 for (int z = minZ; z <= maxZ; ++z) {
-                    long key = columnKey(x, z);
-                    Column column = footprint.get(key);
-                    if (column == null) {
-                        footprint.put(key, new Column(x, z, box.low, box.high));
+                    int index = (x - baseX) * size + (z - baseZ);
+                    if (!used[index]) {
+                        used[index] = true;
+                        lows[index] = box.low;
+                        highs[index] = box.high;
+                        ++count;
                     } else {
-                        column.low = Math.min(column.low, box.low);
-                        column.high = Math.max(column.high, box.high);
+                        lows[index] = Math.min(lows[index], box.low);
+                        highs[index] = Math.max(highs[index], box.high);
                     }
                 }
+            }
+        }
+        List<Column> footprint = new ArrayList<>(count);
+        for (int index = 0; index < used.length; ++index) {
+            if (used[index]) {
+                footprint.add(new Column(baseX + index / size, baseZ + index % size, lows[index], highs[index]));
             }
         }
         return footprint;
@@ -171,6 +197,8 @@ final class VehicleShape {
         double front = 0;
         double back = 0;
         double side = 0;
+        double bodyFront = 0;
+        double bodyBack = 0;
         double radius = 0;
         double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE, minZ = Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
         for (double[] raw : rawBoxes) {
@@ -180,11 +208,16 @@ final class VehicleShape {
             boxes.add(new ShapeBox(raw, bottom));
         }
         boxes.addAll(getUnderbody(rawWheels, bottom));
+        removeContained(boxes);
         for (ShapeBox box : boxes) {
             top = Math.max(top, bottom + box.high);
             front = Math.max(front, box.z + box.radius);
             back = Math.max(back, box.radius - box.z);
             side = Math.max(side, Math.abs(box.x) + box.radius);
+            if (box.low < BODY_HEIGHT) {
+                bodyFront = Math.max(bodyFront, box.z + box.radius);
+                bodyBack = Math.max(bodyBack, box.radius - box.z);
+            }
             //Corner furthest from the origin.
             radius = Math.max(radius, Math.hypot(Math.abs(box.x) + box.radius, Math.abs(box.z) + box.radius));
             minX = Math.min(minX, box.x - box.radius);
@@ -208,7 +241,34 @@ final class VehicleShape {
                 }
             }
         }
-        return new VehicleShape(boxes, supports, bottom, top, Math.max(0.5, front), Math.max(0.5, back), Math.max(0.5, side), radius);
+        front = Math.max(0.5, front);
+        back = Math.max(0.5, back);
+        //Something a vehicle's built from all up high, with nothing low down, is all body.
+        double bodyLength = bodyFront + bodyBack > 0 ? Math.max(1, bodyFront + bodyBack) : front + back;
+        return new VehicleShape(boxes, supports, bottom, top, front, back, Math.max(0.5, side), bodyLength, radius);
+    }
+
+    /**
+     * Drops every box that another box holds entirely, across and in height, as it adds nothing to the shape.  Packs
+     * often build a vehicle out of many overlapping collision boxes, and every box costs time in every pose checked.
+     */
+    private static void removeContained(List<ShapeBox> boxes) {
+        for (int i = boxes.size() - 1; i >= 0; --i) {
+            ShapeBox inner = boxes.get(i);
+            for (int j = 0; j < boxes.size(); ++j) {
+                ShapeBox outer = boxes.get(j);
+                //Of two identical boxes, the later one goes.
+                if (j != i && (j < i || !isInside(outer, inner)) && isInside(inner, outer)) {
+                    boxes.remove(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**True if the inner box is entirely within the outer one.**/
+    private static boolean isInside(ShapeBox inner, ShapeBox outer) {
+        return Math.abs(inner.x - outer.x) + inner.radius <= outer.radius + 1e-9 && Math.abs(inner.z - outer.z) + inner.radius <= outer.radius + 1e-9 && inner.low >= outer.low - 1e-9 && inner.high <= outer.high + 1e-9;
     }
 
     /**

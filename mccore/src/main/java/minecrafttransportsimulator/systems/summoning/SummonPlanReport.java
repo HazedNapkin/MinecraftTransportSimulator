@@ -30,10 +30,13 @@ final class SummonPlanReport {
      * reaches, against the box round the whole vehicle.  Warns if it looks too small.
      */
     static List<String> getShape(EntityVehicleF_Physics vehicle, VehicleShape shape) {
+        int used = 0;
         int skipped = 0;
         Set<String> skippedTypes = new TreeSet<>();
         for (BoundingBox box : vehicle.allCollisionBoxes) {
-            if (box.collisionTypes == null || !box.collisionTypes.contains(CollisionType.BLOCK)) {
+            if (box.collisionTypes != null && (box.collisionTypes.contains(CollisionType.BLOCK) || box.collisionTypes.contains(CollisionType.ENTITY) || box.collisionTypes.contains(CollisionType.VEHICLE))) {
+                ++used;
+            } else {
                 ++skipped;
                 if (box.collisionTypes == null || box.collisionTypes.isEmpty()) {
                     skippedTypes.add("none");
@@ -51,7 +54,7 @@ final class SummonPlanReport {
             }
         }
         List<String> lines = new ArrayList<>();
-        lines.add(String.format("Summon shape: from %d block collision boxes and %d wheels; left out %d other collision boxes (types %s)", vehicle.allBlockCollisionBoxes.size(), wheels, skipped, skippedTypes.isEmpty() ? "-" : String.join(", ", skippedTypes)));
+        lines.add(String.format("Summon shape: from %d block, entity or vehicle collision boxes, %d wheels and the space between them; left out %d other collision boxes (types %s)", used, wheels, skipped, skippedTypes.isEmpty() ? "-" : String.join(", ", skippedTypes)));
         lines.add(String.format("Summon shape: reaches %.2f forward, %.2f back, %.2f each side, %.2f high, all within %.2f of the origin.  The whole vehicle's box reaches %.2f across x, %.2f across z, %.2f up", shape.front, shape.back, shape.side, shape.top - shape.bottom, shape.radius(), vehicle.encompassingBox.widthRadius, vehicle.encompassingBox.depthRadius, vehicle.encompassingBox.heightRadius));
         double shapeReach = Math.max(shape.side, Math.max(shape.front, shape.back));
         double vehicleReach = Math.max(vehicle.encompassingBox.widthRadius, vehicle.encompassingBox.depthRadius);

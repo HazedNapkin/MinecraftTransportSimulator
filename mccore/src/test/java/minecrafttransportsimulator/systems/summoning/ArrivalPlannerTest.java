@@ -57,6 +57,20 @@ public class ArrivalPlannerTest {
     }
 
     @Test
+    public void tracksOnlyVehicleStopsOffThePlayer() {
+        //A tank with no collision but its tracks, a block wide, 3 apart and 4.5 long, like one whose hull only collides with entities.
+        List<double[]> tracks = Arrays.asList(new double[] { 1.5, 0.1, 1.75, 0.5, 0.1 }, new double[] { -1.5, 0.1, 1.75, 0.5, 0.1 }, new double[] { 1.5, 0.1, -2.75, 0.5, 0.1 }, new double[] { -1.5, 0.1, -2.75, 0.5, 0.1 });
+        VehicleShape tank = VehicleShape.of(Arrays.asList(), tracks);
+        ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
+        ArrivalPlanner planner = new ArrivalPlanner(new PoseChecker(new TerrainMap(FakeTerrain.flat(30)), tank), settings, PLAYER, 0);
+        for (double bearing : new double[] { 0, 30, -45, 90 }) {
+            double[] origin = planner.getOrigin(bearing);
+            //The player isn't between the tracks, 1.5 either side of the origin: the space between them counts as the tank.
+            assertTrue(Math.hypot(origin[0] - PLAYER.x, origin[1] - PLAYER.z) >= 1.5 + settings.gap - 0.1);
+        }
+    }
+
+    @Test
     public void linesUpTheSeatOppositeThePlayer() {
         ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
         //A driver's seat a block forward of the origin, on the left.

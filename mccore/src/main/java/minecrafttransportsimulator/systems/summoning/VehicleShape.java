@@ -11,10 +11,11 @@ import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.entities.instances.PartGroundDevice;
+import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
 
 /**
- * The space a vehicle takes up, in its own local space, taken from the boxes it actually
- * collides with blocks with and from its wheels.  Used to check the vehicle fits where we path,
+ * The space a vehicle takes up, in its own local space, taken from the boxes it collides with
+ * blocks, entities or vehicles with, from its wheels, and from the space between its wheels.  Used to check the vehicle fits where we path,
  * teleport or land it.
  * <p>
  * Heights are measured up from the bottom of the wheels, which is where the ground is when the
@@ -129,7 +130,11 @@ final class VehicleShape {
     static VehicleShape of(EntityVehicleF_Physics vehicle) {
         List<double[]> rawBoxes = new ArrayList<>();
         List<double[]> rawWheels = new ArrayList<>();
-        for (BoundingBox box : vehicle.allBlockCollisionBoxes) {
+        //Packs often leave a body out of block collision and only give it entity collision, so take both.
+        for (BoundingBox box : vehicle.allCollisionBoxes) {
+            if (box.collisionTypes == null || !(box.collisionTypes.contains(CollisionType.BLOCK) || box.collisionTypes.contains(CollisionType.ENTITY) || box.collisionTypes.contains(CollisionType.VEHICLE))) {
+                continue;
+            }
             rawBoxes.add(toLocal(vehicle, box.globalCenter, Math.max(box.widthRadius, box.depthRadius), box.heightRadius));
         }
         for (APart part : vehicle.allParts) {
@@ -174,6 +179,7 @@ final class VehicleShape {
         for (double[] raw : rawWheels) {
             boxes.add(new ShapeBox(raw, bottom));
         }
+        boxes.addAll(getUnderbody(rawWheels, bottom));
         for (ShapeBox box : boxes) {
             top = Math.max(top, bottom + box.high);
             front = Math.max(front, box.z + box.radius);
@@ -203,6 +209,47 @@ final class VehicleShape {
             }
         }
         return new VehicleShape(boxes, supports, bottom, top, Math.max(0.5, front), Math.max(0.5, back), Math.max(0.5, side), radius);
+    }
+
+    /**
+     * Boxes filling the space between the wheels, as high as the wheels.  Whatever a pack gives the vehicle to collide
+     * with, its body spans its wheels, so this keeps the planner from thinking the middle of it is empty and letting it
+     * pull up with the player between its wheels or tracks.
+     */
+    private static List<ShapeBox> getUnderbody(List<double[]> rawWheels, double bottom) {
+        List<ShapeBox> fill = new ArrayList<>();
+        if (rawWheels.size() < 2) {
+            return fill;
+        }
+        double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE, minZ = Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        double top = -Double.MAX_VALUE, smallest = Double.MAX_VALUE;
+        for (double[] wheel : rawWheels) {
+            minX = Math.min(minX, wheel[0]);
+            maxX = Math.max(maxX, wheel[0]);
+            minZ = Math.min(minZ, wheel[2]);
+            maxZ = Math.max(maxZ, wheel[2]);
+            top = Math.max(top, wheel[1] + wheel[4]);
+            smallest = Math.min(smallest, wheel[3]);
+        }
+        //Squares as wide as the narrower way across, or as the smallest wheel if the wheels are in a line, along the longer way.
+        boolean alongZ = maxZ - minZ >= maxX - minX;
+        double across = alongZ ? maxX - minX : maxZ - minZ;
+        double along = alongZ ? maxZ - minZ : maxX - minX;
+        double radius = Math.max(across / 2, Math.min(smallest, 0.5));
+        if (radius <= 0) {
+            return fill;
+        }
+        double middleAcross = alongZ ? (minX + maxX) / 2 : (minZ + maxZ) / 2;
+        double start = alongZ ? minZ : minX;
+        int count = Math.max(1, (int) Math.ceil(along / (2 * radius)));
+        double height = (top - bottom) / 2;
+        for (int i = 0; i < count; ++i) {
+            double middleAlong = start + (count == 1 ? along / 2 : radius + i * (along - 2 * radius) / (count - 1));
+            double x = alongZ ? middleAcross : middleAlong;
+            double z = alongZ ? middleAlong : middleAcross;
+            fill.add(new ShapeBox(new double[] { x, bottom + height, z, radius, height }, bottom));
+        }
+        return fill;
     }
 
     /**Returns the box as {x, y, z, horizontal radius, vertical radius} in the vehicle's local space.**/

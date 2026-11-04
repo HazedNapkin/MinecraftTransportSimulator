@@ -48,11 +48,21 @@ final class SummonRoute {
     List<Integer> getCusps() {
         List<Integer> cusps = new ArrayList<>();
         for (int i = 1; i < poses.size() - 1; ++i) {
-            if (poses.get(i + 1).reverse != poses.get(i).reverse) {
+            if (isCusp(i)) {
                 cusps.add(i);
             }
         }
         return cusps;
+    }
+
+    /**True if the vehicle stops at the pose to change direction.**/
+    boolean isCusp(int index) {
+        return index > 0 && index < poses.size() - 1 && poses.get(index + 1).reverse != poses.get(index).reverse;
+    }
+
+    /**True if the vehicle backs away from the pose to the next, or for the last pose, backed up to it.**/
+    boolean leavesInReverse(int index) {
+        return poses.get(Math.min(index + 1, poses.size() - 1)).reverse;
     }
 
     /**How far the route backs up, across the ground, in blocks.**/

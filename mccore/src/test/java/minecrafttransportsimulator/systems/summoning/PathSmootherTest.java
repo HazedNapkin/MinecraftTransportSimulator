@@ -13,21 +13,26 @@ public class PathSmootherTest {
 
     /**
      * Makes a route of poses every half block, driving each of the pieces in turn from the origin facing +Z.
-     * Each piece is {length, curvature}.
+     * Each piece is {length, curvature}, or {length, curvature, 1} to back along it.
      */
     static SummonRoute route(double[]... pieces) {
         List<SummonRoute.Pose> poses = new ArrayList<>();
         double[] pose = { 0.5, 0.5, 0 };
-        poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], pieces[0][1]));
+        poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], pieces[0][1], isReverse(pieces[0])));
         for (double[] piece : pieces) {
             int samples = (int) Math.round(piece[0] / SPACING);
+            boolean reverse = isReverse(piece);
             for (int i = 0; i < samples; ++i) {
-                pose = HybridSearch.arc(pose[0], pose[1], pose[2], piece[1], SPACING);
-                poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], piece[1]));
+                pose = HybridSearch.arc(pose[0], pose[1], pose[2], piece[1], reverse ? -SPACING : SPACING);
+                poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], piece[1], reverse));
             }
         }
         ArrivalPlanner.Goal goal = new ArrivalPlanner.Goal(pose[0], 0, pose[1], pose[2], 6, 0);
         return new SummonRoute(poses, true, goal);
+    }
+
+    private static boolean isReverse(double[] piece) {
+        return piece.length > 2 && piece[2] != 0;
     }
 
     private static double maxCurvatureJump(SummonRoute route) {
@@ -122,5 +127,41 @@ public class PathSmootherTest {
             }
         }
         return true;
+    }
+
+    @Test
+    public void keepsWhereItChangesDirection() {
+        //Forward into a left turn, back out of it turning the other way, then forward to a straight run-in.
+        SummonRoute original = route(new double[] { 8, 0 }, new double[] { 5, 0.25 }, new double[] { 3, -0.2, 1 }, new double[] { 3, 0, 1 }, new double[] { 6, -0.2 }, new double[] { 10, 0 });
+        assertEquals(2, original.getCusps().size());
+        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), ArrivalPlannerTest.car());
+        SummonRoute smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
+        assertTrue("smoothing gave up", smoothed != original);
+        assertEquals(original.getCusps(), smoothed.getCusps());
+        for (int cusp : original.getCusps()) {
+            for (int i = cusp - 2; i <= cusp + 2; ++i) {
+                assertEquals(original.poses.get(i).x, smoothed.poses.get(i).x, 1e-9);
+                assertEquals(original.poses.get(i).z, smoothed.poses.get(i).z, 1e-9);
+                assertEquals(original.poses.get(i).yaw, smoothed.poses.get(i).yaw, 1e-9);
+            }
+        }
+        for (int i = 0; i < smoothed.poses.size(); ++i) {
+            SummonRoute.Pose was = original.poses.get(i);
+            SummonRoute.Pose pose = smoothed.poses.get(i);
+            assertEquals(was.reverse, pose.reverse);
+            //Backing up it still faces the way it did, not the way it's going.
+            assertTrue("yaw at " + i, Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - was.yaw)) < 10);
+            //And steers the same way to follow it.  This route gives each pose the steering it arrives with, but at a
+            //change of direction the smoother gives it the steering it sets off with, so those aren't compared.
+            if (Math.abs(was.curvature) > 0.1 && !original.isCusp(i)) {
+                assertTrue("steering at " + i, pose.curvature * was.curvature > 0);
+            }
+            if (i > 0) {
+                SummonRoute.Pose last = smoothed.poses.get(i - 1);
+                assertTrue(checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
+                double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
+                assertTrue(turn / Math.hypot(pose.x - last.x, pose.z - last.z) <= 1.01 / 4);
+            }
+        }
     }
 }

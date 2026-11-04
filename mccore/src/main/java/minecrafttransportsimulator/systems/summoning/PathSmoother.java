@@ -19,6 +19,10 @@ import java.util.List;
  * The first poses stay put, so the route still sets off where and how it was planned to, and so does the end of the
  * straight run-in, so it still pulls up exactly where and how it should.  The start of the run-in is left free, as
  * that's where the steering eases off out of the last turn.
+ * <p>
+ * A route that changes direction is smoothed a way at a time.  Where it stops to change direction stays put, and so
+ * do the poses either side, so it still stops there facing the way it was planned to, and no pose is smoothed
+ * against ones the other side of a change of direction, which would round off the corner it makes there.
  */
 final class PathSmoother {
     /**
@@ -75,6 +79,13 @@ final class PathSmoother {
             }
             held[i] = i < HELD_AT_START || fromEnd <= heldRunIn + 1e-6;
         }
+        //Each pose is smoothed against the two either side of it, so holding as many either side of a change of
+        //direction keeps every pose that's moved to poses going its way.
+        for (int cusp : route.getCusps()) {
+            for (int i = Math.max(0, cusp - HELD_AT_START); i <= Math.min(count - 1, cusp + HELD_AT_START); ++i) {
+                held[i] = true;
+            }
+        }
 
         for (int round = 0; round < MAX_ROUNDS; ++round) {
             for (int pass = 0; pass < PASSES; ++pass) {
@@ -86,7 +97,7 @@ final class PathSmoother {
                     }
                 }
             }
-            List<SummonRoute.Pose> smoothed = toPoses(poses, x, z, held);
+            List<SummonRoute.Pose> smoothed = toPoses(route, x, z, held);
             List<Integer> misfits = findMisfits(smoothed, checker, maxCurvature);
             if (misfits.isEmpty()) {
                 return new SummonRoute(Collections.unmodifiableList(smoothed), route.placed, route.goal);
@@ -112,10 +123,12 @@ final class PathSmoother {
 
     /**
      * Makes the poses for the smoothed points.  Each faces along the line from the point before it to the one after,
-     * and its curvature is how fast that changes along the route.  Held poses keep their yaw, as the start's and the
-     * run-in's must be exact.  Heights stay as they were, as points only move a little.
+     * or the other way where it's backing up, and its curvature is how fast that changes along the route, for the
+     * way it's going from there.  Held poses keep their yaw, as the start's, the run-in's and those either side of
+     * changes of direction must be exact.  Heights stay as they were, as points only move a little.
      */
-    private static List<SummonRoute.Pose> toPoses(List<SummonRoute.Pose> poses, double[] x, double[] z, boolean[] held) {
+    private static List<SummonRoute.Pose> toPoses(SummonRoute route, double[] x, double[] z, boolean[] held) {
+        List<SummonRoute.Pose> poses = route.poses;
         int count = poses.size();
         double[] yaws = new double[count];
         for (int i = 0; i < count; ++i) {
@@ -124,19 +137,25 @@ final class PathSmoother {
             } else {
                 int before = Math.max(0, i - 1);
                 int after = Math.min(count - 1, i + 1);
-                yaws[i] = Math.toDegrees(Math.atan2(x[after] - x[before], z[after] - z[before]));
+                double heading = Math.toDegrees(Math.atan2(x[after] - x[before], z[after] - z[before]));
+                yaws[i] = route.leavesInReverse(i) ? VehicleSummonFlight.clampAngle(heading + 180) : heading;
             }
         }
         List<SummonRoute.Pose> smoothed = new ArrayList<>(count);
         for (int i = 0; i < count; ++i) {
-            int before = Math.max(0, i - 1);
+            //Where it changes direction, the steering is for the way it sets off from there.
+            int before = route.isCusp(i) ? i : Math.max(0, i - 1);
             int after = Math.min(count - 1, i + 1);
             double length = 0;
             for (int j = before; j < after; ++j) {
                 length += Math.hypot(x[j + 1] - x[j], z[j + 1] - z[j]);
             }
             double curvature = length > 0 ? Math.toRadians(VehicleSummonFlight.clampAngle(yaws[after] - yaws[before])) / length : 0;
-            smoothed.add(new SummonRoute.Pose(x[i], poses.get(i).y, z[i], yaws[i], curvature));
+            //Backing up, the yaw changes the other way for the same steering.
+            if (route.leavesInReverse(i)) {
+                curvature = -curvature;
+            }
+            smoothed.add(new SummonRoute.Pose(x[i], poses.get(i).y, z[i], yaws[i], curvature, poses.get(i).reverse));
         }
         return smoothed;
     }

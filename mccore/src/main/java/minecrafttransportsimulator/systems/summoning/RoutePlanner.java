@@ -156,10 +156,7 @@ final class RoutePlanner {
                 }
                 case SMOOTH: {
                     //Smooth the run-in the search started from no further than it drove it, as that's all that's straight.
-                    //The smoother doesn't know about changing direction yet, so routes that back up are left as found.
-                    if (route.getCusps().isEmpty()) {
-                        route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
-                    }
+                    route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
                     stage = Stage.DONE;
                     break;
                 }

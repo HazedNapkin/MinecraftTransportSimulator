@@ -71,4 +71,27 @@ public class SpeedProfileTest {
         SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, new SpeedProfile.Settings(), 6);
         assertEquals(6, profile.speeds[0], 1e-9);
     }
+
+    @Test
+    public void stopsToChangeDirectionAndBacksUpSlowly() {
+        SummonRoute route = PathSmootherTest.route(new double[] { 10, 0 }, new double[] { 12, 0, 1 }, new double[] { 30, 0 });
+        SpeedProfile.Settings settings = new SpeedProfile.Settings();
+        SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, settings, 0);
+        checkLimits(profile, settings);
+        assertEquals(2, route.getCusps().size());
+        for (int cusp : route.getCusps()) {
+            assertEquals(0, profile.speeds[cusp], 0);
+        }
+        boolean reversed = false;
+        for (int i = 0; i < route.poses.size(); ++i) {
+            if (route.poses.get(i).reverse) {
+                reversed = true;
+                assertTrue("backing at " + i, profile.speeds[i] <= settings.reverseSpeed + 1e-9);
+            }
+        }
+        assertTrue(reversed);
+        //Between stops it gets going, and forward it gets well past backing speed.
+        assertTrue(profile.speeds[route.getCusps().get(0) + 12] > settings.minSpeed);
+        assertTrue(profile.speeds[route.getCusps().get(1) + 30] > settings.reverseSpeed);
+    }
 }

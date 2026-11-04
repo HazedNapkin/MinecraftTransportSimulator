@@ -15,7 +15,13 @@ public class RoutePlannerTest {
     private static final VehicleKinematics KINEMATICS = new VehicleKinematics(2.6, 0.35, 0, false);
 
     private static RoutePlanner plan(FakeTerrain terrain, Point3D player, SummonRoute.Pose start) {
-        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car()), KINEMATICS, new RoutePlanner.Settings(), player, 0);
+        return plan(terrain, player, start, false);
+    }
+
+    private static RoutePlanner plan(FakeTerrain terrain, Point3D player, SummonRoute.Pose start, boolean allowReverse) {
+        RoutePlanner.Settings settings = new RoutePlanner.Settings();
+        settings.allowReverse = allowReverse;
+        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car()), KINEMATICS, settings, player, 0);
         if (start != null) {
             planner.setStart(start.x, start.y, start.z, start.yaw);
         }
@@ -139,6 +145,71 @@ public class RoutePlannerTest {
         SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start));
         assertFalse(route.placed);
         assertTrue(Math.hypot(route.getStart().x - start.x, route.getStart().z - start.z) <= 1);
+    }
+
+    /**A dead-end alley 4 blocks wide running out along -x from the open ground at x = -14, closed at x = -31.**/
+    private static FakeTerrain alley() {
+        return FakeTerrain.flat(60).fill(-31, 0, 14, -14, 2, 14).fill(-31, 0, 19, -14, 2, 19).fill(-31, 0, 14, -31, 2, 19);
+    }
+
+    /**A dead-end street 7 blocks wide, too narrow to turn round in, running out along -x from x = -10 to x = -51.**/
+    private static FakeTerrain narrowStreet() {
+        return FakeTerrain.flat(60).fill(-51, 0, 10, -10, 2, 10).fill(-51, 0, 18, -10, 2, 18).fill(-51, 0, 10, -51, 2, 18);
+    }
+
+    private static void checkDirections(SummonRoute route) {
+        int maxCusps = new HybridSearch.Settings().maxCusps;
+        assertTrue("too many changes of direction", route.getCusps().size() <= maxCusps);
+        //It always drives the run-in forward, so it pulls up facing the right way.
+        assertFalse(route.getEnd().reverse);
+        assertFalse(route.poses.get(route.poses.size() - 2).reverse);
+    }
+
+    @Test
+    public void cantLeaveAnAlleyNoseInWithoutReversing() {
+        FakeTerrain terrain = alley();
+        SummonRoute.Pose start = new SummonRoute.Pose(-27.5, 0, 17, -90, 0);
+        assertNull(plan(terrain, PLAYER, start, false).getRoute());
+    }
+
+    @Test
+    public void backsOutOfAnAlleyItsNosedInto() {
+        FakeTerrain terrain = alley();
+        SummonRoute.Pose start = new SummonRoute.Pose(-27.5, 0, 17, -90, 0);
+        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        checkDirections(route);
+        assertTrue(route.getStart().reverse);
+        assertFalse(route.getCusps().isEmpty());
+        assertTrue(Math.hypot(route.getStart().x - start.x, route.getStart().z - start.z) <= 1);
+    }
+
+    @Test
+    public void turnsRoundInAStreetTooNarrowToUTurn() {
+        FakeTerrain terrain = narrowStreet();
+        SummonRoute.Pose start = new SummonRoute.Pose(-40.5, 0, 14.5, -90, 0);
+        assertNull(plan(terrain, PLAYER, start, false).getRoute());
+        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        checkDirections(route);
+        assertFalse(route.getCusps().isEmpty());
+        //It turns round where it is rather than backing all the way out.
+        assertTrue("backed " + route.getReverseLength(), route.getReverseLength() < 12);
+    }
+
+    @Test
+    public void doesntReverseWhenItHasRoom() {
+        FakeTerrain terrain = FakeTerrain.flat(60);
+        SummonRoute.Pose start = new SummonRoute.Pose(-14.5, 0, 16.5, 90, 0);
+        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        assertTrue(route.getCusps().isEmpty());
+        assertFalse(route.getStart().reverse);
+    }
+
+    @Test
+    public void placedVehiclesNeverReverse() {
+        FakeTerrain terrain = narrowStreet();
+        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, null, true));
+        assertTrue(route.getCusps().isEmpty());
+        assertEquals(0, route.getReverseLength(), 0);
     }
 
     @Test

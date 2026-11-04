@@ -12,7 +12,7 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * the drive in is from everywhere near ({@link FlowField}), pick good hidden places about the summon distance out to
  * set off from ({@link SpawnSelector}), flood out from those to guide the search, then search backwards from where it
  * pulls up for the route ({@link HybridSearch}).  A vehicle that's already nearby skips picking places, and floods
- * out from where it is instead.
+ * out from where it is instead.  If it can't drive out from there forward and can back up, it searches again backing up.
  */
 final class RoutePlanner {
     /**How much further than the longest drive in the floods spread from the player, in blocks.**/
@@ -34,6 +34,12 @@ final class RoutePlanner {
         int maxUp = 1;
         int maxDown = 2;
         int maxExpansions = 20000;
+        /**
+         * True if the vehicle can back up.  Only routes from where it already is do, as placed vehicles can be placed
+         * facing whichever way they need: see {@link HybridSearch.Settings#allowReverse}.  And only if it can't drive
+         * out forward, as it'd only back up where it must, and the search that may back up is cruder.
+         */
+        boolean allowReverse;
     }
 
     private enum Stage {
@@ -60,6 +66,10 @@ final class RoutePlanner {
     private SpawnSelector spawns;
     private FlowField spawnField;
     private HybridSearch search;
+    /**True once the search is the one that may back up, tried if the vehicle can't drive out forward.**/
+    private boolean reversing;
+    /**How many states the finished searches expanded.**/
+    private int searchExpansions;
     private SummonRoute route;
     /**Time spent in each stage, in nanoseconds, and how many times it's been stepped, for tuning.**/
     private final long[] stageNanos = new long[Stage.values().length];
@@ -133,13 +143,23 @@ final class RoutePlanner {
                 case SEARCH: {
                     if (search.step(Integer.MAX_VALUE, left)) {
                         route = search.getRoute();
-                        stage = route != null ? Stage.SMOOTH : Stage.DONE;
+                        searchExpansions += search.getExpansions();
+                        if (route == null && settings.allowReverse && start != null && !reversing) {
+                            //It can't drive out forward.  Try again backing up.
+                            reversing = true;
+                            startSearch();
+                        } else {
+                            stage = route != null ? Stage.SMOOTH : Stage.DONE;
+                        }
                     }
                     break;
                 }
                 case SMOOTH: {
                     //Smooth the run-in the search started from no further than it drove it, as that's all that's straight.
-                    route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
+                    //The smoother doesn't know about changing direction yet, so routes that back up are left as found.
+                    if (route.getCusps().isEmpty()) {
+                        route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
+                    }
                     stage = Stage.DONE;
                     break;
                 }
@@ -198,7 +218,7 @@ final class RoutePlanner {
 
     /**How many states the route search expanded, for tuning.**/
     int getSearchExpansions() {
-        return search != null ? search.getExpansions() : 0;
+        return searchExpansions + (search != null && !search.isFinished() ? search.getExpansions() : 0);
     }
 
     /**The longest drive in to set off from, in blocks.  The floods only spread this far, as that's most of their cost.**/
@@ -282,6 +302,9 @@ final class RoutePlanner {
         search.minDistance = settings.summonDistance / 2;
         search.targetLength = settings.summonDistance;
         search.maxExpansions = settings.maxExpansions;
+        search.allowReverse = reversing;
+        //Each way it goes should be a fair part of its length, or the changes of direction are just shuffling.
+        search.minGearLength = Math.max(search.minGearLength, checker.shape.bodyLength / 2);
         return search;
     }
 

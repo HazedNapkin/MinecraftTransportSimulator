@@ -67,6 +67,12 @@ final class VehicleSummonJob {
      */
     private static final boolean SPAWN_MOVING = true;
     /**
+     * If set, a vehicle that sets off from where it is may plan to back up, out of where it's nosed in or in a
+     * three-point turn.  Off until driving can follow routes that change direction: shifting into reverse and
+     * steering backwards.
+     */
+    private static final boolean REVERSE_ENABLED = false;
+    /**
      * How near the end a vehicle that's all but stopped counts as there, in blocks, and how slow is all but stopped,
      * in m/s.  Braking can bring it to rest just short, and it shouldn't sit there until it's called stuck.
      */
@@ -445,6 +451,7 @@ final class VehicleSummonJob {
         settings.summonDistance = getSummonDistance();
         settings.cruiseSpeed = getCruiseSpeed();
         settings.turnRadius = getTurnRadius();
+        settings.allowReverse = REVERSE_ENABLED && canReverse();
         setArrival(settings.arrival);
         planner = new RoutePlanner(new PoseChecker(terrain, shape), kinematics, settings, planCenter, Math.toDegrees(frontAngle));
         if (fromHere) {
@@ -1194,6 +1201,24 @@ final class VehicleSummonJob {
             }
         }
         return false;
+    }
+
+    /**
+     * True if the vehicle can back up the way a route plans: it has an engine to drive it, every engine has a
+     * reverse gear, it steers with its wheels rather than skid steering, and it isn't towing anything, as backing
+     * a trailer is another thing altogether.
+     */
+    private boolean canReverse() {
+        List<PartEngine> engines = getWorkingEngines(false);
+        if (engines.isEmpty() || vehicle.definition.motorized.hasPermanentSkidSteer || !vehicle.towingConnections.isEmpty()) {
+            return false;
+        }
+        for (PartEngine engine : engines) {
+            if (engine.reverseGears == 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean isJet(PartEngine engine) {

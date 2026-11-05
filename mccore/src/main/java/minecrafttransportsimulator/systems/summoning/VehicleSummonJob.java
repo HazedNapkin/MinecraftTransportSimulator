@@ -67,11 +67,19 @@ final class VehicleSummonJob {
      */
     private static final boolean SPAWN_MOVING = true;
     /**
-     * If set, a vehicle that sets off from where it is may plan to back up, out of where it's nosed in or in a
-     * three-point turn.  Off until driving can follow routes that change direction: shifting into reverse and
-     * steering backwards.
+     * If set, a vehicle that sets off from where it is may back up, out of where it's nosed in or in a three-point
+     * turn, if it can't drive out forward.
      */
-    private static final boolean REVERSE_ENABLED = false;
+    private static final boolean REVERSE_ENABLED = true;
+    /**
+     * How slow the vehicle must be to shift between forward and reverse, and how slow it must be going the new way
+     * before it's steered, in m/s.  MTS only turns a vehicle the way it's going once it's going that way, and a
+     * vehicle that can skid steer spins on the spot in neutral, so it's held straight until then.
+     */
+    private static final double SHIFT_SPEED = 0.3;
+    private static final double STEER_SETTLE_SPEED = 0.5;
+    /**Extra time allowed for each change of direction, for stopping, shifting and setting off, in seconds.**/
+    private static final double DIRECTION_CHANGE_SECONDS = 4;
     /**
      * How near the end a vehicle that's all but stopped counts as there, in blocks, and how slow is all but stopped,
      * in m/s.  Braking can bring it to rest just short, and it shouldn't sit there until it's called stuck.
@@ -188,6 +196,8 @@ final class VehicleSummonJob {
     /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
     private double spawnSpeed;
     private Point3D lastProgressPosition;
+    /**The tick of the drive it last changed direction at, as stopping to doesn't mean it's stuck.**/
+    private int directionChangeTick;
     private int replans;
     /**How long the current route may take to drive, in ticks.**/
     private int driveTimeout;
@@ -779,6 +789,7 @@ final class VehicleSummonJob {
         startEngines(false);
         set(vehicle.parkingBrakeVar, 0);
         lastProgressPosition = vehicle.position.copy();
+        directionChangeTick = 0;
         driveTimeout = getDriveTimeout();
         PathTracker.Settings settings = new PathTracker.Settings();
         settings.braking = BRAKING;
@@ -790,10 +801,12 @@ final class VehicleSummonJob {
     /**
      * How long the vehicle may take to drive the current route, in ticks: {@link #MIN_DRIVE_TIMEOUT}, or longer for
      * routes that need more time than that at {@link #TURN_SPEED}, plus {@link #DRIVE_TIMEOUT_MARGIN}.
-     * So it's 30 seconds for any route up to 60 blocks, and a long winding route still gets time to finish.
+     * So it's 30 seconds for any route up to 60 blocks, and a long winding route still gets time to finish.  Each
+     * change of direction gets {@link #DIRECTION_CHANGE_SECONDS} more.
      */
     private int getDriveTimeout() {
-        return Math.max(MIN_DRIVE_TIMEOUT, (int) Math.ceil((route.getLength() / TURN_SPEED + DRIVE_TIMEOUT_MARGIN) * 20));
+        int timeout = Math.max(MIN_DRIVE_TIMEOUT, (int) Math.ceil((route.getLength() / TURN_SPEED + DRIVE_TIMEOUT_MARGIN) * 20));
+        return timeout + (int) Math.ceil(route.getCusps().size() * DIRECTION_CHANGE_SECONDS * 20);
     }
 
     private boolean drive(IWrapperPlayer player) {
@@ -804,13 +817,6 @@ final class VehicleSummonJob {
                 return true;
             }
         }
-        //Put automatic gearboxes into drive once the engine's running.
-        for (PartEngine engine : vehicle.engines) {
-            if (engine.running && engine.currentGearVar.currentValue <= 0 && !isJet(engine)) {
-                engine.shiftUp();
-            }
-        }
-
         if (planMarkers != null && (phaseTicks == DEBUG_SEND_DELAY || phaseTicks % DEBUG_RESEND_INTERVAL == 0)) {
             VehicleSummonDebug.send(vehicle, planMarkers);
         }
@@ -822,14 +828,33 @@ final class VehicleSummonJob {
             driveReport.record(command, speed);
         }
         boolean stalledAtEnd = command.remaining < STALLED_ARRIVE_DISTANCE && speed < STALLED_SPEED && phaseTicks > 20;
-        boolean playerInTheWay = !command.arrived && !stalledAtEnd && isPlayerInTheWay(player);
+        boolean playerInTheWay = !command.arrived && !stalledAtEnd && isPlayerInTheWay(player, command.reverse);
         if (command.arrived || stalledAtEnd || playerInTheWay) {
             reportDrive(player, command.arrived ? "arrived" : stalledAtEnd ? "stalled short" : "player in the way", command, speed);
             park();
             message(player, LanguageSystem.INTERACT_PHONE_ARRIVED);
             return true;
         }
-        set(vehicle.rudderInputVar, command.rudder);
+        if (command.changedDirection) {
+            directionChangeTick = phaseTicks;
+            lastProgressPosition = position.copy();
+        }
+
+        //Get into gear for the way it's going.  If it's in gear the other way, stop and shift first, held straight.
+        if (shiftFor(command.reverse, speed)) {
+            tracker.setRudder(0);
+            set(vehicle.rudderInputVar, 0);
+            set(vehicle.throttleVar, 0);
+            set(vehicle.brakeVar, 1);
+            return checkProgress(player, position);
+        }
+        //Only steer once MTS sees it going the way it's meant to, or it'd turn the wrong way.
+        if (vehicle.goingInReverse != command.reverse && speed >= STEER_SETTLE_SPEED) {
+            tracker.setRudder(0);
+            set(vehicle.rudderInputVar, 0);
+        } else {
+            set(vehicle.rudderInputVar, command.rudder);
+        }
 
         //Keep to the planned speed, which slows for turns and steps, and brakes to a stop at the end.
         double targetSpeed = command.targetSpeed;
@@ -843,10 +868,46 @@ final class VehicleSummonJob {
             set(vehicle.throttleVar, targetSpeed > 0.5 ? 0.15 : 0);
             set(vehicle.brakeVar, 0);
         }
+        return checkProgress(player, position);
+    }
 
-        //Check we're getting somewhere.
+    /**
+     * Shifts the vehicle's engines towards the gear for going forward, or backing up if reverse is set.  Returns true
+     * while it's still shifting between forward and reverse: it has to stop first, and is held still meanwhile.  Engines
+     * in neutral, as when they've just started, are put in gear without stopping.
+     */
+    private boolean shiftFor(boolean reverse, double speed) {
+        boolean shifting = false;
+        for (PartEngine engine : getWorkingEngines(false)) {
+            if (!engine.running) {
+                continue;
+            }
+            double gear = engine.currentGearVar.currentValue;
+            if (reverse ? gear < 0 : gear > 0) {
+                continue;
+            }
+            //In gear the wrong way, or in neutral on the way between, as it only shifts a gear a tick.
+            if (gear != 0 || reverse) {
+                shifting = true;
+            }
+            if (gear == 0 || speed < SHIFT_SPEED) {
+                if (reverse) {
+                    engine.shiftDown();
+                } else {
+                    engine.shiftUp();
+                }
+            }
+        }
+        return shifting;
+    }
+
+    /**
+     * Checks the vehicle's getting somewhere, and returns true if the job's over as it's stuck or taken too long.
+     * Stopping to change direction doesn't count as stuck.
+     */
+    private boolean checkProgress(IWrapperPlayer player, Point3D position) {
         if (phaseTicks % STUCK_CHECK_INTERVAL == 0) {
-            boolean stuck = lastProgressPosition.isDistanceToCloserThan(position, 1.5);
+            boolean stuck = phaseTicks - directionChangeTick >= STUCK_CHECK_INTERVAL && lastProgressPosition.isDistanceToCloserThan(position, 1.5);
             lastProgressPosition = position.copy();
             if (stuck || phaseTicks > driveTimeout) {
                 return onStuck(player);
@@ -856,14 +917,15 @@ final class VehicleSummonJob {
     }
 
     /**
-     * True if the player is right in front of the vehicle, where it's about to drive into them.  Routes keep off the
-     * player, but they may have moved since it was planned.  Only just ahead counts: a vehicle pulling up alongside
-     * them passes its nose close by, and stopping then would leave it short.
+     * True if the player is right in front of the vehicle, or right behind it if it's backing up, where it's about to
+     * drive into them.  Routes keep off the player, but they may have moved since it was planned.  Only just ahead
+     * counts: a vehicle pulling up alongside them passes its nose close by, and stopping then would leave it short.
      */
-    private boolean isPlayerInTheWay(IWrapperPlayer player) {
+    private boolean isPlayerInTheWay(IWrapperPlayer player, boolean reverse) {
         Point3D local = player.getPosition().copy().subtract(vehicle.position).reOrigin(vehicle.orientation);
         boolean atHeight = local.y > shape.bottom - 2 && local.y < shape.top;
-        return atHeight && local.z > 0 && local.z < shape.front + STOP_FRONT_DISTANCE && Math.abs(local.x) < shape.side + STOP_SIDE_MARGIN;
+        boolean inLine = reverse ? local.z < 0 && -local.z < shape.back + STOP_FRONT_DISTANCE : local.z > 0 && local.z < shape.front + STOP_FRONT_DISTANCE;
+        return atHeight && inLine && Math.abs(local.x) < shape.side + STOP_SIDE_MARGIN;
     }
 
     /**
@@ -1225,10 +1287,16 @@ final class VehicleSummonJob {
         return engine.definition.generic.type.contains("jet");
     }
 
+    /**Lets go of the controls, and takes it out of reverse if it was backing up, so whoever drives it next isn't caught out.**/
     private void stopControls() {
         set(vehicle.throttleVar, 0);
         set(vehicle.rudderInputVar, 0);
         set(vehicle.brakeVar, 0);
+        for (PartEngine engine : getWorkingEngines(false)) {
+            if (engine.currentGearVar.currentValue < 0) {
+                engine.shiftNeutral();
+            }
+        }
     }
 
     /**Stops and holds the vehicle where it is.  Engines are left running.**/

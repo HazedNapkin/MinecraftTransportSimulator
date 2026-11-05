@@ -28,6 +28,9 @@ final class SummonDriveReport {
     private double worstSpeedError;
     private int fullLockTicks;
     private int slowTicks;
+    /**How many times it stopped to change direction, of the times the route does.**/
+    private int directionChanges;
+    private final int plannedDirectionChanges;
 
     /**Starts a report on driving the route, with the speeds planned along it, planning to set off at plannedStartSpeed.**/
     SummonDriveReport(SummonRoute route, SpeedProfile profile, double cruiseSpeed, double plannedStartSpeed) {
@@ -41,6 +44,7 @@ final class SummonDriveReport {
         }
         this.plannedSeconds = seconds;
         this.routeLength = profile.distances[profile.distances.length - 1];
+        this.plannedDirectionChanges = route.getCusps().size();
     }
 
     /**Records a tick of driving: what the tracker said, and the speed the vehicle's doing.**/
@@ -61,6 +65,9 @@ final class SummonDriveReport {
             ++slowTicks;
         }
         worstSpeedError = Math.max(worstSpeedError, speed - command.targetSpeed);
+        if (command.changedDirection) {
+            ++directionChanges;
+        }
     }
 
     /**
@@ -87,7 +94,7 @@ final class SummonDriveReport {
      */
     String getDrive(int replans) {
         double seconds = ticks / 20D;
-        return String.format("Summon drive: %.1f blocks in %.1f s (planned %.1f s), off route avg %.2f max %.2f, top %.1f of %.1f m/s, worst over speed %.1f m/s, set off at %.1f m/s (planned %.1f), full lock %.0f%%, behind speed %.0f%%, replans %d", routeLength, seconds, plannedSeconds, ticks > 0 ? totalCrossTrack / ticks : 0, worstCrossTrack, topSpeed, cruiseSpeed, worstSpeedError, Double.isNaN(startSpeed) ? 0 : startSpeed, plannedStartSpeed, getPercent(fullLockTicks), getPercent(slowTicks), replans);
+        return String.format("Summon drive: %.1f blocks in %.1f s (planned %.1f s), off route avg %.2f max %.2f, top %.1f of %.1f m/s, worst over speed %.1f m/s, set off at %.1f m/s (planned %.1f), full lock %.0f%%, behind speed %.0f%%, changed direction %d of %d, replans %d", routeLength, seconds, plannedSeconds, ticks > 0 ? totalCrossTrack / ticks : 0, worstCrossTrack, topSpeed, cruiseSpeed, worstSpeedError, Double.isNaN(startSpeed) ? 0 : startSpeed, plannedStartSpeed, getPercent(fullLockTicks), getPercent(slowTicks), directionChanges, plannedDirectionChanges, replans);
     }
 
     private double getPercent(int count) {

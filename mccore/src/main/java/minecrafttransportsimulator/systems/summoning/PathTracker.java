@@ -13,6 +13,11 @@ import java.util.List;
  * <p>
  * The speed is the {@link SpeedProfile}'s at that point, slower if it's well off the route, and no faster than braking
  * gently stops it exactly at the end, worked out from the exact distance left so it doesn't stop short or overrun.
+ * <p>
+ * A route that changes direction is followed a way at a time.  It only looks for where it is along the way it's
+ * going, stops where that ends just as it stops at the end, and then carries on along the next way.  Backing up it
+ * steers by the same route, but corrects heading errors the other way, as backing up turns the vehicle the other way
+ * for the same steering.  Changing gear is up to whoever's driving: the command says which way to be going.
  */
 final class PathTracker {
     /**How it steers and stops.**/
@@ -36,6 +41,11 @@ final class PathTracker {
         double maxCorrectedError = 2;
         /**How many poses on from the last nearest one to look for the nearest one now.**/
         int trackWindow = 24;
+        /**How near where it changes direction, in blocks, and how slow, in m/s, counts as stopped there to go the other way.**/
+        double cuspTolerance = 0.5;
+        double stoppedSpeed = 0.5;
+        /**Least speed to aim for setting off again after changing direction, in m/s, or it'd aim for the stop it set off from.**/
+        double minSpeed = 1;
     }
 
     /**What to do this tick.**/
@@ -46,13 +56,19 @@ final class PathTracker {
         double targetSpeed;
         /**True once the vehicle's at the end.**/
         boolean arrived;
+        /**True if it should be backing up, so in reverse gear.**/
+        boolean reverse;
+        /**True if it just got to where it changes direction, this tick.**/
+        boolean changedDirection;
         /**How far the vehicle is to the left of the route, in blocks, negative to the right.**/
         double crossTrack;
-        /**How far along the route the vehicle is, and how far is left, in blocks.**/
+        /**How far along the route the vehicle is, and how far is left, to the end and to where it next changes direction, in blocks.**/
         double along;
         double remaining;
+        double legRemaining;
     }
 
+    private final SummonRoute route;
     private final List<SummonRoute.Pose> poses;
     private final SpeedProfile profile;
     private final VehicleKinematics kinematics;
@@ -60,15 +76,30 @@ final class PathTracker {
     private final double length;
     /**The segment, from pose segment to segment + 1, the vehicle was last nearest.**/
     private int segment;
+    /**Where each way it goes ends, as pose indices: each change of direction, then the end.  And which it's on.**/
+    private final int[] legEnds;
+    private int leg;
     private double lastRudder;
     private final Command command = new Command();
 
     PathTracker(SummonRoute route, SpeedProfile profile, VehicleKinematics kinematics, Settings settings) {
+        this.route = route;
         this.poses = route.poses;
         this.profile = profile;
         this.kinematics = kinematics;
         this.settings = settings;
         this.length = profile.distances[profile.distances.length - 1];
+        List<Integer> cusps = route.getCusps();
+        this.legEnds = new int[cusps.size() + 1];
+        for (int i = 0; i < cusps.size(); ++i) {
+            legEnds[i] = cusps.get(i);
+        }
+        legEnds[cusps.size()] = poses.size() - 1;
+    }
+
+    /**How many times the route changes direction.**/
+    int getCusps() {
+        return legEnds.length - 1;
     }
 
     /**Starts the steering from the rudder input the vehicle already has, so it doesn't jump.**/
@@ -78,20 +109,22 @@ final class PathTracker {
 
     /**Works out what to do with the vehicle's origin at x,z, facing the yaw, going at the speed in m/s.**/
     Command update(double x, double z, double yaw, double speed) {
-        //Find the nearest point on the route, from the segment it was last nearest on.
-        int last = poses.size() - 1;
+        //Find the nearest point on the route, from the segment it was last nearest on, along the way it's going.
+        int legStart = leg == 0 ? 0 : legEnds[leg - 1];
+        int legEnd = legEnds[leg];
+        boolean reverse = route.leavesInReverse(legStart);
         double nearestDistance = Double.MAX_VALUE;
         double fraction = 0;
         int nearest = segment;
-        for (int i = segment; i < Math.min(last, segment + settings.trackWindow); ++i) {
+        for (int i = segment; i < Math.min(legEnd, segment + settings.trackWindow); ++i) {
             SummonRoute.Pose from = poses.get(i);
             SummonRoute.Pose to = poses.get(i + 1);
             double segmentX = to.x - from.x;
             double segmentZ = to.z - from.z;
             double segmentLengthSquared = segmentX * segmentX + segmentZ * segmentZ;
             double t = segmentLengthSquared > 0 ? ((x - from.x) * segmentX + (z - from.z) * segmentZ) / segmentLengthSquared : 0;
-            //Only the last segment runs on past its end, for when the vehicle's past the end of the route.
-            t = Math.max(0, i == last - 1 ? t : Math.min(1, t));
+            //Only the last segment of the way runs on past its end, for when the vehicle's past where it stops.
+            t = Math.max(0, i == legEnd - 1 ? t : Math.min(1, t));
             double distance = Math.hypot(x - (from.x + segmentX * t), z - (from.z + segmentZ * t));
             if (distance < nearestDistance) {
                 nearestDistance = distance;
@@ -105,6 +138,7 @@ final class PathTracker {
         double segmentLength = profile.distances[segment + 1] - profile.distances[segment];
         command.along = profile.distances[segment] + fraction * segmentLength;
         command.remaining = length - command.along;
+        command.legRemaining = profile.distances[legEnd] - command.along;
 
         //How far off the route it is to the side, and in heading.
         double pathYaw = fraction >= 1 ? to.yaw : from.yaw + VehicleSummonFlight.clampAngle(to.yaw - from.yaw) * fraction;
@@ -116,22 +150,43 @@ final class PathTracker {
         double headingError = Math.toRadians(VehicleSummonFlight.clampAngle(yaw - pathYaw));
 
         //Steer for the route's curvature a moment ahead, and to bring it back onto the route over the correction distance.
-        double curvature = command.remaining > 0 ? getCurvatureAt(command.along + Math.max(0, speed) * settings.previewTime) : 0;
+        //It only looks ahead as far as the way it's going goes, as the steering after it is for going the other way.
+        double previewLimit = leg == legEnds.length - 1 ? Double.MAX_VALUE : profile.distances[Math.max(legStart, legEnd - 1)];
+        double curvature = command.legRemaining > 0 ? getCurvatureAt(Math.min(previewLimit, command.along + Math.max(0, speed) * settings.previewTime)) : 0;
         double correction = Math.max(settings.minCorrectionDistance, speed * settings.correctionTime);
         double error = Math.max(-settings.maxCorrectedError, Math.min(settings.maxCorrectedError, command.crossTrack));
-        curvature -= 2 * Math.sin(headingError) / correction + error / (correction * correction);
+        //Facing left of the route turns it further left driving forward, but back right backing up, so that's
+        //corrected the other way.  Being left of the route needs steering right either way, as backing up both
+        //turns it and moves it the other way.
+        double headingCorrection = 2 * Math.sin(headingError) / correction;
+        curvature += (reverse ? headingCorrection : -headingCorrection) - error / (correction * correction);
         double rudder = kinematics.getRudderInput(curvature, Math.max(speed, 1));
         lastRudder += Math.max(-settings.maxSteeringRate, Math.min(settings.maxSteeringRate, rudder - lastRudder));
         command.rudder = lastRudder;
 
-        //Keep to the planned speed, slower if well off the route, and no faster than stops it right at the end.
-        double targetSpeed = Math.min(getSpeedAt(command.along), Math.sqrt(2 * settings.braking * Math.max(0, command.remaining)));
+        //Keep to the planned speed, slower if well off the route, and no faster than stops it right where it stops.
+        double plannedSpeed = getSpeedAt(command.along);
+        if (leg > 0) {
+            plannedSpeed = Math.max(plannedSpeed, settings.minSpeed);
+        }
+        double targetSpeed = Math.min(plannedSpeed, Math.sqrt(2 * settings.braking * Math.max(0, command.legRemaining)));
         double offRoute = Math.abs(command.crossTrack);
         if (offRoute > settings.offRouteDistance) {
             targetSpeed *= settings.offRouteDistance / offRoute;
         }
         command.targetSpeed = targetSpeed;
-        command.arrived = command.remaining <= settings.arriveTolerance;
+        command.reverse = reverse;
+        command.changedDirection = false;
+        command.arrived = leg == legEnds.length - 1 && command.remaining <= settings.arriveTolerance;
+
+        //Once it's stopped where it changes direction, or gone past, go the other way.
+        if (leg < legEnds.length - 1 && (command.legRemaining <= 0 || (command.legRemaining <= settings.cuspTolerance && speed < settings.stoppedSpeed))) {
+            ++leg;
+            segment = legEnd;
+            command.reverse = route.leavesInReverse(legEnd);
+            command.changedDirection = true;
+            command.targetSpeed = 0;
+        }
         return command;
     }
 

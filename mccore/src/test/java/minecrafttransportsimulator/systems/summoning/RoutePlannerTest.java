@@ -148,12 +148,12 @@ public class RoutePlannerTest {
     }
 
     /**A dead-end alley 4 blocks wide running out along -x from the open ground at x = -14, closed at x = -31.**/
-    private static FakeTerrain alley() {
+    static FakeTerrain alley() {
         return FakeTerrain.flat(60).fill(-31, 0, 14, -14, 2, 14).fill(-31, 0, 19, -14, 2, 19).fill(-31, 0, 14, -31, 2, 19);
     }
 
     /**A dead-end street 7 blocks wide, too narrow to turn round in, running out along -x from x = -10 to x = -51.**/
-    private static FakeTerrain narrowStreet() {
+    static FakeTerrain narrowStreet() {
         return FakeTerrain.flat(60).fill(-51, 0, 10, -10, 2, 10).fill(-51, 0, 18, -10, 2, 18).fill(-51, 0, 10, -51, 2, 18);
     }
 

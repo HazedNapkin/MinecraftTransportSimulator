@@ -2,7 +2,6 @@ package minecrafttransportsimulator.systems.summoning;
 
 import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
-import minecrafttransportsimulator.blocks.components.ABlockBase.Axis;
 import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 
 /**
@@ -10,11 +9,12 @@ import minecrafttransportsimulator.mcinterface.AWrapperWorld;
  * against a made-up world in tests.  Answers aren't cached here: callers cache what they need.
  */
 interface TerrainQuery {
-    /**Returns true if the block has a solid top to stand on.**/
-    boolean isSolid(int x, int y, int z);
+    /**Flags from {@link #getBlock}: the block has a solid top to stand on, and the block is a liquid.**/
+    int SOLID = AWrapperWorld.BLOCK_SOLID_TOP;
+    int LIQUID = AWrapperWorld.BLOCK_LIQUID;
 
-    /**Returns true if the block is a liquid.**/
-    boolean isLiquid(int x, int y, int z);
+    /**Returns what the block is, as {@link #SOLID} and {@link #LIQUID} flags.  One world lookup answers both.**/
+    int getBlock(int x, int y, int z);
 
     /**Returns true if nothing in the block column at x,z collides between the heights, slightly inset from the column's sides.**/
     boolean isClear(int x, int z, double bottomY, double topY);
@@ -29,13 +29,8 @@ interface TerrainQuery {
     static TerrainQuery of(AWrapperWorld world) {
         return new TerrainQuery() {
             @Override
-            public boolean isSolid(int x, int y, int z) {
-                return world.isBlockSolid(new Point3D(x + 0.5, y + 0.5, z + 0.5), Axis.UP);
-            }
-
-            @Override
-            public boolean isLiquid(int x, int y, int z) {
-                return world.isBlockLiquid(new Point3D(x + 0.5, y + 0.5, z + 0.5));
+            public int getBlock(int x, int y, int z) {
+                return world.getBlockSurfaceFlags(new Point3D(x + 0.5, y + 0.5, z + 0.5));
             }
 
             @Override

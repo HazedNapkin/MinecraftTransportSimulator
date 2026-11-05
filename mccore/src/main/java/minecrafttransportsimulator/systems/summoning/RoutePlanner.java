@@ -119,7 +119,10 @@ final class RoutePlanner {
                 }
                 case GOAL_FIELD: {
                     if (goalField.step(left)) {
-                        if (start != null) {
+                        if (start != null && goalField.getTargetCell() == null) {
+                            //There's no way from where the vehicle is to anywhere it could pull up.
+                            stage = Stage.DONE;
+                        } else if (start != null) {
                             startSpawnField(null);
                         } else {
                             spawns = new SpawnSelector(checker, goalField, getSpawnSettings(), player, lookYaw);
@@ -240,7 +243,16 @@ final class RoutePlanner {
 
     /**Floods out from where each goal's run-in starts, which is where the route search starts from too.**/
     private void startGoalField() {
-        goalField = new FlowField(checker.terrain, getFieldSettings(true), (int) Math.floor(player.x), (int) Math.floor(player.z));
+        FlowField.Settings fieldSettings = getFieldSettings(true);
+        if (start != null) {
+            //It only needs to reach where the vehicle is, however far that is to drive, and a little past for the search.
+            fieldSettings.maxDistance = Double.POSITIVE_INFINITY;
+        }
+        goalField = new FlowField(checker.terrain, fieldSettings, (int) Math.floor(player.x), (int) Math.floor(player.z));
+        if (start != null) {
+            //The vehicle's origin may be well into somewhere tight, like a garage, with its front out where there's room.
+            goalField.setTarget((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), (int) Math.ceil(checker.shape.bodyLength / 2) + 1, FIELD_MARGIN + checker.shape.bodyLength);
+        }
         double runIn = getSearchSettings().runIn;
         for (ArrivalPlanner.Goal goal : goals) {
             double length = Math.min(runIn, goal.runIn);

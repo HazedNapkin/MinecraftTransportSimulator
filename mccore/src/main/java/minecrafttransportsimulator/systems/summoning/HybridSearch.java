@@ -140,9 +140,9 @@ final class HybridSearch {
     private boolean finished;
     private Node found;
     /**The cheapest place to set off from found so far, its cost, and how many states had been expanded when the first was found.**/
-    private Node bestFinish;
-    private double bestFinishCost = Double.MAX_VALUE;
     private int firstFinishExpansion = -1;
+    /**True once it's out of states or time, and is only taking the cheapest place to set off from that's queued.**/
+    private boolean settling;
 
     /**
      * Makes a search for a route to any of the goals, guided by the flow field, which may be null.  For a vehicle
@@ -187,31 +187,36 @@ final class HybridSearch {
         long startTime = System.nanoTime();
         while (!finished && budget-- > 0 && System.nanoTime() - startTime < maxNanos) {
             Entry entry = open.poll();
-            if (entry == null || ++expansions > settings.maxExpansions || (firstFinishExpansion >= 0 && expansions - firstFinishExpansion > FINISH_GRACE)) {
-                //Out of states or time.  Settle for the cheapest place to set off from found, if any.
-                found = bestFinish;
+            if (entry == null) {
+                //Nowhere left to set off from.
                 finished = true;
                 break;
             }
+            if (!settling && (++expansions > settings.maxExpansions || (firstFinishExpansion >= 0 && expansions - firstFinishExpansion > FINISH_GRACE))) {
+                //Out of states or time.  Settle for the cheapest place to set off from found, if any, which is the
+                //cheapest still queued, as finding one that's cheapest ends the search.
+                settling = true;
+            }
             Node current = entry.node;
             if (entry.finish) {
+                if (entry.unseen && isVisible(current)) {
+                    //It was queued as if it can't be seen, as that takes raycasts.  It can, so it may not be cheapest.
+                    open.add(new Entry(current, entry.f + heuristicWeight * SpawnSelector.VISIBLE_COST, true, false));
+                    continue;
+                }
                 //The cheapest way to finish, now nothing left could beat it.
                 found = current;
                 finished = true;
                 break;
             }
-            if (current.closed || nodes.get(current.key) != current) {
+            if (settling || current.closed || nodes.get(current.key) != current) {
                 continue;
             }
             current.closed = true;
             double finishCost = getFinishCost(current);
             if (!Double.isNaN(finishCost)) {
-                double f = current.g + heuristicWeight * finishCost;
-                open.add(new Entry(current, f, true));
-                if (f < bestFinishCost) {
-                    bestFinish = current;
-                    bestFinishCost = f;
-                }
+                //Placed vehicles are queued to set off as if they can't be seen there, and checked when they come up.
+                open.add(new Entry(current, current.g + heuristicWeight * finishCost, true, start == null));
                 if (firstFinishExpansion < 0) {
                     firstFinishExpansion = expansions;
                 }
@@ -263,9 +268,13 @@ final class HybridSearch {
         if (node.reverse || node.length < settings.minLength || Math.hypot(node.x - player.x, node.z - player.z) < settings.minDistance || !checker.canPark(node.x, node.y, node.z, node.yaw)) {
             return Double.NaN;
         }
-        boolean visible = visibleCache.computeIfAbsent(node.key, k -> SpawnSelector.isVisible(checker, player, node.x, node.y, node.z));
         double off = node.length - settings.targetLength;
-        return (off < 0 ? -off * SHORT_LENGTH_COST : off * LONG_LENGTH_COST) + (visible ? SpawnSelector.VISIBLE_COST : 0);
+        return off < 0 ? -off * SHORT_LENGTH_COST : off * LONG_LENGTH_COST;
+    }
+
+    /**True if the player can see a vehicle placed at the state.  Less what it costs to be seen, that's its cost to set off from.**/
+    private boolean isVisible(Node node) {
+        return visibleCache.computeIfAbsent(node.key, k -> SpawnSelector.isVisible(checker, player, node.x, node.y, node.z));
     }
 
     /**
@@ -501,11 +510,18 @@ final class HybridSearch {
         final Node node;
         final double f;
         final boolean finish;
+        /**True if it's to finish at, and queued as if the player can't see it there, which isn't checked yet.**/
+        final boolean unseen;
 
         Entry(Node node, double f, boolean finish) {
+            this(node, f, finish, false);
+        }
+
+        Entry(Node node, double f, boolean finish, boolean unseen) {
             this.node = node;
             this.f = f;
             this.finish = finish;
+            this.unseen = unseen;
         }
     }
 }

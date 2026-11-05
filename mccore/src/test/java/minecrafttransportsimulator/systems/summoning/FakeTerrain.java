@@ -35,13 +35,13 @@ final class FakeTerrain implements TerrainQuery {
     }
 
     @Override
-    public boolean isSolid(int x, int y, int z) {
-        return solid.contains(TerrainMap.blockKey(x, y, z));
+    public int getBlock(int x, int y, int z) {
+        long key = TerrainMap.blockKey(x, y, z);
+        return (solid.contains(key) ? SOLID : 0) | (liquid.contains(key) ? LIQUID : 0);
     }
 
-    @Override
-    public boolean isLiquid(int x, int y, int z) {
-        return liquid.contains(TerrainMap.blockKey(x, y, z));
+    boolean isSolid(int x, int y, int z) {
+        return solid.contains(TerrainMap.blockKey(x, y, z));
     }
 
     @Override

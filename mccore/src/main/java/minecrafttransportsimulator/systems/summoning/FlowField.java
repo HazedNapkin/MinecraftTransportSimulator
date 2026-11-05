@@ -80,6 +80,10 @@ final class FlowField {
     /**Cells to spread from, each with the distance it was queued at, nearest first.**/
     private final PriorityQueue<Queued> open = new PriorityQueue<>((a, b) -> Double.compare(a.distance, b.distance));
     private boolean finished;
+    /**Where the flood only needs to reach, and how far past it to carry on, if set: see {@link #setTarget}.**/
+    private int[] target;
+    private double targetMargin;
+    private Cell targetCell;
 
     /**Makes a flood spreading out from no further than settings.radius from the center.  Add sources before stepping it.**/
     FlowField(TerrainMap terrain, Settings settings, int centerX, int centerZ) {
@@ -110,6 +114,21 @@ final class FlowField {
         return true;
     }
 
+    /**
+     * Has the flood stop once it's spread margin blocks past the first cell it reaches within radius columns of x,z and a
+     * block of y, rather than spreading as far as it may.  For floods that only need to reach one place, like where a
+     * vehicle that's already nearby is.  Call before stepping.
+     */
+    void setTarget(int x, int y, int z, int radius, double margin) {
+        target = new int[] { x, y, z, radius };
+        targetMargin = margin;
+    }
+
+    /**The cell the flood reached nearest its target, if it's set and the flood got there, or null.**/
+    Cell getTargetCell() {
+        return targetCell;
+    }
+
     /**Spreads the flood until it's done or maxNanos pass.  Returns true once it's done.**/
     boolean step(long maxNanos) {
         long startTime = System.nanoTime();
@@ -125,6 +144,10 @@ final class FlowField {
                 continue;
             }
             current.closed = true;
+            if (target != null && targetCell == null && Math.abs(current.x - target[0]) <= target[3] && Math.abs(current.z - target[2]) <= target[3] && Math.abs(current.y - target[1]) <= 1) {
+                targetCell = current;
+                settings.maxDistance = Math.min(settings.maxDistance, current.distance + targetMargin);
+            }
             for (int i = 0; i < NEIGHBOURS.length; ++i) {
                 spreadTo(current, NEIGHBOURS[i][0], NEIGHBOURS[i][1], i >= 4);
             }

@@ -22,8 +22,8 @@ final class TerrainMap {
     static final double STEP_CLEARANCE = 0.6;
 
     private final TerrainQuery query;
-    private final Map<Long, Boolean> solidCache = new HashMap<>();
-    private final Map<Long, Boolean> liquidCache = new HashMap<>();
+    /**What each block is, as {@link TerrainQuery#getBlock} flags.  Solid and liquid are asked together, as they're one lookup.**/
+    private final Map<Long, Integer> blockCache = new HashMap<>();
     private final Map<Long, Map<Integer, Boolean>> clearCache = new HashMap<>();
     /**Whether each chunk is loaded, keyed by {@link VehicleShape#columnKey(int, int)} of the chunk.**/
     private final Map<Long, Boolean> loadedCache = new HashMap<>();
@@ -34,11 +34,15 @@ final class TerrainMap {
 
     /**Returns true if the block has a solid top to stand on.**/
     boolean isSolid(int x, int y, int z) {
-        return solidCache.computeIfAbsent(blockKey(x, y, z), k -> query.isSolid(x, y, z));
+        return (getBlock(x, y, z) & TerrainQuery.SOLID) != 0;
     }
 
     boolean isLiquid(int x, int y, int z) {
-        return liquidCache.computeIfAbsent(blockKey(x, y, z), k -> query.isLiquid(x, y, z));
+        return (getBlock(x, y, z) & TerrainQuery.LIQUID) != 0;
+    }
+
+    private int getBlock(int x, int y, int z) {
+        return blockCache.computeIfAbsent(blockKey(x, y, z), k -> query.getBlock(x, y, z));
     }
 
     /**Returns true if the column's chunk is loaded.**/

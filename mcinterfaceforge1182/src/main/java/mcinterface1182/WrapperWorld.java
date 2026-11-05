@@ -537,6 +537,15 @@ public class WrapperWorld extends AWrapperWorld {
     }
 
     @Override
+    public int getBlockSurfaceFlags(Point3D position) {
+        BlockPos pos = new BlockPos(position.x, position.y, position.z);
+        BlockState state = world.getBlockState(pos);
+        Block block = state.getBlock();
+        int flags = block != null && !block.equals(Blocks.BARRIER) && state.isFaceSturdy(world, pos, Direction.UP) ? BLOCK_SOLID_TOP : 0;
+        return state.getMaterial().isLiquid() ? flags | BLOCK_LIQUID : flags;
+    }
+
+    @Override
     public boolean isBlockBelowBottomSlab(Point3D position) {
         BlockState state = world.getBlockState(new BlockPos(position.x, position.y - 1, position.z));
         return state.getBlock() instanceof SlabBlock && state.getValue(SlabBlock.TYPE) == SlabType.BOTTOM;

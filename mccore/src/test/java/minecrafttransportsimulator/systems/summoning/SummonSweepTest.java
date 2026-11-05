@@ -171,7 +171,7 @@ public class SummonSweepTest {
         result.raycasts = counter.lines;
         result.expansions = planner.getSearchExpansions();
         SummonRoute route = planner.getRoute();
-        String line = String.format("SWEEP %-5s %-7s | %5.0f %3d %5d | %6d %6d %6d %6d %5d |", vehicle.name, place.name, result.millis, ticks + 1, result.expansions, counter.solid, counter.liquid, counter.clear, result.worldCalls, counter.lines);
+        String line = String.format("SWEEP %-5s %-7s | %5.0f %3d %5d | %6d %6d %6d %5d |", vehicle.name, place.name, result.millis, ticks + 1, result.expansions, counter.blocks, counter.clear, result.worldCalls, counter.lines);
         if (route == null) {
             line += String.format(" none (%d goals)", planner.getGoals().size());
             if (place.roomy) {
@@ -207,7 +207,7 @@ public class SummonSweepTest {
             }
         }
         List<String> failures = new ArrayList<>();
-        System.out.println("SWEEP veh   place   |    ms tck expnd |  solid liquid  clear  world  rays | route   len seen c back | drive stray end  yaw   secs  top");
+        System.out.println("SWEEP veh   place   |    ms tck expnd | blocks  clear  world  rays | route   len seen c back | drive stray end  yaw   secs  top");
         int found = 0;
         int hidden = 0;
         long worldCalls = 0;

@@ -6,8 +6,6 @@ package minecrafttransportsimulator.systems.summoning;
  */
 final class CountingTerrain implements TerrainQuery {
     private final TerrainQuery world;
-    int solid;
-    int liquid;
     int blocks;
     int clear;
     int loaded;
@@ -17,21 +15,15 @@ final class CountingTerrain implements TerrainQuery {
         this.world = world;
     }
 
-    /**Every block lookup made: solid, liquid, both at once and collision checks.  Raycasts are counted apart.**/
+    /**Every block lookup made: what blocks are, collision checks and chunk checks.  Raycasts are counted apart.**/
     int getWorldCalls() {
-        return solid + liquid + blocks + clear + loaded;
+        return blocks + clear + loaded;
     }
 
     @Override
-    public boolean isSolid(int x, int y, int z) {
-        ++solid;
-        return world.isSolid(x, y, z);
-    }
-
-    @Override
-    public boolean isLiquid(int x, int y, int z) {
-        ++liquid;
-        return world.isLiquid(x, y, z);
+    public int getBlock(int x, int y, int z) {
+        ++blocks;
+        return world.getBlock(x, y, z);
     }
 
     @Override

@@ -245,6 +245,20 @@ public abstract class AWrapperWorld extends EntityManager {
      */
     public abstract boolean isBlockLiquid(Point3D position);
 
+    /**Flag from {@link #getBlockSurfaceFlags(Point3D)}: the block's top is solid.**/
+    public static final int BLOCK_SOLID_TOP = 1;
+    /**Flag from {@link #getBlockSurfaceFlags(Point3D)}: the block is liquid.**/
+    public static final int BLOCK_LIQUID = 2;
+
+    /**
+     * Returns whether the block's top is solid, as {@link #isBlockSolid(Point3D, Axis)} with {@link Axis#UP} would, and
+     * whether it's liquid, as {@link #isBlockLiquid(Point3D)} would, as {@link #BLOCK_SOLID_TOP} and {@link #BLOCK_LIQUID}
+     * flags.  For things that ask both of many blocks, like route planning: interfaces look the block up once for both.
+     */
+    public int getBlockSurfaceFlags(Point3D position) {
+        return (isBlockSolid(position, Axis.UP) ? BLOCK_SOLID_TOP : 0) | (isBlockLiquid(position) ? BLOCK_LIQUID : 0);
+    }
+
     /**
      * Returns true if the block below the passed-in position is a slab, but only the
      * bottom portion of the slab.  May be used to adjust renders to do half-block

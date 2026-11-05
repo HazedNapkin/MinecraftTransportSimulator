@@ -43,6 +43,9 @@ final class RoutePlanner {
         /**How many times what driving forward costs backing up costs, and the cost of each change of direction, in blocks.**/
         double reverseFactor = 3;
         double cuspCost = 5;
+        /**True if the vehicle can turn on the spot, as vehicles that skid steer can, and how fast, in degrees a second.**/
+        boolean allowPivot;
+        double pivotRate = 45;
     }
 
     private enum Stage {
@@ -83,6 +86,7 @@ final class RoutePlanner {
         settings.arrival.turnRadius = settings.turnRadius;
         settings.arrival.maxUp = settings.maxUp;
         settings.arrival.maxDown = settings.maxDown;
+        settings.arrival.canPivot = settings.allowPivot;
         this.arrival = new ArrivalPlanner(checker, settings.arrival, player, lookYaw);
     }
 
@@ -292,6 +296,9 @@ final class RoutePlanner {
         search.allowReverse = settings.allowReverse && start != null;
         search.reverseFactor = settings.reverseFactor;
         search.cuspCost = settings.cuspCost;
+        search.allowPivot = settings.allowPivot;
+        search.pivotRate = settings.pivotRate;
+        search.pivotPlayerClearance = ArrivalPlanner.getPivotPlayerClearance(settings.arrival);
         //Each way it goes should be a fair part of its length, or the changes of direction are just shuffling.
         search.minGearLength = Math.max(search.minGearLength, checker.shape.bodyLength / 2);
         return search;

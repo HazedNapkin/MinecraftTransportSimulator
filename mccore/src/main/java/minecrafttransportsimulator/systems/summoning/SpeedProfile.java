@@ -10,9 +10,9 @@ import java.util.List;
  * Each pose gets the fastest speed it can be taken at: no faster than the vehicle drives in, slow enough that its
  * steering can make the turn with some to spare (MTS vehicles steer less the faster they go), slow enough that it
  * doesn't need more grip than a car has turning, slow over steps, and slow backing up.  Where it changes direction it
- * stops.  Then a pass back from the end slows each pose to what braking gently from it can get down to the speeds
- * after it, ending at a stop, and a pass forward from the start limits each to what speeding up gently from the speed
- * it sets off at, or from each stop, can reach.
+ * stops, and so it does where it turns on the spot.  Then a pass back from the end slows each pose to what braking
+ * gently from it can get down to the speeds after it, ending at a stop, and a pass forward from the start limits
+ * each to what speeding up gently from the speed it sets off at, or from each stop, can reach.
  */
 final class SpeedProfile {
     /**What limits the speeds, in m/s, m/s per second and blocks.**/
@@ -64,7 +64,7 @@ final class SpeedProfile {
             if (pose.reverse || route.leavesInReverse(i)) {
                 speed = Math.min(speed, settings.reverseSpeed);
             }
-            speeds[i] = route.isCusp(i) ? 0 : Math.max(settings.minSpeed, speed);
+            speeds[i] = route.isStop(i) ? 0 : Math.max(settings.minSpeed, speed);
         }
         speeds[count - 1] = 0;
         for (int i = count - 2; i >= 0; --i) {

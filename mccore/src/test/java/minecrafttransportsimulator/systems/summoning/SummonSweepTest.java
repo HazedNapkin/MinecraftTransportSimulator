@@ -67,6 +67,8 @@ public class SummonSweepTest {
         SummonRoute.Pose start;
         /**The vehicles to summon here, or null for all of them.**/
         List<String> only;
+        /**True if the vehicles skid steer, so turn on the spot rather than backing up.**/
+        boolean skidSteer;
 
         Place(String name, FakeTerrain terrain, double playerY, boolean roomy) {
             this.name = name;
@@ -79,6 +81,12 @@ public class SummonSweepTest {
         Place from(SummonRoute.Pose start, String... only) {
             this.start = start;
             this.only = Arrays.asList(only);
+            return this;
+        }
+
+        /**Makes the vehicles skid steer.**/
+        Place skidSteering() {
+            skidSteer = true;
             return this;
         }
 
@@ -132,6 +140,10 @@ public class SummonSweepTest {
         places.add(new Place("alley", RoutePlannerTest.alley(), 0, true).from(new SummonRoute.Pose(-27.5, 0, 17, -90, 0), "car"));
         places.add(new Place("street", RoutePlannerTest.narrowStreet(), 0, true).from(new SummonRoute.Pose(-40.5, 0, 14.5, -90, 0), "car"));
         places.add(new Place("cramped", passage(), 0, true).from(new SummonRoute.Pose(0.5, 0, 34.5, 0, 0), "car", "bike"));
+
+        //Skid steering vehicles nosed into a bay too narrow to turn round in, and out in the open.
+        places.add(new Place("bay", FakeTerrain.flat(80).fill(-31, 0, 13, -14, 2, 13).fill(-31, 0, 21, -14, 2, 21).fill(-31, 0, 13, -31, 2, 21), 0, true).from(new SummonRoute.Pose(-26.5, 0, 17.5, -90, 0), "car", "bike").skidSteering());
+        places.add(new Place("skidopen", FakeTerrain.flat(80), 0, true).from(new SummonRoute.Pose(-14.5, 0, 16.5, -90, 0), "car", "tank").skidSteering());
         return places;
     }
 
@@ -154,7 +166,8 @@ public class SummonSweepTest {
     private static Result run(Place place, Vehicle vehicle, List<String> failures) {
         RoutePlanner.Settings settings = new RoutePlanner.Settings();
         settings.turnRadius = TURN_RADIUS_MARGIN * vehicle.kinematics.getTurnRadius(TURN_SPEED);
-        settings.allowReverse = place.start != null;
+        settings.allowReverse = place.start != null && !place.skidSteer;
+        settings.allowPivot = place.skidSteer;
         CountingTerrain counter = new CountingTerrain(place.terrain);
         RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(counter), vehicle.shape), vehicle.kinematics, settings, place.player, 0);
         if (place.start != null) {
@@ -185,8 +198,8 @@ public class SummonSweepTest {
                 result.hidden = !SpawnSelector.isVisible(new PoseChecker(new TerrainMap(place.terrain), vehicle.shape), place.player, first.x, first.y, first.z);
                 seen = result.hidden ? "hid " : "seen";
             }
-            DriveSimulator.Drive drive = DriveSimulator.drive(route, vehicle.kinematics, route.placed ? Double.MAX_VALUE : 0, 0, 0, 0);
-            line += String.format(" found %5.1f %s %d %4.1f | %s %4.2f %4.2f %4.1f %5.1f %4.1f", route.getLength(), seen, route.getCusps().size(), route.getReverseLength(), drive.arrived ? "ok  " : "FAIL", drive.worstCrossTrack, drive.getEndError(route), drive.getYawError(route), drive.ticks / 20D, drive.topSpeed);
+            DriveSimulator.Drive drive = DriveSimulator.drive(route, vehicle.kinematics, route.placed ? Double.MAX_VALUE : 0, 0, 0, 0, place.skidSteer);
+            line += String.format(" found %5.1f %s %d %4.1f %3.0f | %s %4.2f %4.2f %4.1f %5.1f %4.1f", route.getLength(), seen, route.getCusps().size(), route.getReverseLength(), route.getPivotDegrees(), drive.arrived ? "ok  " : "FAIL", drive.worstCrossTrack, drive.getEndError(route), drive.getYawError(route), drive.ticks / 20D, drive.topSpeed);
             if (!drive.arrived || drive.worstCrossTrack > 0.6 || drive.getEndError(route) > 0.5 || drive.getYawError(route) > 5) {
                 failures.add(vehicle.name + " drove " + place.name + " badly");
             }
@@ -207,7 +220,7 @@ public class SummonSweepTest {
             }
         }
         List<String> failures = new ArrayList<>();
-        System.out.println("SWEEP veh   place   |    ms tck expnd first  near fail | blocks  clear  world  rays | route   len seen c back | drive stray end  yaw   secs  top");
+        System.out.println("SWEEP veh   place   |    ms tck expnd first  near fail | blocks  clear  world  rays | route   len seen c back piv | drive stray end  yaw   secs  top");
         int found = 0;
         int hidden = 0;
         long worldCalls = 0;

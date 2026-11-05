@@ -2,6 +2,8 @@ package minecrafttransportsimulator.systems.summoning;
 
 import java.util.List;
 
+import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
+
 /**
  * Steers a vehicle along a route and says how fast to go, one tick at a time.
  * <p>
@@ -18,6 +20,10 @@ import java.util.List;
  * going, stops where that ends just as it stops at the end, and then carries on along the next way.  Backing up it
  * steers by the same route, but corrects heading errors the other way, as backing up turns the vehicle the other way
  * for the same steering.  Changing gear is up to whoever's driving: the command says which way to be going.
+ * <p>
+ * Where the route turns on the spot, it stops, then steers to turn it to the yaw the turn ends at, the more lock the
+ * further it has to go, until it's near enough that.  The command says it's turning on the spot, which a vehicle that
+ * skid steers does stopped and in neutral, and the steering is what turns it.
  */
 final class PathTracker {
     /**How it steers and stops.**/
@@ -46,6 +52,12 @@ final class PathTracker {
         double stoppedSpeed = 0.5;
         /**Least speed to aim for setting off again after changing direction, in m/s, or it'd aim for the stop it set off from.**/
         double minSpeed = 1;
+        /**
+         * How fast the vehicle turns on the spot at full lock, in degrees a tick, and how near the yaw it's turning to
+         * counts as there, in degrees.  MTS turns skid steering vehicles a twentieth of the steering angle a tick.
+         */
+        double pivotRate = EntityVehicleF_Physics.MAX_RUDDER_ANGLE / 20;
+        double pivotTolerance = 1;
     }
 
     /**What to do this tick.**/
@@ -58,8 +70,10 @@ final class PathTracker {
         boolean arrived;
         /**True if it should be backing up, so in reverse gear.**/
         boolean reverse;
-        /**True if it just got to where it changes direction, this tick.**/
+        /**True if it just got to where it changes direction, this tick, or started or finished turning on the spot.**/
         boolean changedDirection;
+        /**True if it should be turning on the spot, stopped and in neutral, steering with the rudder.**/
+        boolean pivot;
         /**How far the vehicle is to the left of the route, in blocks, negative to the right.**/
         double crossTrack;
         /**How far along the route the vehicle is, and how far is left, to the end and to where it next changes direction, in blocks.**/
@@ -76,8 +90,8 @@ final class PathTracker {
     private final double length;
     /**The segment, from pose segment to segment + 1, the vehicle was last nearest.**/
     private int segment;
-    /**Where each way it goes ends, as pose indices: each change of direction, then the end.  And which it's on.**/
-    private final int[] legEnds;
+    /**Each way it goes, as {@link SummonRoute#getLegs()} has them, and which it's on.**/
+    private final List<int[]> legs;
     private int leg;
     private double lastRudder;
     private final Command command = new Command();
@@ -89,17 +103,12 @@ final class PathTracker {
         this.kinematics = kinematics;
         this.settings = settings;
         this.length = profile.distances[profile.distances.length - 1];
-        List<Integer> cusps = route.getCusps();
-        this.legEnds = new int[cusps.size() + 1];
-        for (int i = 0; i < cusps.size(); ++i) {
-            legEnds[i] = cusps.get(i);
-        }
-        legEnds[cusps.size()] = poses.size() - 1;
+        this.legs = route.getLegs();
     }
 
     /**How many times the route changes direction.**/
     int getCusps() {
-        return legEnds.length - 1;
+        return route.getCusps().size();
     }
 
     /**Starts the steering from the rudder input the vehicle already has, so it doesn't jump.**/
@@ -109,9 +118,13 @@ final class PathTracker {
 
     /**Works out what to do with the vehicle's origin at x,z, facing the yaw, going at the speed in m/s.**/
     Command update(double x, double z, double yaw, double speed) {
+        int legStart = legs.get(leg)[0];
+        int legEnd = legs.get(leg)[1];
+        if (legs.get(leg)[2] == SummonRoute.LEG_PIVOT) {
+            return pivot(legStart, legEnd, yaw, speed);
+        }
+        command.pivot = false;
         //Find the nearest point on the route, from the segment it was last nearest on, along the way it's going.
-        int legStart = leg == 0 ? 0 : legEnds[leg - 1];
-        int legEnd = legEnds[leg];
         boolean reverse = route.leavesInReverse(legStart);
         double nearestDistance = Double.MAX_VALUE;
         double fraction = 0;
@@ -151,7 +164,7 @@ final class PathTracker {
 
         //Steer for the route's curvature a moment ahead, and to bring it back onto the route over the correction distance.
         //It only looks ahead as far as the way it's going goes, as the steering after it is for going the other way.
-        double previewLimit = leg == legEnds.length - 1 ? Double.MAX_VALUE : profile.distances[Math.max(legStart, legEnd - 1)];
+        double previewLimit = leg == legs.size() - 1 ? Double.MAX_VALUE : profile.distances[Math.max(legStart, legEnd - 1)];
         double curvature = command.legRemaining > 0 ? getCurvatureAt(Math.min(previewLimit, command.along + Math.max(0, speed) * settings.previewTime)) : 0;
         double correction = Math.max(settings.minCorrectionDistance, speed * settings.correctionTime);
         double error = Math.max(-settings.maxCorrectedError, Math.min(settings.maxCorrectedError, command.crossTrack));
@@ -177,15 +190,55 @@ final class PathTracker {
         command.targetSpeed = targetSpeed;
         command.reverse = reverse;
         command.changedDirection = false;
-        command.arrived = leg == legEnds.length - 1 && command.remaining <= settings.arriveTolerance;
+        command.arrived = leg == legs.size() - 1 && command.remaining <= settings.arriveTolerance;
 
-        //Once it's stopped where it changes direction, or gone past, go the other way.
-        if (leg < legEnds.length - 1 && (command.legRemaining <= 0 || (command.legRemaining <= settings.cuspTolerance && speed < settings.stoppedSpeed))) {
+        //Once it's stopped where it changes direction or turns on the spot, or gone past, go on to that.
+        if (leg < legs.size() - 1 && (command.legRemaining <= 0 || (command.legRemaining <= settings.cuspTolerance && speed < settings.stoppedSpeed))) {
             ++leg;
             segment = legEnd;
-            command.reverse = route.leavesInReverse(legEnd);
+            command.reverse = legs.get(leg)[2] == SummonRoute.LEG_REVERSE;
             command.changedDirection = true;
             command.targetSpeed = 0;
+        }
+        return command;
+    }
+
+    /**
+     * Turns the vehicle on the spot from the first pose to the yaw of the last, once it's stopped.  The steering is
+     * what turns it this tick, held to full lock and to how fast the wheel turns, and it's done once it's near enough.
+     */
+    private Command pivot(int start, int end, double yaw, double speed) {
+        double error = VehicleSummonFlight.clampAngle(poses.get(end).yaw - yaw);
+        command.pivot = true;
+        command.reverse = false;
+        command.changedDirection = false;
+        command.targetSpeed = 0;
+        command.crossTrack = 0;
+        command.along = profile.distances[start];
+        command.remaining = length - command.along;
+        command.legRemaining = 0;
+        command.arrived = false;
+        double rudder = 0;
+        if (speed < settings.stoppedSpeed) {
+            //Positive rudder turns it right, which is yaw falling, by the rate in proportion to the lock a tick.
+            rudder = -Math.max(-1, Math.min(1, error / settings.pivotRate)) * EntityVehicleF_Physics.MAX_RUDDER_ANGLE;
+        }
+        lastRudder += Math.max(-settings.maxSteeringRate, Math.min(settings.maxSteeringRate, rudder - lastRudder));
+        command.rudder = lastRudder;
+        if (Math.abs(error) <= settings.pivotTolerance) {
+            //Lined up.  Straighten the wheel and drive on.
+            ++leg;
+            segment = end;
+            lastRudder = 0;
+            command.rudder = 0;
+            command.pivot = false;
+            command.changedDirection = true;
+            if (leg >= legs.size()) {
+                leg = legs.size() - 1;
+                command.arrived = true;
+            } else {
+                command.reverse = legs.get(leg)[2] == SummonRoute.LEG_REVERSE;
+            }
         }
         return command;
     }

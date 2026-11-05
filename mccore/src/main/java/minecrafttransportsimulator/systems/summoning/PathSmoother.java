@@ -22,7 +22,8 @@ import java.util.List;
  * <p>
  * A route that changes direction is smoothed a way at a time.  Where it stops to change direction stays put, and so
  * do the poses either side, so it still stops there facing the way it was planned to, and no pose is smoothed
- * against ones the other side of a change of direction, which would round off the corner it makes there.
+ * against ones the other side of a change of direction, which would round off the corner it makes there.  Where it
+ * turns on the spot is held the same way, and the turn itself is left exactly as it was.
  */
 final class PathSmoother {
     /**
@@ -84,6 +85,13 @@ final class PathSmoother {
         for (int cusp : route.getCusps()) {
             for (int i = Math.max(0, cusp - HELD_AT_START); i <= Math.min(count - 1, cusp + HELD_AT_START); ++i) {
                 held[i] = true;
+            }
+        }
+        for (int pivot = 0; pivot < count; ++pivot) {
+            if (poses.get(pivot).pivot) {
+                for (int i = Math.max(0, pivot - 1 - HELD_AT_START); i <= Math.min(count - 1, pivot + HELD_AT_START); ++i) {
+                    held[i] = true;
+                }
             }
         }
 
@@ -155,7 +163,12 @@ final class PathSmoother {
             if (route.leavesInReverse(i)) {
                 curvature = -curvature;
             }
-            smoothed.add(new SummonRoute.Pose(x[i], poses.get(i).y, z[i], yaws[i], curvature, poses.get(i).reverse));
+            SummonRoute.Pose pose = poses.get(i);
+            if (pose.pivot || (i < count - 1 && poses.get(i + 1).pivot) || (i > 0 && poses.get(i - 1).pivot)) {
+                //By a turn on the spot, the yaw changes without moving, so it says nothing of the steering.
+                curvature = pose.curvature;
+            }
+            smoothed.add(new SummonRoute.Pose(x[i], pose.y, z[i], yaws[i], curvature, pose.reverse, pose.pivot));
         }
         return smoothed;
     }
@@ -166,7 +179,7 @@ final class PathSmoother {
         for (int i = 0; i < poses.size(); ++i) {
             SummonRoute.Pose pose = poses.get(i);
             boolean fits = checker.canDrive(pose.x, pose.y, pose.z, pose.yaw);
-            if (fits && i > 0) {
+            if (fits && i > 0 && !pose.pivot) {
                 SummonRoute.Pose last = poses.get(i - 1);
                 double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);
                 double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));

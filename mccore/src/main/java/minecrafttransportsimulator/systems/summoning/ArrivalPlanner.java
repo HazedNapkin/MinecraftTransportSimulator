@@ -20,9 +20,11 @@ import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
  * A goal also needs a clear straight run-in behind it, which the vehicle drives along to pull up, so it settles
  * straight rather than stopping mid-turn.  If the run-in is shorter than it should be, the vehicle has to turn onto
  * it close by, so there must be room for that turn too: a quarter turn either way at the vehicle's turn radius,
- * sweeping its whole shape, without touching the player.  If a goal hasn't the room, it's moved further out from
- * the player until it has, as a vehicle can't pull up lined up with the player if it can't turn in.  It only moves
- * out as far as the player can still walk to it, so it never ends up on the far side of a wall from them.
+ * sweeping its whole shape, without touching the player.  A vehicle that can turn on the spot needn't turn in if it
+ * has room to turn on the spot where the run-in starts, as it can line up there.  If a goal hasn't the room, it's
+ * moved further out from the player until it has, as a vehicle can't pull up lined up with the player if it can't
+ * turn in.  It only moves out as far as the player can still walk to it, so it never ends up on the far side of a
+ * wall from them.
  * <p>
  * Goals are ranked by how far round from straight ahead they are, how far above or below the player, how much
  * further out than the gap they had to go, and how short or bumpy their run-in is.
@@ -96,6 +98,16 @@ final class ArrivalPlanner {
         /**Most the vehicle can climb and drop between neighbouring blocks.**/
         int maxUp = 1;
         int maxDown = 2;
+        /**True if the vehicle can turn on the spot, as vehicles that skid steer can.**/
+        boolean canPivot;
+    }
+
+    /**
+     * How far the player must be outside the circle a vehicle sweeps turning on the spot, in blocks: their own width
+     * and the gap it'd leave them pulling up.
+     */
+    static double getPivotPlayerClearance(Settings settings) {
+        return PLAYER_RADIUS + settings.gap;
     }
 
     private final PoseChecker checker;
@@ -298,7 +310,9 @@ final class ArrivalPlanner {
                     //It turns onto the run-in close by, so it needs room to.
                     double forwardX = Math.sin(Math.toRadians(yaw));
                     double forwardZ = Math.cos(Math.toRadians(yaw));
-                    if (!canTurnIn(x - forwardX * runIn[0], (int) runIn[2], z - forwardZ * runIn[0], yaw)) {
+                    double startX = x - forwardX * runIn[0];
+                    double startZ = z - forwardZ * runIn[0];
+                    if (!canTurnIn(startX, (int) runIn[2], startZ, yaw) && !(settings.canPivot && canPivotAt(startX, (int) runIn[2], startZ))) {
                         continue;
                     }
                 }
@@ -314,6 +328,24 @@ final class ArrivalPlanner {
      */
     boolean canTurnIn(double x, int y, double z, double yaw) {
         return canTurnIn(x, y, z, yaw, 1) || canTurnIn(x, y, z, yaw, -1);
+    }
+
+    /**
+     * Returns true if the vehicle could turn on the spot, about its origin at x,z on the ground at y, to face any way:
+     * its shape fits at every yaw round, close enough that no corner moves more than {@link #TURN_IN_SPACING}
+     * between them, and the player is well outside the circle its furthest point sweeps.
+     */
+    boolean canPivotAt(double x, int y, double z) {
+        if (Math.hypot(player.x - x, player.z - z) < shape.radius() + getPivotPlayerClearance(settings)) {
+            return false;
+        }
+        int steps = (int) Math.ceil(2 * Math.PI * Math.max(0.5, shape.radius()) / TURN_IN_SPACING);
+        for (int i = 0; i < steps; ++i) {
+            if (!checker.canDrive(x, y, z, 360D * i / steps)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

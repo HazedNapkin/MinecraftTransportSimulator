@@ -72,6 +72,13 @@ final class VehicleSummonJob {
      */
     private static final boolean REVERSE_ENABLED = true;
     /**
+     * If set, a vehicle that skid steers may turn on the spot where that saves a lot of driving: to face the way out
+     * where it sets off, to line up with where it pulls up, or in place of a three-point turn.
+     */
+    private static final boolean PIVOT_ENABLED = true;
+    /**How fast MTS turns a skid steering vehicle on the spot at full lock, in degrees a second: a twentieth of the steering angle a tick.**/
+    private static final double PIVOT_RATE = EntityVehicleF_Physics.MAX_RUDDER_ANGLE / 20 * 20;
+    /**
      * How slow the vehicle must be to shift between forward and reverse, and how slow it must be going the new way
      * before it's steered, in m/s.  MTS only turns a vehicle the way it's going once it's going that way, and a
      * vehicle that can skid steer spins on the spot in neutral, so it's held straight until then.
@@ -462,6 +469,8 @@ final class VehicleSummonJob {
         settings.cruiseSpeed = getCruiseSpeed();
         settings.turnRadius = getTurnRadius();
         settings.allowReverse = REVERSE_ENABLED && canReverse();
+        settings.allowPivot = PIVOT_ENABLED && canPivot();
+        settings.pivotRate = PIVOT_RATE;
         setArrival(settings.arrival);
         planner = new RoutePlanner(new PoseChecker(terrain, shape), kinematics, settings, planCenter, Math.toDegrees(frontAngle));
         if (fromHere) {
@@ -802,10 +811,11 @@ final class VehicleSummonJob {
      * How long the vehicle may take to drive the current route, in ticks: {@link #MIN_DRIVE_TIMEOUT}, or longer for
      * routes that need more time than that at {@link #TURN_SPEED}, plus {@link #DRIVE_TIMEOUT_MARGIN}.
      * So it's 30 seconds for any route up to 60 blocks, and a long winding route still gets time to finish.  Each
-     * change of direction gets {@link #DIRECTION_CHANGE_SECONDS} more.
+     * change of direction gets {@link #DIRECTION_CHANGE_SECONDS} more, and turning on the spot the time it takes.
      */
     private int getDriveTimeout() {
         int timeout = Math.max(MIN_DRIVE_TIMEOUT, (int) Math.ceil((route.getLength() / TURN_SPEED + DRIVE_TIMEOUT_MARGIN) * 20));
+        timeout += (int) Math.ceil(route.getPivotDegrees() / PIVOT_RATE * 20);
         return timeout + (int) Math.ceil(route.getCusps().size() * DIRECTION_CHANGE_SECONDS * 20);
     }
 
@@ -828,7 +838,7 @@ final class VehicleSummonJob {
             driveReport.record(command, speed);
         }
         boolean stalledAtEnd = command.remaining < STALLED_ARRIVE_DISTANCE && speed < STALLED_SPEED && phaseTicks > 20;
-        boolean playerInTheWay = !command.arrived && !stalledAtEnd && isPlayerInTheWay(player, command.reverse);
+        boolean playerInTheWay = !command.arrived && !stalledAtEnd && !command.pivot && isPlayerInTheWay(player, command.reverse);
         if (command.arrived || stalledAtEnd || playerInTheWay) {
             reportDrive(player, command.arrived ? "arrived" : stalledAtEnd ? "stalled short" : "player in the way", command, speed);
             park();
@@ -840,6 +850,9 @@ final class VehicleSummonJob {
             lastProgressPosition = position.copy();
         }
 
+        if (command.pivot) {
+            return pivot(player, position, command, speed);
+        }
         //Get into gear for the way it's going.  If it's in gear the other way, stop and shift first, held straight.
         if (shiftFor(command.reverse, speed)) {
             tracker.setRudder(0);
@@ -868,6 +881,31 @@ final class VehicleSummonJob {
             set(vehicle.throttleVar, targetSpeed > 0.5 ? 0.15 : 0);
             set(vehicle.brakeVar, 0);
         }
+        return checkProgress(player, position);
+    }
+
+    /**
+     * Turns the vehicle on the spot as the command says.  MTS only skid steers a vehicle that's all but stopped, with
+     * an engine running in neutral and the brakes off, so it stops first, held straight, then shifts to neutral and
+     * lets go of the brakes, and the steering turns it.  Once it's lined up, the next way it goes shifts back into
+     * gear, from neutral without stopping.  Turning doesn't move it, so it's not counted as stuck meanwhile.
+     */
+    private boolean pivot(IWrapperPlayer player, Point3D position, PathTracker.Command command, double speed) {
+        directionChangeTick = phaseTicks;
+        set(vehicle.throttleVar, 0);
+        if (speed > SHIFT_SPEED) {
+            set(vehicle.rudderInputVar, 0);
+            set(vehicle.brakeVar, 1);
+            return checkProgress(player, position);
+        }
+        set(vehicle.brakeVar, 0);
+        set(vehicle.parkingBrakeVar, 0);
+        for (PartEngine engine : getWorkingEngines(false)) {
+            if (engine.running && engine.currentGearVar.currentValue != 0) {
+                engine.shiftNeutral();
+            }
+        }
+        set(vehicle.rudderInputVar, command.rudder);
         return checkProgress(player, position);
     }
 
@@ -1267,8 +1305,8 @@ final class VehicleSummonJob {
 
     /**
      * True if the vehicle can back up the way a route plans: it has an engine to drive it, every engine has a
-     * reverse gear, it steers with its wheels rather than skid steering, and it isn't towing anything, as backing
-     * a trailer is another thing altogether.
+     * reverse gear, it steers with its wheels rather than always skid steering, and it isn't towing anything, as
+     * backing a trailer is another thing altogether.  Vehicles that always skid steer turn on the spot instead.
      */
     private boolean canReverse() {
         List<PartEngine> engines = getWorkingEngines(false);
@@ -1281,6 +1319,14 @@ final class VehicleSummonJob {
             }
         }
         return true;
+    }
+
+    /**
+     * True if the vehicle can turn on the spot: it skid steers, as tracked vehicles do when stopped and mechs and
+     * hovercraft always do, it has an engine to run in neutral, which MTS needs to skid steer, and it isn't towing anything.
+     */
+    private boolean canPivot() {
+        return (vehicle.definition.motorized.hasSkidSteer || vehicle.definition.motorized.hasPermanentSkidSteer) && !getWorkingEngines(false).isEmpty() && vehicle.towingConnections.isEmpty();
     }
 
     private static boolean isJet(PartEngine engine) {

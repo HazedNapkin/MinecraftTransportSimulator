@@ -80,6 +80,10 @@ final class HybridSearch {
     static final double JOIN_RANGE = 15;
     /**How near the start of a run-in a state must be, in blocks, for the estimate to count which way it faces.**/
     private static final double HEADING_RANGE = 20;
+    /**Least turn on the spot worth lining up with a run-in by, in degrees, rather than driving onto it lined up.**/
+    private static final double MIN_PIVOT_TURN = 20;
+    /**Turns on the spot the search tries, in degrees.**/
+    private static final double[] PIVOT_TURNS = { 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180 };
     /**How many states in range apart joins are tried, as each costs a lot of checks.**/
     private static final int JOIN_INTERVAL = 3;
     /**Most joins checked for fit each try, cheapest first.**/
@@ -119,9 +123,16 @@ final class HybridSearch {
         double cuspCost = 5;
         /**Shortest it drives either way between changes of direction, in blocks, so it doesn't shuffle back and forth.**/
         double minGearLength = 2;
-        /**Most times it may change direction.**/
+        /**Most times it may change direction, counting turns on the spot.**/
         int maxCusps = 3;
         Direction direction = Direction.FORWARD;
+        /**
+         * True if the vehicle can turn on the spot, as vehicles that skid steer do stopped and in neutral, how fast it
+         * turns, in degrees a second, and how far the player must be outside the circle it sweeps doing so, in blocks.
+         */
+        boolean allowPivot;
+        double pivotRate = 45;
+        double pivotPlayerClearance = 1.5;
     }
 
     /**Somewhere the route may set off from, facing the yaw, and what's wrong with setting off from there, in blocks of route.**/
@@ -261,6 +272,15 @@ final class HybridSearch {
                 //Already expanded, reached more cheaply since, or no way to beat the route already found from here.
                 continue;
             }
+            if (current.unchecked) {
+                //A turn on the spot, only checked now it's come up, as most never do.
+                Node earlier = current.earlier;
+                if (!canPivot(earlier.x, earlier.y, earlier.z, earlier.yaw, current.yaw)) {
+                    current.closed = true;
+                    continue;
+                }
+                current.unchecked = false;
+            }
             if (++expansions > settings.maxExpansions || (firstFinishExpansion >= 0 && expansions - firstFinishExpansion > (placed && bestFinish.g > LONG_ROUTE_FACTOR * expectedCost ? LONG_FINISH_GRACE : FINISH_GRACE))) {
                 //Out of time.  Settle for the cheapest route found, if any.
                 found = bestFinish;
@@ -282,8 +302,73 @@ final class HybridSearch {
                     add(extend(current, curvature, true, settings.stepLength));
                 }
             }
+            //Turning on the spot again straight after would only undo some of it, and a placed vehicle can be placed facing any way.
+            if (settings.allowPivot && !current.pivot && !(placed && current.root)) {
+                for (double turn : PIVOT_TURNS) {
+                    add(pivot(current, turn));
+                }
+            }
         }
         return finished;
+    }
+
+    /**
+     * The state the vehicle gets to turning on the spot by the turn, in degrees, or null if it may not, as it's changed
+     * direction as often as it may.  Whether it has room isn't checked until it comes up: see {@link #canPivot}.  It
+     * costs the time it takes, as blocks it could have driven at cruise speed, and stopping to do it costs like a
+     * change of direction, so it's only worth it where it saves a lot of driving, never in place of a gentle curve.
+     */
+    private Node pivot(Node earlier, double turn) {
+        if (earlier.cusps >= settings.maxCusps) {
+            return null;
+        }
+        double yaw = VehicleSummonFlight.clampAngle(earlier.yaw + turn);
+        double cost = getPivotCost(turn);
+        Node later = new Node(earlier.x, earlier.y, earlier.z, yaw, 0, false, earlier, earlier.g + cost, earlier.length, getPivotPoses(earlier.x, earlier.y, earlier.z, earlier.yaw, turn), true);
+        later.cusps = earlier.cusps + 1;
+        later.unchecked = true;
+        return later;
+    }
+
+    /**What turning on the spot by the turn, in degrees, costs: stopping, as for a change of direction, and the time it takes.**/
+    private double getPivotCost(double turn) {
+        return settings.cuspCost + Math.abs(turn) / settings.pivotRate * settings.cruiseSpeed;
+    }
+
+    /**
+     * Returns true if the vehicle can turn on the spot at the pose by the turn from fromYaw to toYaw, the short way
+     * round.  It turns about its origin, as MTS turns vehicles, so its shape must fit at every step through the turn,
+     * close enough that no corner moves more than {@link #SAMPLE_SPACING} between them, and the player must be well
+     * outside the circle its furthest point sweeps.
+     */
+    boolean canPivot(double x, int y, double z, double fromYaw, double toYaw) {
+        if (Math.hypot(player.x - x, player.z - z) < checker.shape.radius() + settings.pivotPlayerClearance) {
+            return false;
+        }
+        double turn = VehicleSummonFlight.clampAngle(toYaw - fromYaw);
+        int steps = getPivotSteps(turn);
+        for (int i = 1; i <= steps; ++i) {
+            if (!checker.canDrive(x, y, z, fromYaw + turn * i / steps)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**How many steps a turn on the spot by the turn, in degrees, is checked and driven in.**/
+    private int getPivotSteps(double turn) {
+        double step = Math.toDegrees(SAMPLE_SPACING / Math.max(0.5, checker.shape.radius()));
+        return Math.max(1, (int) Math.ceil(Math.abs(turn) / step - 1e-9));
+    }
+
+    /**The poses through a turn on the spot by the turn from the yaw, as {x, z, yaw, y, curvature, reverse, pivot}.**/
+    private double[][] getPivotPoses(double x, int y, double z, double fromYaw, double turn) {
+        int steps = getPivotSteps(turn);
+        double[][] poses = new double[steps][];
+        for (int i = 1; i <= steps; ++i) {
+            poses[i - 1] = new double[] { x, z, VehicleSummonFlight.clampAngle(fromYaw + turn * i / steps), y, 0, 0, 1 };
+        }
+        return poses;
     }
 
     void finish() {
@@ -342,11 +427,12 @@ final class HybridSearch {
             if (Math.hypot(node.x - target[0], node.z - target[1]) > JOIN_RANGE) {
                 continue;
             }
-            List<AnalyticPaths.Path> paths = settings.allowReverse ? AnalyticPaths.reedsShepp(node.x, node.z, node.yaw, target[0], target[1], target[2], settings.turnRadius) : AnalyticPaths.dubins(node.x, node.z, node.yaw, target[0], target[1], target[2], settings.turnRadius);
-            for (AnalyticPaths.Path path : paths) {
-                double cost = getJoinCost(node, path, runIn);
-                if (!Double.isNaN(cost) && node.g + cost < bestCost) {
-                    joins.add(new Join(path, runIn, node.g + cost));
+            addJoins(joins, node, runIn, target[2], Double.NaN, bestCost);
+            if (settings.allowPivot && Math.hypot(node.x - target[0], node.z - target[1]) >= 1) {
+                //Drive to where the run-in starts facing about the way there, then turn on the spot to line up with it.
+                double arrivalYaw = Math.toDegrees(Math.atan2(target[0] - node.x, target[1] - node.z));
+                if (Math.abs(VehicleSummonFlight.clampAngle(arrivalYaw - target[2])) > MIN_PIVOT_TURN) {
+                    addJoins(joins, node, runIn, arrivalYaw, arrivalYaw, bestCost);
                 }
             }
         }
@@ -368,17 +454,42 @@ final class HybridSearch {
     }
 
     /**
-     * What driving the path from the state, then the run-in, costs, without what's in the way, or NaN if it breaks
-     * the rules on changing direction.  The run-in is always driven forward.
+     * Adds the ways to join the run-in from the state that could beat the cost, arriving at its start facing the yaw.
+     * If pivotYaw isn't NaN, that's the yaw, and it turns on the spot from there to line up with the run-in.
      */
-    private double getJoinCost(Node node, AnalyticPaths.Path path, RunIn runIn) {
+    private void addJoins(List<Join> joins, Node node, RunIn runIn, double arrivalYaw, double pivotYaw, double bestCost) {
+        double[] target = runIn.poses[0];
+        List<AnalyticPaths.Path> paths = settings.allowReverse ? AnalyticPaths.reedsShepp(node.x, node.z, node.yaw, target[0], target[1], arrivalYaw, settings.turnRadius) : AnalyticPaths.dubins(node.x, node.z, node.yaw, target[0], target[1], arrivalYaw, settings.turnRadius);
+        for (AnalyticPaths.Path path : paths) {
+            double cost = getJoinCost(node, path, runIn, pivotYaw);
+            if (!Double.isNaN(cost) && node.g + cost < bestCost) {
+                joins.add(new Join(path, runIn, node.g + cost, pivotYaw));
+            }
+        }
+    }
+
+    /**
+     * What driving the path from the state, then turning on the spot from pivotYaw if it's not NaN, then the run-in,
+     * costs, without what's in the way, or NaN if it breaks the rules on changing direction.  The run-in is always
+     * driven forward.
+     */
+    private double getJoinCost(Node node, AnalyticPaths.Path path, RunIn runIn, double pivotYaw) {
         double cost = 0;
-        double curvature = node.root ? 0 : node.curvature;
-        boolean hasGear = !node.root;
+        double curvature = node.isStopped() ? 0 : node.curvature;
+        boolean hasGear = !node.isStopped();
         boolean reverse = node.reverse;
         int cusps = node.cusps;
-        double segmentLength = node.root ? 0 : node.segmentLength;
+        double segmentLength = node.isStopped() ? 0 : node.segmentLength;
         for (int i = 0; i <= path.types.length; ++i) {
+            if (i == path.types.length && !Double.isNaN(pivotYaw)) {
+                //Turning on the spot comes before the run-in, and it sets off again from stopped.
+                if (++cusps > settings.maxCusps) {
+                    return Double.NaN;
+                }
+                cost += getPivotCost(VehicleSummonFlight.clampAngle(runIn.poses[0][2] - pivotYaw));
+                hasGear = false;
+                curvature = 0;
+            }
             //The run-in comes last.
             double length = i < path.types.length ? path.lengths[i] : runIn.length;
             double pieceCurvature = i < path.types.length ? path.getCurvature(i) : 0;
@@ -450,8 +561,8 @@ final class HybridSearch {
                     }
                 }
                 if (i == samples && last == path.types.length) {
-                    //Land exactly on the run-in.
-                    pose = new double[] { target[0], target[1], target[2] };
+                    //Land exactly on the run-in, or where it starts, facing the way it turns on the spot from.
+                    pose = new double[] { target[0], target[1], Double.isNaN(join.pivotYaw) ? target[2] : join.pivotYaw };
                 }
                 int y = checker.terrain.findSurface((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), laterY, settings.maxUp, settings.maxDown, headroom);
                 if (y == TerrainMap.NO_SURFACE || !checker.canDrive(pose[0], y, pose[1], pose[2])) {
@@ -468,6 +579,15 @@ final class HybridSearch {
         }
         if (laterY != (int) target[3]) {
             return null;
+        }
+        if (!Double.isNaN(join.pivotYaw)) {
+            double turn = VehicleSummonFlight.clampAngle(target[2] - join.pivotYaw);
+            if (poses.isEmpty() || !canPivot(target[0], laterY, target[1], join.pivotYaw, target[2])) {
+                return null;
+            }
+            for (double[] pose : getPivotPoses(target[0], laterY, target[1], join.pivotYaw, turn)) {
+                poses.add(pose);
+            }
         }
         double[][] runInPoses = join.runIn.poses;
         //It's already at the start of the run-in if it didn't need to drive there.
@@ -486,7 +606,7 @@ final class HybridSearch {
      * if reverse is set.  Each point's ground is found from the one before it, the way driving it climbs and drops.
      */
     private Node extend(Node earlier, double curvature, boolean reverse, double length) {
-        boolean cusp = !earlier.root && reverse != earlier.reverse;
+        boolean cusp = !earlier.isStopped() && reverse != earlier.reverse;
         if (cusp && (earlier.cusps >= settings.maxCusps || earlier.segmentLength < settings.minGearLength - 1e-6)) {
             return null;
         }
@@ -511,7 +631,7 @@ final class HybridSearch {
         double cost = getMoveCost(earlier, curvature, reverse, cusp, length, steps, latest);
         Node later = new Node(latest[0], (int) latest[3], latest[1], latest[2], curvature, reverse, earlier, earlier.g + cost, earlier.length + length, poses);
         later.cusps = earlier.cusps + (cusp ? 1 : 0);
-        later.segmentLength = (cusp || earlier.root ? 0 : earlier.segmentLength) + length;
+        later.segmentLength = (cusp || earlier.isStopped() ? 0 : earlier.segmentLength) + length;
         return later;
     }
 
@@ -533,7 +653,7 @@ final class HybridSearch {
      */
     private double getMoveCost(Node earlier, double curvature, boolean reverse, boolean cusp, double length, int steps, double[] latest) {
         double cost = getDriveCost(curvature, length, reverse) + steps * STEP_COST;
-        double earlierCurvature = earlier.root ? 0 : earlier.curvature;
+        double earlierCurvature = earlier.isStopped() ? 0 : earlier.curvature;
         if (maxCurvature > 0 && !Double.isInfinite(maxCurvature)) {
             cost += CURVATURE_CHANGE_COST * Math.abs(curvature - earlierCurvature) / maxCurvature;
         }
@@ -608,7 +728,7 @@ final class HybridSearch {
         poses.add(new SummonRoute.Pose(root.x, root.y, root.z, root.yaw, firstMove != null ? firstMove[4] : 0, firstMove != null && firstMove[5] != 0));
         for (int i = 1; i < chain.size(); ++i) {
             for (double[] pose : chain.get(i).poses) {
-                poses.add(new SummonRoute.Pose(pose[0], (int) pose[3], pose[1], pose[2], pose[4], pose[5] != 0));
+                poses.add(new SummonRoute.Pose(pose[0], (int) pose[3], pose[1], pose[2], pose[4], pose[5] != 0, pose.length > 6 && pose[6] != 0));
             }
         }
         return new SummonRoute(Collections.unmodifiableList(poses), placed, found.goal);
@@ -629,13 +749,14 @@ final class HybridSearch {
 
     /**
      * The state the pose falls in.  Which way it's going counts too, as a state backing up and one driving forward
-     * differ in what it costs to carry on from them.
+     * differ in what it costs to carry on from them, and so does having just turned on the spot, which is checked
+     * later than other moves and mustn't push out a state that's been checked.
      */
-    private long getKey(double x, int y, double z, double yaw, boolean reverse) {
+    private long getKey(double x, int y, double z, double yaw, boolean reverse, boolean pivot) {
         long cellX = ((long) Math.floor(x) - originX) & 0xFFFFF;
         long cellZ = ((long) Math.floor(z) - originZ) & 0xFFFFF;
         long yawBin = Math.floorMod((long) Math.floor(yaw / YAW_BIN + 0.5), (long) Math.round(360 / YAW_BIN));
-        return (reverse ? 1L << 60 : 0) | (cellX << 40) | (cellZ << 20) | ((y & 0xFFFL) << 8) | yawBin;
+        return (pivot ? 1L << 61 : 0) | (reverse ? 1L << 60 : 0) | (cellX << 40) | (cellZ << 20) | ((y & 0xFFFL) << 8) | yawBin;
     }
 
     /**A goal's straight run-in: the poses along it, from where it starts to the goal, as {x, z, yaw, y, curvature, reverse}.**/
@@ -656,11 +777,14 @@ final class HybridSearch {
         final AnalyticPaths.Path path;
         final RunIn runIn;
         final double g;
+        /**The yaw it gets to the start of the run-in at, to turn on the spot from to line up, or NaN if it gets there lined up.**/
+        final double pivotYaw;
 
-        Join(AnalyticPaths.Path path, RunIn runIn, double g) {
+        Join(AnalyticPaths.Path path, RunIn runIn, double g, double pivotYaw) {
             this.path = path;
             this.runIn = runIn;
             this.g = g;
+            this.pivotYaw = pivotYaw;
         }
     }
 
@@ -682,21 +806,37 @@ final class HybridSearch {
         final double g;
         /**How far it is from where the route sets off to here, in blocks.**/
         final double length;
-        /**The poses along the move from the earlier state, as {x, z, yaw, y, curvature, reverse}.  The last is this one.**/
+        /**
+         * The poses along the move from the earlier state, as {x, z, yaw, y, curvature, reverse}, and 1 after that for
+         * a pose turned on the spot to.  The last is this one.
+         */
         final double[][] poses;
         /**How many times the route has changed direction up to here, and how far it's gone since the last, or since it set off.**/
         int cusps;
         double segmentLength;
         /**True for where the route sets off, which hasn't gone either way yet.**/
         boolean root;
+        /**True if the move here was a turn on the spot, and if it's not been checked there's room for it yet.**/
+        final boolean pivot;
+        boolean unchecked;
         /**The goal, for the state at the end of a route.**/
         ArrivalPlanner.Goal goal;
         /**The estimate of the cost from here to the end of a route.**/
         double h;
         boolean closed;
 
+        /**True if the vehicle's stopped here, not yet going either way: where it sets off, or just after turning on the spot.**/
+        boolean isStopped() {
+            return root || pivot;
+        }
+
         Node(double x, int y, double z, double yaw, double curvature, boolean reverse, Node earlier, double g, double length, double[][] poses) {
-            this.key = getKey(x, y, z, yaw, reverse);
+            this(x, y, z, yaw, curvature, reverse, earlier, g, length, poses, false);
+        }
+
+        Node(double x, int y, double z, double yaw, double curvature, boolean reverse, Node earlier, double g, double length, double[][] poses, boolean pivot) {
+            this.key = getKey(x, y, z, yaw, reverse, pivot);
+            this.pivot = pivot;
             this.x = x;
             this.y = y;
             this.z = z;

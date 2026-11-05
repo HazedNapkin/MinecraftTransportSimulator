@@ -12,7 +12,8 @@ import org.junit.Test;
 import minecrafttransportsimulator.baseclasses.Point3D;
 
 /**
- * Plans and drives summons for a spread of vehicles over a spread of terrain, and prints how each went, for tuning.
+ * Plans and drives summons for a spread of vehicles over a spread of terrain, and prints how each went, for tuning:
+ * how long planning took, how much it searched, how many questions it asked the world, and how the route drove.
  * It fails only on things that should never happen: a route that can't be driven, or one not found where there's
  * plenty of room.
  */
@@ -62,12 +63,27 @@ public class SummonSweepTest {
         final Point3D player;
         /**True if there's plenty of room, so every vehicle should find a route.**/
         final boolean roomy;
+        /**Where the vehicle already is, if it sets off from there rather than being placed, or null.**/
+        SummonRoute.Pose start;
+        /**The vehicles to summon here, or null for all of them.**/
+        List<String> only;
 
         Place(String name, FakeTerrain terrain, double playerY, boolean roomy) {
             this.name = name;
             this.terrain = terrain;
             this.player = new Point3D(0.5, playerY, 0.5);
             this.roomy = roomy;
+        }
+
+        /**Makes the vehicle set off from where it is, for only the vehicles named.**/
+        Place from(SummonRoute.Pose start, String... only) {
+            this.start = start;
+            this.only = Arrays.asList(only);
+            return this;
+        }
+
+        boolean summons(Vehicle vehicle) {
+            return only == null || only.contains(vehicle.name);
         }
     }
 
@@ -106,41 +122,113 @@ public class SummonSweepTest {
 
         //Walls 12 out all round the player, with one gap on the +X side.
         places.add(new Place("yard", FakeTerrain.flat(80).fill(-12, 0, -12, 12, 2, -12).fill(-12, 0, 12, 12, 2, 12).fill(-12, 0, -12, -12, 2, 12).fill(12, 0, -12, 12, 2, -4).fill(12, 0, 4, 12, 2, 12), 0, false));
+
+        //The player at the closed end of a short passage, with vehicles placed to drive in.
+        places.add(new Place("passage", passage(), 0, false));
+
+        //Vehicles already nearby: in the open, nosed into an alley, in a street too narrow to turn round in, and out in
+        //the open coming to a player at the end of a short passage.
+        places.add(new Place("open", FakeTerrain.flat(80), 0, true).from(new SummonRoute.Pose(-14.5, 0, 16.5, 90, 0), "car", "bus", "tank"));
+        places.add(new Place("alley", RoutePlannerTest.alley(), 0, true).from(new SummonRoute.Pose(-27.5, 0, 17, -90, 0), "car"));
+        places.add(new Place("street", RoutePlannerTest.narrowStreet(), 0, true).from(new SummonRoute.Pose(-40.5, 0, 14.5, -90, 0), "car"));
+        places.add(new Place("cramped", passage(), 0, true).from(new SummonRoute.Pose(0.5, 0, 34.5, 0, 0), "car", "bike"));
         return places;
+    }
+
+    /**A passage 7 blocks wide and 14 long, closed behind the player at the origin, opening out along +Z onto flat ground.**/
+    static FakeTerrain passage() {
+        return FakeTerrain.flat(80).fill(-4, 0, -3, -4, 3, 12).fill(4, 0, -3, 4, 3, 12).fill(-4, 0, -3, 4, 3, -3);
+    }
+
+    /**What planning and driving one summon came to.**/
+    private static final class Result {
+        String line;
+        boolean found;
+        boolean hidden;
+        int worldCalls;
+        int raycasts;
+        int expansions;
+        double millis;
+    }
+
+    private static Result run(Place place, Vehicle vehicle, List<String> failures) {
+        RoutePlanner.Settings settings = new RoutePlanner.Settings();
+        settings.turnRadius = TURN_RADIUS_MARGIN * vehicle.kinematics.getTurnRadius(TURN_SPEED);
+        settings.allowReverse = place.start != null;
+        CountingTerrain counter = new CountingTerrain(place.terrain);
+        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(counter), vehicle.shape), vehicle.kinematics, settings, place.player, 0);
+        if (place.start != null) {
+            planner.setStart(place.start.x, place.start.y, place.start.z, place.start.yaw);
+        }
+        long start = System.nanoTime();
+        int ticks = 0;
+        while (!planner.step(10_000_000)) {
+            ++ticks;
+        }
+        Result result = new Result();
+        result.millis = (System.nanoTime() - start) / 1e6;
+        result.worldCalls = counter.getWorldCalls();
+        result.raycasts = counter.lines;
+        result.expansions = planner.getSearchExpansions();
+        SummonRoute route = planner.getRoute();
+        String line = String.format("SWEEP %-5s %-7s | %5.0f %3d %5d | %6d %6d %6d %6d %5d |", vehicle.name, place.name, result.millis, ticks + 1, result.expansions, counter.solid, counter.liquid, counter.clear, result.worldCalls, counter.lines);
+        if (route == null) {
+            line += String.format(" none (%d goals)", planner.getGoals().size());
+            if (place.roomy) {
+                failures.add(vehicle.name + " found no route on " + place.name);
+            }
+        } else {
+            result.found = true;
+            String seen = "    ";
+            if (route.placed) {
+                SummonRoute.Pose first = route.getStart();
+                result.hidden = !SpawnSelector.isVisible(new PoseChecker(new TerrainMap(place.terrain), vehicle.shape), place.player, first.x, first.y, first.z);
+                seen = result.hidden ? "hid " : "seen";
+            }
+            DriveSimulator.Drive drive = DriveSimulator.drive(route, vehicle.kinematics, route.placed ? Double.MAX_VALUE : 0, 0, 0, 0);
+            line += String.format(" found %5.1f %s %d %4.1f | %s %4.2f %4.2f %4.1f %5.1f %4.1f", route.getLength(), seen, route.getCusps().size(), route.getReverseLength(), drive.arrived ? "ok  " : "FAIL", drive.worstCrossTrack, drive.getEndError(route), drive.getYawError(route), drive.ticks / 20D, drive.topSpeed);
+            if (!drive.arrived || drive.worstCrossTrack > 0.6 || drive.getEndError(route) > 0.5 || drive.getYawError(route) > 5) {
+                failures.add(vehicle.name + " drove " + place.name + " badly");
+            }
+        }
+        result.line = line;
+        return result;
     }
 
     @Test
     public void sweep() {
-        List<String> failures = new ArrayList<>();
-        System.out.println("SWEEP vehicle place   | plan ms  ticks expand | route  length | drive stray   end    yaw   secs   top");
-        for (Place place : getPlaces()) {
+        List<Place> places = getPlaces();
+        //Once round to warm up, so the times are nearer what a running server sees.
+        for (Place place : places) {
             for (Vehicle vehicle : VEHICLES) {
-                RoutePlanner.Settings settings = new RoutePlanner.Settings();
-                settings.turnRadius = TURN_RADIUS_MARGIN * vehicle.kinematics.getTurnRadius(TURN_SPEED);
-                RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(place.terrain), vehicle.shape), vehicle.kinematics, settings, place.player, 0);
-                long start = System.nanoTime();
-                int ticks = 0;
-                while (!planner.step(10_000_000)) {
-                    ++ticks;
+                if (place.summons(vehicle)) {
+                    run(place, vehicle, new ArrayList<>());
                 }
-                double planMillis = (System.nanoTime() - start) / 1e6;
-                SummonRoute route = planner.getRoute();
-                String line = String.format("SWEEP %-7s %-7s | %7.0f %6d %6d |", vehicle.name, place.name, planMillis, ticks + 1, planner.getSearchExpansions());
-                if (route == null) {
-                    line += String.format(" none (%d goals)", planner.getGoals().size());
-                    if (place.roomy) {
-                        failures.add(vehicle.name + " found no route on " + place.name);
-                    }
-                } else {
-                    DriveSimulator.Drive drive = DriveSimulator.drive(route, vehicle.kinematics, route.placed ? Double.MAX_VALUE : 0, 0, 0, 0);
-                    line += String.format(" %s %6.1f | %s %5.2f %6.2f %6.1f %6.1f %5.1f", "found", route.getLength(), drive.arrived ? "ok   " : "FAIL ", drive.worstCrossTrack, drive.getEndError(route), drive.getYawError(route), drive.ticks / 20D, drive.topSpeed);
-                    if (!drive.arrived || drive.worstCrossTrack > 0.6 || drive.getEndError(route) > 0.5 || drive.getYawError(route) > 5) {
-                        failures.add(vehicle.name + " drove " + place.name + " badly");
-                    }
-                }
-                System.out.println(line);
             }
         }
+        List<String> failures = new ArrayList<>();
+        System.out.println("SWEEP veh   place   |    ms tck expnd |  solid liquid  clear  world  rays | route   len seen c back | drive stray end  yaw   secs  top");
+        int found = 0;
+        int hidden = 0;
+        long worldCalls = 0;
+        long raycasts = 0;
+        long expansions = 0;
+        double millis = 0;
+        for (Place place : places) {
+            for (Vehicle vehicle : VEHICLES) {
+                if (place.summons(vehicle)) {
+                    Result result = run(place, vehicle, failures);
+                    System.out.println(result.line);
+                    found += result.found ? 1 : 0;
+                    hidden += result.hidden ? 1 : 0;
+                    worldCalls += result.worldCalls;
+                    raycasts += result.raycasts;
+                    expansions += result.expansions;
+                    millis += result.millis;
+                }
+            }
+        }
+        System.out.println(String.format("SWEEP total: %d found (%d placed out of sight), %.0f ms, %d expansions, %d world calls, %d raycasts", found, hidden, millis, expansions, worldCalls, raycasts));
         assertTrue(String.join(", ", failures), failures.isEmpty());
     }
 }

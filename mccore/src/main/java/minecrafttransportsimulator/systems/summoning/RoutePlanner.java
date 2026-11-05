@@ -1,5 +1,6 @@
 package minecrafttransportsimulator.systems.summoning;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -10,12 +11,12 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * <p>
  * It runs in stages: find where the vehicle pulls up ({@link ArrivalPlanner}), flood out from there to see how far
  * the drive in is from everywhere near ({@link FlowField}), pick good hidden places about the summon distance out to
- * set off from ({@link SpawnSelector}), flood out from those to guide the search, then search backwards from where it
- * pulls up for the route ({@link HybridSearch}).  A vehicle that's already nearby skips picking places, and floods
- * out from where it is instead.  If it can't drive out from there forward and can back up, it searches again backing up.
+ * set off from ({@link SpawnSelector}), then search forward from those for the route ({@link HybridSearch}), guided by
+ * the flood.  A vehicle that's already nearby skips picking places and searches from where it is, backing up if it can
+ * and that's what gets it out, and the flood stops once it's reached it.  If it never does, there's no way in.
  */
 final class RoutePlanner {
-    /**How much further than the longest drive in the floods spread from the player, in blocks.**/
+    /**How much further than the longest drive in the flood spreads from the player, in blocks.**/
     private static final double FIELD_MARGIN = 8;
     /**The least straight run-in a route ends with, in blocks, however short the vehicle.**/
     private static final double MIN_RUN_IN = 4;
@@ -36,17 +37,18 @@ final class RoutePlanner {
         int maxExpansions = 20000;
         /**
          * True if the vehicle can back up.  Only routes from where it already is do, as placed vehicles can be placed
-         * facing whichever way they need: see {@link HybridSearch.Settings#allowReverse}.  And only if it can't drive
-         * out forward, as it'd only back up where it must, and the search that may back up is cruder.
+         * facing whichever way they need: see {@link HybridSearch.Settings#allowReverse}.
          */
         boolean allowReverse;
+        /**How many times what driving forward costs backing up costs, and the cost of each change of direction, in blocks.**/
+        double reverseFactor = 3;
+        double cuspCost = 5;
     }
 
     private enum Stage {
         ARRIVAL,
         GOAL_FIELD,
         SPAWNS,
-        SPAWN_FIELD,
         SEARCH,
         SMOOTH,
         DONE
@@ -64,12 +66,7 @@ final class RoutePlanner {
     private List<ArrivalPlanner.Goal> goals = Collections.emptyList();
     private FlowField goalField;
     private SpawnSelector spawns;
-    private FlowField spawnField;
     private HybridSearch search;
-    /**True once the search is the one that may back up, tried if the vehicle can't drive out forward.**/
-    private boolean reversing;
-    /**How many states the finished searches expanded.**/
-    private int searchExpansions;
     private SummonRoute route;
     /**Time spent in each stage, in nanoseconds, and how many times it's been stepped, for tuning.**/
     private final long[] stageNanos = new long[Stage.values().length];
@@ -123,9 +120,9 @@ final class RoutePlanner {
                             //There's no way from where the vehicle is to anywhere it could pull up.
                             stage = Stage.DONE;
                         } else if (start != null) {
-                            startSpawnField(null);
+                            startSearch(Collections.singletonList(new HybridSearch.Start(start.x, start.y, start.z, start.yaw, 0)));
                         } else {
-                            spawns = new SpawnSelector(checker, goalField, getSpawnSettings(), player, lookYaw);
+                            spawns = new SpawnSelector(checker, goalField, goals, getSpawnSettings(), player, lookYaw);
                             stage = Stage.SPAWNS;
                         }
                     }
@@ -133,32 +130,19 @@ final class RoutePlanner {
                 }
                 case SPAWNS: {
                     if (spawns.step(left)) {
-                        startSpawnField(spawns.getTargets());
-                    }
-                    break;
-                }
-                case SPAWN_FIELD: {
-                    if (spawnField.step(left)) {
-                        startSearch();
+                        startSearch(getStarts(spawns.getTargets()));
                     }
                     break;
                 }
                 case SEARCH: {
                     if (search.step(Integer.MAX_VALUE, left)) {
                         route = search.getRoute();
-                        searchExpansions += search.getExpansions();
-                        if (route == null && settings.allowReverse && start != null && !reversing) {
-                            //It can't drive out forward.  Try again backing up.
-                            reversing = true;
-                            startSearch();
-                        } else {
-                            stage = route != null ? Stage.SMOOTH : Stage.DONE;
-                        }
+                        stage = route != null ? Stage.SMOOTH : Stage.DONE;
                     }
                     break;
                 }
                 case SMOOTH: {
-                    //Smooth the run-in the search started from no further than it drove it, as that's all that's straight.
+                    //Smooth the run-in no further than it's straight.
                     route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
                     stage = Stage.DONE;
                     break;
@@ -182,7 +166,7 @@ final class RoutePlanner {
             }
         }
         timings.append(String.format("total %.0fms over %d ticks", total / 1e6, steps));
-        timings.append(String.format("; cells %d + %d, expansions %d", goalField != null ? goalField.getCellCount() : 0, spawnField != null ? spawnField.getCellCount() : 0, getSearchExpansions()));
+        timings.append(String.format("; cells %d, expansions %d (%d near the goals), joins %d (%d didn't fit)", goalField != null ? goalField.getCellCount() : 0, getSearchExpansions(), getGoalSideExpansions(), search != null ? search.getJoinTries() : 0, getFailedJoins()));
         return timings.toString();
     }
 
@@ -218,37 +202,43 @@ final class RoutePlanner {
 
     /**How many states the route search expanded, for tuning.**/
     int getSearchExpansions() {
-        return searchExpansions + (search != null && !search.isFinished() ? search.getExpansions() : 0);
+        return search != null ? search.getExpansions() : 0;
     }
 
-    /**The longest drive in to set off from, in blocks.  The floods only spread this far, as that's most of their cost.**/
+    /**How many states the route search expanded near the goals, for tuning.**/
+    int getGoalSideExpansions() {
+        return search != null ? search.getGoalSideExpansions() : 0;
+    }
+
+    /**How many states the route search had expanded when it found its first route, or -1, for tuning.**/
+    int getFirstRouteExpansion() {
+        return search != null ? search.getFirstRouteExpansion() : -1;
+    }
+
+    /**How many joins onto the goals' run-ins the search checked that something was in the way of, for tuning.**/
+    int getFailedJoins() {
+        return search != null ? search.getFailedJoins() : 0;
+    }
+
+    /**The longest drive in to set off from, in blocks.  The flood only spreads this far, as that's most of its cost.**/
     private double getMaxLength() {
         return settings.summonDistance * MAX_LENGTH_FACTOR;
     }
 
-    private FlowField.Settings getFieldSettings(boolean towardSources) {
+    /**Floods out from where each goal's run-in starts, which is where the routes join them.**/
+    private void startGoalField() {
         FlowField.Settings field = new FlowField.Settings();
         field.clearance = Math.max(0, checker.shape.side - 0.5);
         field.headroom = checker.shape.top - checker.shape.bottom;
         field.maxUp = settings.maxUp;
         field.maxDown = settings.maxDown;
-        field.towardSources = towardSources;
+        field.towardSources = true;
         field.radius = fieldRadius;
         //Room only matters to whether the vehicle fits, and to keeping it a block off things, so look no further.
         field.clearanceRange = Math.ceil(checker.shape.side + 1);
-        //The flood to the goals only needs to reach as far as a drive in can be.
-        field.maxDistance = getMaxLength();
-        return field;
-    }
-
-    /**Floods out from where each goal's run-in starts, which is where the route search starts from too.**/
-    private void startGoalField() {
-        FlowField.Settings fieldSettings = getFieldSettings(true);
-        if (start != null) {
-            //It only needs to reach where the vehicle is, however far that is to drive, and a little past for the search.
-            fieldSettings.maxDistance = Double.POSITIVE_INFINITY;
-        }
-        goalField = new FlowField(checker.terrain, fieldSettings, (int) Math.floor(player.x), (int) Math.floor(player.z));
+        //It only needs to reach as far as a drive in can be, or for a vehicle that's nearby, a little past where it is.
+        field.maxDistance = start != null ? Double.POSITIVE_INFINITY : getMaxLength();
+        goalField = new FlowField(checker.terrain, field, (int) Math.floor(player.x), (int) Math.floor(player.z));
         if (start != null) {
             //The vehicle's origin may be well into somewhere tight, like a garage, with its front out where there's room.
             goalField.setTarget((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), (int) Math.ceil(checker.shape.bodyLength / 2) + 1, FIELD_MARGIN + checker.shape.bodyLength);
@@ -271,32 +261,22 @@ final class RoutePlanner {
         spawn.minLength = settings.summonDistance * 0.6;
         spawn.targetLength = settings.summonDistance;
         spawn.maxLength = getMaxLength();
+        spawn.maxUp = settings.maxUp;
+        spawn.maxDown = settings.maxDown;
         return spawn;
     }
 
-    /**Floods out from the places to set off from, or from where the vehicle is if it's already nearby, to guide the search.**/
-    private void startSpawnField(List<SpawnSelector.Target> targets) {
-        //It only has to reach back as far as the goals, which are as far as the furthest drive in from where it sets off.
-        double reach = 0;
-        if (start != null) {
-            reach = goalField.getDistance((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), 1);
-        } else if (targets != null) {
-            for (SpawnSelector.Target target : targets) {
-                reach = Math.max(reach, target.length);
-            }
+    /**
+     * Where a placed vehicle may set off from: each place picked, facing the way the drive goes from there, costing
+     * what's wrong with it as a place to set off from.
+     */
+    private List<HybridSearch.Start> getStarts(List<SpawnSelector.Target> targets) {
+        List<HybridSearch.Start> starts = new ArrayList<>();
+        for (SpawnSelector.Target target : targets) {
+            double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(target.x - player.x, target.z - player.z)) - lookYaw));
+            starts.add(new HybridSearch.Start(target.x, target.y, target.z, target.yaw, HybridSearch.getStartCost(target.length, settings.summonDistance, target.visible, offFront)));
         }
-        FlowField.Settings fieldSettings = getFieldSettings(false);
-        fieldSettings.maxDistance = (Double.isInfinite(reach) || reach == 0 ? getMaxLength() : reach) + FIELD_MARGIN;
-        spawnField = new FlowField(checker.terrain, fieldSettings, (int) Math.floor(player.x), (int) Math.floor(player.z));
-        spawnField.shareRoom(goalField);
-        if (start != null) {
-            spawnField.addSource((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), 0);
-        } else if (targets != null) {
-            for (SpawnSelector.Target target : targets) {
-                spawnField.addSource((int) Math.floor(target.x), target.y, (int) Math.floor(target.z), 0);
-            }
-        }
-        stage = Stage.SPAWN_FIELD;
+        return starts;
     }
 
     private HybridSearch.Settings getSearchSettings() {
@@ -307,18 +287,18 @@ final class RoutePlanner {
         search.maxDown = settings.maxDown;
         //Drive at least a vehicle's length straight in, and never less than a few blocks, or small vehicles can't settle straight.
         search.runIn = Math.max(MIN_RUN_IN, checker.shape.bodyLength);
-        search.minLength = settings.summonDistance * 0.6;
-        search.minDistance = settings.summonDistance / 2;
         search.targetLength = settings.summonDistance;
         search.maxExpansions = settings.maxExpansions;
-        search.allowReverse = reversing;
+        search.allowReverse = settings.allowReverse && start != null;
+        search.reverseFactor = settings.reverseFactor;
+        search.cuspCost = settings.cuspCost;
         //Each way it goes should be a fair part of its length, or the changes of direction are just shuffling.
         search.minGearLength = Math.max(search.minGearLength, checker.shape.bodyLength / 2);
         return search;
     }
 
-    private void startSearch() {
-        search = new HybridSearch(checker, kinematics, getSearchSettings(), player, spawnField, goals, start);
+    private void startSearch(List<HybridSearch.Start> starts) {
+        search = new HybridSearch(checker, kinematics, getSearchSettings(), player, goalField, goals, starts, start == null);
         stage = Stage.SEARCH;
     }
 }

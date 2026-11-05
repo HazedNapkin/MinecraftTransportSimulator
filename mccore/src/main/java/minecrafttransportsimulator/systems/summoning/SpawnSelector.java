@@ -1,8 +1,10 @@
 package minecrafttransportsimulator.systems.summoning;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.Set;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
 
@@ -15,7 +17,9 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * also has to have room to place the vehicle facing the way the drive sets off.  The picks are kept apart, so the
  * search has a spread to head for.
  * <p>
- * These are only where the search aims.  It can start the vehicle anywhere that's good enough on the way.
+ * The search sets off from all the picks at once.  Each goal has its own picks first, the best place whose way in
+ * leads to it, as a goal may only be reachable from some sides: a long vehicle that can't turn a tight corner onto its
+ * run-in has to come at it straight.  The rest of the picks are the best of what's left.
  */
 final class SpawnSelector {
     /**Costs, in blocks of route: for each block the drive is off the summon distance, for being seen, and for being behind.**/
@@ -37,7 +41,10 @@ final class SpawnSelector {
         double maxLength = 48;
         /**Only every this many'th column each way is looked at, as neighbours are much alike.**/
         int stride = 2;
-        int maxTargets = 6;
+        int maxTargets = 16;
+        /**Most the vehicle can climb and drop between neighbouring blocks.**/
+        int maxUp = 1;
+        int maxDown = 2;
     }
 
     private final PoseChecker checker;
@@ -53,24 +60,39 @@ final class SpawnSelector {
      */
     private final PriorityQueue<Candidate> queue = new PriorityQueue<>((a, b) -> Double.compare(a.cost, b.cost));
     private final List<Target> picked = new ArrayList<>();
+    /**The goals, by flood source, that have a pick, and the places put off as their goal had one, until each has.**/
+    private final Set<Integer> sourcesPicked = new HashSet<>();
+    private final List<Candidate> deferred = new ArrayList<>();
+    private boolean eachGoalPicked;
+    private boolean picksDone;
+    /**The goals to look straight back from, and the next to.**/
+    private final List<ArrivalPlanner.Goal> goals;
+    private int goalIndex;
     private List<Target> targets;
 
-    SpawnSelector(PoseChecker checker, FlowField goalField, Settings settings, Point3D player, double lookYaw) {
+    SpawnSelector(PoseChecker checker, FlowField goalField, List<ArrivalPlanner.Goal> goals, Settings settings, Point3D player, double lookYaw) {
         this.checker = checker;
         this.settings = settings;
         this.player = player.copy();
         this.lookYaw = lookYaw;
         this.cells = goalField.getCells();
+        this.goals = goals;
     }
 
-    /**Looks over cells, then picks, until it's done or maxNanos pass.  Returns true once it's done.**/
+    /**Looks over cells, picks, then looks straight back from each goal, until it's done or maxNanos pass.  Returns true once it's done.**/
     boolean step(long maxNanos) {
         long startTime = System.nanoTime();
         while (cellIndex < cells.size() && System.nanoTime() - startTime < maxNanos) {
             score(cells.get(cellIndex++));
         }
-        while (cellIndex >= cells.size() && targets == null && System.nanoTime() - startTime < maxNanos) {
+        while (cellIndex >= cells.size() && !picksDone && System.nanoTime() - startTime < maxNanos) {
             pickNext();
+        }
+        while (picksDone && goalIndex < goals.size() && System.nanoTime() - startTime < maxNanos) {
+            addStraightApproach(goals.get(goalIndex++));
+        }
+        if (picksDone && goalIndex >= goals.size()) {
+            targets = picked;
         }
         return targets != null;
     }
@@ -99,23 +121,35 @@ final class SpawnSelector {
         }
         double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
         double cost = Math.abs(cell.distance - settings.targetLength) * LENGTH_COST + offFront / 180 * BEHIND_COST;
-        queue.add(new Candidate(x, cell.y, z, yaw, cell.distance, cost));
+        queue.add(new Candidate(x, cell.y, z, yaw, cell.distance, cost, cell.source));
     }
 
     /**
-     * Takes the next best, skipping any too near a better one already taken.  The cheapest queued is checked first if
-     * it hasn't been, and queued again at its full cost, as it may no longer be the cheapest.
+     * Takes the next best, skipping any too near a better one already taken, and until each goal has one, any whose
+     * goal has.  The cheapest queued is checked first if it hasn't been, and queued again at its full cost, as it may
+     * no longer be the cheapest.
      */
     private void pickNext() {
         Candidate candidate = queue.poll();
+        if (candidate == null && !eachGoalPicked) {
+            //Every goal that could have a pick has.  Fill up with the best of the rest.
+            eachGoalPicked = true;
+            queue.addAll(deferred);
+            deferred.clear();
+            return;
+        }
         if (candidate == null || picked.size() >= settings.maxTargets) {
-            targets = picked;
+            picksDone = true;
             return;
         }
         for (Target taken : picked) {
             if (Math.hypot(candidate.x - taken.x, candidate.z - taken.z) < MIN_SPACING) {
                 return;
             }
+        }
+        if (!eachGoalPicked && sourcesPicked.contains(candidate.source)) {
+            deferred.add(candidate);
+            return;
         }
         if (!candidate.checked) {
             candidate.checked = true;
@@ -129,6 +163,58 @@ final class SpawnSelector {
             return;
         }
         picked.add(new Target(candidate.x, candidate.y, candidate.z, candidate.yaw, candidate.length, candidate.cost, candidate.visible));
+        sourcesPicked.add(candidate.source);
+    }
+
+    /**
+     * Adds the best place to set off from straight back along the way the goal pulls up, if there's room to drive
+     * straight in from far enough and it's not too near a pick already.  The flood says nothing of which way the
+     * vehicle faces, so its picks may need turns the vehicle can't make to line up with the goal.  Every goal with a
+     * clear straight in has this one it can always get to.  Walking back, each point's ground is found from the one
+     * after it, the way driving in climbs and drops.
+     */
+    private void addStraightApproach(ArrivalPlanner.Goal goal) {
+        double forwardX = Math.sin(Math.toRadians(goal.yaw));
+        double forwardZ = Math.cos(Math.toRadians(goal.yaw));
+        double headroom = checker.shape.top - checker.shape.bottom;
+        List<Candidate> points = new ArrayList<>();
+        int laterY = goal.y;
+        for (double back = 0.5; back <= settings.maxLength + 1e-9; back += 0.5) {
+            double x = goal.x - forwardX * back;
+            double z = goal.z - forwardZ * back;
+            int y = checker.terrain.findSurface((int) Math.floor(x), (int) Math.floor(z), laterY, settings.maxDown, settings.maxUp, headroom);
+            if (y == TerrainMap.NO_SURFACE || !checker.canDrive(x, y, z, goal.yaw)) {
+                break;
+            }
+            laterY = y;
+            if (back >= settings.minLength - 1e-9 && Math.floorMod((int) Math.round(back * 2), 4) == 0 && Math.hypot(x - player.x, z - player.z) >= settings.minDistance) {
+                double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
+                points.add(new Candidate(x, y, z, goal.yaw, back, HybridSearch.getStartCost(back, settings.targetLength, false, offFront), -1));
+            }
+        }
+        //The best of them, checking whether each can be seen only once it could be best.
+        PriorityQueue<Candidate> best = new PriorityQueue<>((a, b) -> Double.compare(a.cost, b.cost));
+        best.addAll(points);
+        Candidate point;
+        while ((point = best.poll()) != null) {
+            if (point.checked) {
+                for (Target taken : picked) {
+                    if (Math.hypot(point.x - taken.x, point.z - taken.z) < MIN_SPACING) {
+                        return;
+                    }
+                }
+                picked.add(new Target(point.x, point.y, point.z, point.yaw, point.length, point.cost, point.visible));
+                return;
+            }
+            point.checked = true;
+            if (checker.canPark(point.x, point.y, point.z, point.yaw)) {
+                point.visible = isVisible(checker, player, point.x, point.y, point.z);
+                if (point.visible) {
+                    point.cost += VISIBLE_COST;
+                }
+                best.add(point);
+            }
+        }
     }
 
     /**
@@ -149,11 +235,14 @@ final class SpawnSelector {
         final double z;
         final double yaw;
         final double length;
+        /**The goal the way in from here leads to, as its flood source.**/
+        final int source;
         double cost;
         boolean checked;
         boolean visible;
 
-        Candidate(double x, int y, double z, double yaw, double length, double cost) {
+        Candidate(double x, int y, double z, double yaw, double length, double cost, int source) {
+            this.source = source;
             this.x = x;
             this.y = y;
             this.z = z;

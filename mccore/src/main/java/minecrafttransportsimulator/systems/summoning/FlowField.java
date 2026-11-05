@@ -84,6 +84,8 @@ final class FlowField {
     private int[] target;
     private double targetMargin;
     private Cell targetCell;
+    /**How many sources have been added.**/
+    private int sourceCount;
 
     /**Makes a flood spreading out from no further than settings.radius from the center.  Add sources before stepping it.**/
     FlowField(TerrainMap terrain, Settings settings, int centerX, int centerZ) {
@@ -111,6 +113,7 @@ final class FlowField {
             return false;
         }
         reach(x, y, z, null, extraDistance);
+        ++sourceCount;
         return true;
     }
 
@@ -204,6 +207,7 @@ final class FlowField {
         }
         cell.distance = distance;
         cell.next = from;
+        cell.source = from != null ? from.source : sourceCount;
         open.add(new Queued(cell, distance));
     }
 
@@ -288,6 +292,8 @@ final class FlowField {
         double distance = Double.POSITIVE_INFINITY;
         /**The next cell on the way to the sources, or null for a source.**/
         Cell next;
+        /**Which source the way from here leads to, numbered in the order they were added.**/
+        int source;
         private boolean closed;
 
         private Cell(int x, int y, int z) {

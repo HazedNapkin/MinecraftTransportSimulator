@@ -83,11 +83,6 @@ public class FlowFieldTest {
         //Driving to a goal below it, the top can drive off the edge.
         FlowField down = flood(terrain, toward, 0, 0, 0);
         assertNotNull(down.getCell(10, 2, 0));
-        //Driving away from a start on top, it can drive off the edge too.
-        FlowField.Settings away = settings(0);
-        away.towardSources = false;
-        assertNotNull(flood(terrain, away, 10, 2, 0).getCell(0, 0, 0));
-        assertNull(flood(terrain, away, 0, 0, 0).getCell(10, 2, 0));
     }
 
     @Test

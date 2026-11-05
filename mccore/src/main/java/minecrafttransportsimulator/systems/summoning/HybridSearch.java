@@ -106,8 +106,6 @@ final class HybridSearch {
         int maxDown = 2;
         /**Longest straight run-in each route ends with, in blocks.  Shorter if the goal's is.**/
         double runIn = 4;
-        /**Best drive in for a placed vehicle, in blocks.**/
-        double targetLength = 30;
         int maxExpansions = 20000;
         /**
          * True if the route may back up, so it can reverse out of where it's stuck or make a three-point turn where it

@@ -236,7 +236,6 @@ final class RoutePlanner {
         field.headroom = checker.shape.top - checker.shape.bottom;
         field.maxUp = settings.maxUp;
         field.maxDown = settings.maxDown;
-        field.towardSources = true;
         field.radius = fieldRadius;
         //Room only matters to whether the vehicle fits, and to keeping it a block off things, so look no further.
         field.clearanceRange = Math.ceil(checker.shape.side + 1);
@@ -291,7 +290,6 @@ final class RoutePlanner {
         search.maxDown = settings.maxDown;
         //Drive at least a vehicle's length straight in, and never less than a few blocks, or small vehicles can't settle straight.
         search.runIn = Math.max(MIN_RUN_IN, checker.shape.bodyLength);
-        search.targetLength = settings.summonDistance;
         search.maxExpansions = settings.maxExpansions;
         search.allowReverse = settings.allowReverse && start != null;
         search.reverseFactor = settings.reverseFactor;

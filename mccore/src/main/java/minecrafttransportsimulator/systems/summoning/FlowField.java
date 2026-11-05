@@ -16,7 +16,7 @@ import java.util.PriorityQueue;
  * <p>
  * Cells are a block column and a surface height in it, so a road under a bridge and the bridge are different cells.
  * Moving to a neighbouring cell can climb {@link Settings#maxUp} and drop {@link Settings#maxDown}, in the direction
- * the vehicle drives.  A vehicle drives either to the sources, as to a goal, or away from them, as from a start.
+ * the vehicle drives, which is to the sources, as they're where it's going.
  */
 final class FlowField {
     /**Furthest from a cell we can look for things in the way when working out how much room it has, in blocks.**/
@@ -54,8 +54,6 @@ final class FlowField {
         double headroom = 2;
         int maxUp = 1;
         int maxDown = 2;
-        /**True if the vehicle drives to the sources, false if it drives away from them.**/
-        boolean towardSources = true;
         /**
          * How far from a cell to look for things in the way, in blocks, up to {@link #CLEARANCE_RANGE}.  Cells with
          * more room than this count as having this much.  Looking only as far as matters saves a lot of checks.
@@ -74,9 +72,9 @@ final class FlowField {
     private final int centerX;
     private final int centerZ;
     private final Map<Long, Cell> cells = new HashMap<>();
-    /**How much room each surface has, and whether each column's open at each height.  Floods with the same settings can share these.**/
-    private Map<Long, Double> clearanceCache = new HashMap<>();
-    private Map<Long, Boolean> openCache = new HashMap<>();
+    /**How much room each surface has, and whether each column's open at each height.**/
+    private final Map<Long, Double> clearanceCache = new HashMap<>();
+    private final Map<Long, Boolean> openCache = new HashMap<>();
     /**Cells to spread from, each with the distance it was queued at, nearest first.**/
     private final PriorityQueue<Queued> open = new PriorityQueue<>((a, b) -> Double.compare(a.distance, b.distance));
     private boolean finished;
@@ -93,15 +91,6 @@ final class FlowField {
         this.settings = settings;
         this.centerX = centerX;
         this.centerZ = centerZ;
-    }
-
-    /**
-     * Shares the other flood's record of how much room each surface has, so they don't both work it out.  Its settings
-     * for room, headroom and climbing must be the same as this one's.  Call before adding sources.
-     */
-    void shareRoom(FlowField other) {
-        clearanceCache = other.clearanceCache;
-        openCache = other.openCache;
     }
 
     /**
@@ -179,8 +168,8 @@ final class FlowField {
             return;
         }
         //Heights the neighbour may be at.  Driving from it to us climbs what it's below us, and the other way round.
-        int below = settings.towardSources ? settings.maxUp : settings.maxDown;
-        int above = settings.towardSources ? settings.maxDown : settings.maxUp;
+        int below = settings.maxUp;
+        int above = settings.maxDown;
         //The columns beside the corner are passed on the way, so they're open by the same heights.
         if (diagonal && (!terrain.isOpen(current.x + dx, current.y, current.z, above, below, settings.headroom) || !terrain.isOpen(current.x, current.y, current.z + dz, above, below, settings.headroom))) {
             return;

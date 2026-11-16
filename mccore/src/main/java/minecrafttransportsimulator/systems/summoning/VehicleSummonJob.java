@@ -29,7 +29,8 @@ import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
  * from somewhere hidden about the vehicle's summonDistance blocks away, teleport there and drive in with the real
  * controls, following the route's curves and slowing for its turns, steps and the end.  A vehicle that's already
  * nearby drives over from where it is.  If no route exists, teleport to where it would have pulled up.  If there's no
- * room by the player, teleport to the nearest place further out it fits.  If stuck, re-plan once, then teleport.
+ * room by the player, teleport to the nearest place further out it fits.  If stuck, re-plan once, then teleport to
+ * wherever by the player it fits then.
  * <p>
  * Aircraft that fly in (see {@link VehiclePhone#canFlyIn}): teleport in above the buildings, fly over the
  * player, and land straight down in the first clear spot within {@link #LANDING_RADIUS} blocks, trying in front
@@ -138,7 +139,9 @@ final class VehicleSummonJob {
         /**Where an aircraft that can't fly in is teleported.**/
         AIRCRAFT,
         /**Where an aircraft that took too long flying in is teleported.**/
-        FLIGHT_TIMEOUT
+        FLIGHT_TIMEOUT,
+        /**Where a ground vehicle that got stuck driving in is teleported, found again then, as the player may have moved.**/
+        STUCK
     }
 
     final UUID vehicleID;
@@ -185,8 +188,13 @@ final class VehicleSummonJob {
     /**The speeds planned along the route, and what steers the vehicle along it.**/
     private SpeedProfile profile;
     private PathTracker tracker;
-    /**What the driver does with the controls each tick: see {@link DriveControls}.**/
-    private final DriveControls.Controls controls = new DriveControls.Controls();
+    /**What the driver does with the controls each tick, made afresh for each route: see {@link DriveControls}.**/
+    private DriveControls driver;
+    /**
+     * Whether the vehicle had MTS's simple throttle on before the drive, which the drive turns on so MTS changes
+     * gear up and down for it as it does for automatic gearboxes, or null if the drive hasn't touched it.
+     */
+    private Boolean simpleThrottleBefore;
     /**How the drive's going, kept if summon debugging is on, else null.**/
     private SummonDriveReport driveReport;
     /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
@@ -523,6 +531,16 @@ final class VehicleSummonJob {
                 }
                 break;
             }
+            case STUCK: {
+                if (spot != null) {
+                    teleportToGround(spot.getGround(), spot.yaw, null, LanguageSystem.INTERACT_PHONE_STUCKTELEPORT);
+                    return false;
+                }
+                park();
+                message(player, LanguageSystem.INTERACT_PHONE_STUCK);
+                releaseChunk();
+                return true;
+            }
             case FLIGHT_TIMEOUT: {
                 //Stop the flight before saving the aircraft to move it, or it'd fly back to its old target once placed.
                 VehicleSummonFlight.stop(vehicle);
@@ -793,6 +811,14 @@ final class VehicleSummonJob {
         settings.braking = BRAKING;
         tracker = new PathTracker(route, profile, kinematics, settings);
         tracker.setRudder(vehicle.rudderInputVar.currentValue);
+        driver = new DriveControls(BRAKING);
+        //Have MTS change gear up and down as it goes, as it does for automatic gearboxes, or it'd stay in first.
+        if (simpleThrottleBefore == null) {
+            simpleThrottleBefore = vehicle.isSimpleThrottleVar.isActive;
+        }
+        if (!vehicle.isSimpleThrottleVar.isActive) {
+            vehicle.isSimpleThrottleVar.setActive(true, true);
+        }
         driveReport = VehicleSummonDebug.isEnabled() ? new SummonDriveReport(route, profile, getCruiseSpeed(), profile.speeds[0]) : null;
     }
 
@@ -826,10 +852,12 @@ final class VehicleSummonJob {
         if (driveReport != null) {
             driveReport.record(command, speed);
         }
-        boolean stalledAtEnd = DriveControls.isStalledAtEnd(command, speed, phaseTicks);
-        boolean playerInTheWay = !command.arrived && !stalledAtEnd && !command.pivot && isPlayerInTheWay(player, command.reverse);
-        if (command.arrived || stalledAtEnd || playerInTheWay) {
-            reportDrive(player, command.arrived ? "arrived" : stalledAtEnd ? "stalled short" : "player in the way", command, speed);
+        //Get into gear for the way it's going, then steer and keep to the planned speed: see DriveControls.
+        boolean shifting = !command.pivot && shiftFor(command.reverse, speed);
+        DriveControls.Controls controls = driver.update(command, speed, vehicle.goingInReverse, shifting);
+        boolean playerInTheWay = !controls.park && !command.pivot && isPlayerInTheWay(player, command.reverse);
+        if (controls.park || playerInTheWay) {
+            reportDrive(player, controls.park ? controls.parkReason : "player in the way", command, speed);
             park();
             message(player, LanguageSystem.INTERACT_PHONE_ARRIVED);
             return true;
@@ -838,18 +866,15 @@ final class VehicleSummonJob {
             directionChangeTick = phaseTicks;
             lastProgressPosition = position.copy();
         }
-
         if (command.pivot) {
-            return pivot(player, position, command, speed);
+            return pivot(player, position, controls);
         }
-        //Get into gear for the way it's going, then steer and keep to the planned speed: see DriveControls.
-        DriveControls.drive(command, speed, vehicle.goingInReverse, shiftFor(command.reverse, speed), controls);
-        applyControls();
+        applyControls(controls);
         return checkProgress(player, position);
     }
 
     /**Does what the controls say to the vehicle.**/
-    private void applyControls() {
+    private void applyControls(DriveControls.Controls controls) {
         if (controls.straightened) {
             tracker.setRudder(0);
         }
@@ -864,9 +889,8 @@ final class VehicleSummonJob {
      * lets go of the brakes, and the steering turns it.  Once it's lined up, the next way it goes shifts back into
      * gear, from neutral without stopping.  Turning doesn't move it, so it's not counted as stuck meanwhile.
      */
-    private boolean pivot(IWrapperPlayer player, Point3D position, PathTracker.Command command, double speed) {
+    private boolean pivot(IWrapperPlayer player, Point3D position, DriveControls.Controls controls) {
         directionChangeTick = phaseTicks;
-        DriveControls.pivot(command, speed, controls);
         if (controls.neutral) {
             set(vehicle.parkingBrakeVar, 0);
             for (PartEngine engine : getWorkingEngines(false)) {
@@ -875,7 +899,7 @@ final class VehicleSummonJob {
                 }
             }
         }
-        applyControls();
+        applyControls(controls);
         return checkProgress(player, position);
     }
 
@@ -977,9 +1001,14 @@ final class VehicleSummonJob {
         return false;
     }
 
+    /**
+     * Brings a vehicle that's stuck to the player, unless it was close by to start with.  Where it goes is looked for
+     * again now, rather than where planning found it had room, as the player may have moved, even onto that spot.
+     */
     private boolean stuckFallback(IWrapperPlayer player) {
-        if (fallbackGoal != null && !driveOnly) {
-            teleportToGround(fallbackGoal.getGround(), fallbackGoal.yaw, null, LanguageSystem.INTERACT_PHONE_STUCKTELEPORT);
+        if (!driveOnly) {
+            frontAngle = getLookAngle(player);
+            startSpotSearch(player.getPosition(), SpotPurpose.STUCK);
             return false;
         }
         park();
@@ -1296,8 +1325,17 @@ final class VehicleSummonJob {
         return engine.definition.generic.type.contains("jet");
     }
 
-    /**Lets go of the controls, and takes it out of reverse if it was backing up, so whoever drives it next isn't caught out.**/
+    /**
+     * Lets go of the controls, takes it out of reverse if it was backing up, and puts its simple throttle back as it
+     * was, so whoever drives it next isn't caught out.
+     */
     private void stopControls() {
+        if (simpleThrottleBefore != null) {
+            if (vehicle.isSimpleThrottleVar.isActive != simpleThrottleBefore) {
+                vehicle.isSimpleThrottleVar.setActive(simpleThrottleBefore, true);
+            }
+            simpleThrottleBefore = null;
+        }
         set(vehicle.throttleVar, 0);
         set(vehicle.rudderInputVar, 0);
         set(vehicle.brakeVar, 0);

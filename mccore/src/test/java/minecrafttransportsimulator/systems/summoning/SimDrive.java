@@ -43,6 +43,8 @@ final class SimDrive {
         double sideOffset;
         double yawOffset;
         double cruiseSpeed = SummonScenarios.getCruiseSpeed();
+        /**Where to print what happens each tick, for working out why a drive went as it did, or null not to.**/
+        java.io.PrintStream trace;
     }
 
     /**What happened on a drive.**/
@@ -115,7 +117,7 @@ final class SimDrive {
         PoseChecker checker = setup.terrain != null ? new PoseChecker(new TerrainMap(setup.terrain), setup.shape) : null;
         ArrivalPlanner gaps = setup.player != null ? new ArrivalPlanner(new PoseChecker(new TerrainMap(setup.terrain != null ? setup.terrain : FakeTerrain.flat(1)), setup.shape), new ArrivalPlanner.Settings(), setup.player, 0) : null;
         int groundY = start.y;
-        DriveControls.Controls controls = new DriveControls.Controls();
+        DriveControls driver = new DriveControls(VehicleSummonJob.BRAKING);
         double sentRudder = 0;
         double sentThrottle = 0;
         double sentBrake = 0;
@@ -129,31 +131,31 @@ final class SimDrive {
             double speed = vehicle.getSpeed();
             PathTracker.Command command = tracker.update(vehicle.x, vehicle.z, vehicle.yaw, speed);
             result.worstCrossTrack = Math.max(result.worstCrossTrack, Math.abs(command.crossTrack));
-            boolean stalled = DriveControls.isStalledAtEnd(command, speed, ticks);
-            if (command.arrived || stalled) {
-                result.outcome = command.arrived ? Outcome.ARRIVED : Outcome.STALLED_SHORT;
-                break;
-            }
             if (command.changedDirection) {
                 directionChangeTick = ticks;
                 lastProgressX = vehicle.x;
                 lastProgressZ = vehicle.z;
             }
-            if (command.pivot) {
-                directionChangeTick = ticks;
-                DriveControls.pivot(command, speed, controls);
-                if (controls.neutral) {
-                    vehicle.parkingBrake = false;
-                    vehicle.gear = 0;
-                }
-            } else {
-                boolean shifting = DriveControls.isShifting(vehicle.gear, command.reverse);
+            boolean shifting = false;
+            if (!command.pivot) {
+                shifting = DriveControls.isShifting(vehicle.gear, command.reverse);
                 DriveControls.Shift shift = DriveControls.getShift(vehicle.gear, command.reverse, speed);
                 if (shift != DriveControls.Shift.NONE) {
                     vehicle.shift(shift);
                     ++result.shifts;
                 }
-                DriveControls.drive(command, speed, vehicle.goingInReverse, shifting, controls);
+            }
+            DriveControls.Controls controls = driver.update(command, speed, vehicle.goingInReverse, shifting);
+            if (controls.park) {
+                result.outcome = "arrived".equals(controls.parkReason) ? Outcome.ARRIVED : Outcome.STALLED_SHORT;
+                break;
+            }
+            if (command.pivot) {
+                directionChangeTick = ticks;
+                if (controls.neutral) {
+                    vehicle.parkingBrake = false;
+                    vehicle.gear = 0;
+                }
             }
             if (controls.straightened) {
                 tracker.setRudder(0);
@@ -179,6 +181,9 @@ final class SimDrive {
             }
             pedal = pedalNow != 0 ? pedalNow : pedal;
 
+            if (setup.trace != null) {
+                setup.trace.println(String.format("TRACE %4d along %6.2f left %6.2f speed %5.2f target %5.2f wanted %6.2f throttle %4.2f brake %4.2f rudder %6.2f cross %5.2f learnt brake %5.2f coast %5.2f", ticks, command.along, command.legRemaining, speed, command.targetSpeed, driver.getWantedAcceleration(command, speed), sentThrottle, sentBrake, sentRudder, command.crossTrack, driver.getBraking(), driver.getCoasting()));
+            }
             vehicle.step(sentRudder, sentThrottle, sentBrake);
             result.topSpeed = Math.max(result.topSpeed, vehicle.getSpeed());
             result.peakBraking = Math.max(result.peakBraking, (speed - vehicle.getSpeed()) / SimVehicle.TICK);

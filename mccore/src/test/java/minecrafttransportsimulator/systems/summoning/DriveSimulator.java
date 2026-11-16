@@ -63,6 +63,8 @@ final class DriveSimulator {
     static Drive drive(SummonRoute route, VehicleKinematics kinematics, double startSpeed, double sideOffset, double yawOffset, double settleDistance, boolean skidSteer) {
         SpeedProfile profile = SpeedProfile.plan(route, kinematics, new SpeedProfile.Settings(), startSpeed);
         PathTracker tracker = new PathTracker(route, profile, kinematics, new PathTracker.Settings());
+        //Setting off with the wheel already turned for the curve it starts on, as the summon job does.
+        tracker.setRudder(DriveControls.getStartRudder(route, kinematics, profile.speeds[0]));
         SummonRoute.Pose start = route.getStart();
         Drive drive = new Drive();
         drive.yaw = start.yaw + yawOffset;

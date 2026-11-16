@@ -30,6 +30,8 @@ final class PathTracker {
     static final class Settings {
         /**How far ahead in time the route's curvature is steered for, in seconds.  The vehicle takes a moment to respond.**/
         double previewTime = 0.25;
+        /**How far ahead in time the speed to be doing is looked at, in seconds: see {@link Command#targetSpeedAhead}.**/
+        double speedPreviewTime = 0.5;
         /**
          * Distance over which errors are corrected: this many seconds of travel at the speed, but no shorter than the
          * least, in blocks.  Longer is smoother, shorter holds the route more tightly.
@@ -64,8 +66,13 @@ final class PathTracker {
     static final class Command {
         /**The rudder input to steer with.**/
         double rudder;
-        /**The speed to be doing, in m/s.**/
+        /**
+         * The speed to be doing, in m/s, and the least it should be doing a moment ahead, never more than now: see
+         * {@link Settings#speedPreviewTime}.  Slowing towards that, rather than what it should be doing now, has it
+         * slowed for a turn by the time it's there, as a vehicle takes a moment to slow.
+         */
         double targetSpeed;
+        double targetSpeedAhead;
         /**True once the vehicle's at the end.**/
         boolean arrived;
         /**True if it should be backing up, so in reverse gear.**/
@@ -183,11 +190,20 @@ final class PathTracker {
             plannedSpeed = Math.max(plannedSpeed, settings.minSpeed);
         }
         double targetSpeed = Math.min(plannedSpeed, Math.sqrt(2 * settings.braking * Math.max(0, command.legRemaining)));
+        //And what it'll be a moment ahead, so the driver can start slowing for a turn before it's there.
+        double ahead = Math.max(0, speed) * settings.speedPreviewTime;
+        double plannedAhead = getSpeedAt(Math.min(command.along + ahead, profile.distances[legEnd]));
+        if (leg > 0) {
+            plannedAhead = Math.max(plannedAhead, settings.minSpeed);
+        }
+        double targetAhead = plannedAhead;
         double offRoute = Math.abs(command.crossTrack);
         if (offRoute > settings.offRouteDistance) {
             targetSpeed *= settings.offRouteDistance / offRoute;
+            targetAhead *= settings.offRouteDistance / offRoute;
         }
         command.targetSpeed = targetSpeed;
+        command.targetSpeedAhead = Math.min(targetSpeed, targetAhead);
         command.reverse = reverse;
         command.changedDirection = false;
         command.arrived = leg == legs.size() - 1 && command.remaining <= settings.arriveTolerance;
@@ -199,6 +215,7 @@ final class PathTracker {
             command.reverse = legs.get(leg)[2] == SummonRoute.LEG_REVERSE;
             command.changedDirection = true;
             command.targetSpeed = 0;
+            command.targetSpeedAhead = 0;
         }
         return command;
     }
@@ -213,6 +230,7 @@ final class PathTracker {
         command.reverse = false;
         command.changedDirection = false;
         command.targetSpeed = 0;
+        command.targetSpeedAhead = 0;
         command.crossTrack = 0;
         command.along = profile.distances[start];
         command.remaining = length - command.along;

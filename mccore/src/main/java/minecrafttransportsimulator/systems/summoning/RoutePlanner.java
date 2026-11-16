@@ -46,7 +46,15 @@ final class RoutePlanner {
         /**True if the vehicle can turn on the spot, as vehicles that skid steer can, and how fast, in degrees a second.**/
         boolean allowPivot;
         double pivotRate = 45;
+        /**
+         * How much further off things than its shape needs the route would like to keep the vehicle, in blocks, so it
+         * doesn't scrape them if it strays a little off it.  See {@link HybridSearch.Settings#margin}.
+         */
+        double margin = DEFAULT_MARGIN;
     }
+
+    /**The margin routes keep off things unless told otherwise, in blocks: see {@link Settings#margin}.**/
+    static final double DEFAULT_MARGIN = 0.3;
 
     private enum Stage {
         ARRIVAL,
@@ -147,7 +155,7 @@ final class RoutePlanner {
                 }
                 case SMOOTH: {
                     //Smooth the run-in no further than it's straight.
-                    route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn));
+                    route = PathSmoother.smooth(route, checker, 1 / settings.turnRadius, Math.min(getSearchSettings().runIn, route.goal.runIn), settings.margin);
                     stage = Stage.DONE;
                     break;
                 }
@@ -237,8 +245,11 @@ final class RoutePlanner {
         field.maxUp = settings.maxUp;
         field.maxDown = settings.maxDown;
         field.radius = fieldRadius;
-        //Room only matters to whether the vehicle fits, and to keeping it a block off things, so look no further.
-        field.clearanceRange = Math.ceil(checker.shape.side + 1);
+        //Room matters to whether the vehicle fits, to keeping it a block off things, and to whether it has the margin
+        //it would like, where less costs as the route search costs it, so look no further than those.
+        field.comfortableClearance = checker.shape.side - VehicleShape.CELL_OVERLAP_TOLERANCE + settings.margin;
+        field.tightCost = HybridSearch.TIGHT_COST;
+        field.clearanceRange = Math.max(Math.ceil(checker.shape.side + 1), Math.ceil(field.comfortableClearance));
         //It only needs to reach as far as a drive in can be, or for a vehicle that's nearby, a little past where it is.
         field.maxDistance = start != null ? Double.POSITIVE_INFINITY : getMaxLength();
         goalField = new FlowField(checker.terrain, field, (int) Math.floor(player.x), (int) Math.floor(player.z));
@@ -297,6 +308,7 @@ final class RoutePlanner {
         search.allowPivot = settings.allowPivot;
         search.pivotRate = settings.pivotRate;
         search.pivotPlayerClearance = ArrivalPlanner.getPivotPlayerClearance(settings.arrival);
+        search.margin = settings.margin;
         //Each way it goes should be a fair part of its length, or the changes of direction are just shuffling.
         search.minGearLength = Math.max(search.minGearLength, checker.shape.bodyLength / 2);
         return search;

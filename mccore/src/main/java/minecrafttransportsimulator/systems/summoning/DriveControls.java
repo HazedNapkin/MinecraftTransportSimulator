@@ -92,6 +92,8 @@ final class DriveControls {
     static final double BRAKE_THRESHOLD = 1.0;
     /**The steps the pedals are set in, so they're not changed, and sent to clients, for every tiny difference.**/
     static final double PEDAL_STEP = 0.05;
+    /**The steps the steering is set in, in degrees of rudder input, for the same reason.  It makes no difference to where it goes that matters.**/
+    static final double RUDDER_STEP = 0.5;
     /**Slower than this, in m/s, with nowhere to go, it holds itself still with the brake.**/
     static final double HOLD_SPEED = 0.3;
 
@@ -187,7 +189,7 @@ final class DriveControls {
                 controls.rudder = 0;
             } else {
                 controls.straightened = false;
-                controls.rudder = command.rudder;
+                controls.rudder = Math.rint(command.rudder / RUDDER_STEP) * RUDDER_STEP;
             }
             setPedals(command, speed);
         }
@@ -253,12 +255,14 @@ final class DriveControls {
             //Past where it stops.
             return -MAX_BRAKING;
         }
-        double toSpeed = (command.targetSpeed - speed) / SPEED_RESPONSE_TIME;
         if (!isStopping(command, speed)) {
-            return toSpeed;
+            //Towards the speed it should be doing a moment ahead, so it's slowed for a turn by the time it's there.
+            return (command.targetSpeedAhead - speed) / SPEED_RESPONSE_TIME;
         }
         //Just hard enough to stop there, but less if it's slowed more than braking as hard as it should from here
-        //would have, so it gets back to that rather than creeping in.  Never harder than keeping to the speed asked.
+        //would have, so it gets back to that rather than creeping in.  Never harder than keeping to the speed it
+        //should be doing now: stopping looks ahead for itself.
+        double toSpeed = (command.targetSpeed - speed) / SPEED_RESPONSE_TIME;
         double shortfall = Math.max(0, STOPPING_FRACTION * getStoppingSpeed(left) - speed);
         return Math.min(toSpeed, -speed * speed / (2 * left) + shortfall / SPEED_RESPONSE_TIME);
     }
@@ -292,7 +296,7 @@ final class DriveControls {
             controls.brake = 1;
         } else if (wanted > -coasting && !stopping) {
             //Slowing on its own would slow it too much, if at all: the throttle, set by how far off the speed it is.
-            double error = command.targetSpeed - speed;
+            double error = command.targetSpeedAhead - speed;
             throttleTrim = Math.max(0, Math.min(MAX_THROTTLE, throttleTrim + THROTTLE_INTEGRAL_GAIN * error * TICK));
             controls.throttle = command.targetSpeed > 0 ? step(Math.min(MAX_THROTTLE, throttleTrim + THROTTLE_GAIN * error)) : 0;
             controls.brake = 0;
@@ -329,6 +333,17 @@ final class DriveControls {
         controls.neutral = true;
         controls.brake = 0;
         controls.rudder = command.rudder;
+    }
+
+    /**
+     * The steering to set off along the route with at the speed in m/s, already turned for the curve it starts on.  A
+     * vehicle placed mid-turn would otherwise run wide while the wheel turned.  None if it starts by turning on the spot.
+     */
+    static double getStartRudder(SummonRoute route, VehicleKinematics kinematics, double speed) {
+        if (route.poses.size() < 2 || route.poses.get(1).pivot) {
+            return 0;
+        }
+        return kinematics.getRudderInput(route.getStart().curvature, Math.max(speed, 1));
     }
 
     /**

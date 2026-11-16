@@ -59,6 +59,14 @@ final class PathSmoother {
      * straight run-in runIn blocks long, the end of which is held as it is, and no part may turn tighter than maxCurvature.
      */
     static SummonRoute smooth(SummonRoute route, PoseChecker checker, double maxCurvature, double runIn) {
+        return smooth(route, checker, maxCurvature, runIn, 0);
+    }
+
+    /**
+     * Like {@link #smooth(SummonRoute, PoseChecker, double, double)}, but every pose that's moved must keep the margin,
+     * in blocks, further off things than the vehicle needs, if it did before it was moved.
+     */
+    static SummonRoute smooth(SummonRoute route, PoseChecker checker, double maxCurvature, double runIn, double margin) {
         List<SummonRoute.Pose> poses = route.poses;
         int count = poses.size();
         if (count < 5) {
@@ -106,7 +114,7 @@ final class PathSmoother {
                 }
             }
             List<SummonRoute.Pose> smoothed = toPoses(route, x, z, held);
-            List<Integer> misfits = findMisfits(smoothed, checker, maxCurvature);
+            List<Integer> misfits = findMisfits(smoothed, poses, checker, maxCurvature, margin);
             if (misfits.isEmpty()) {
                 return new SummonRoute(Collections.unmodifiableList(smoothed), route.placed, route.goal);
             }
@@ -173,12 +181,18 @@ final class PathSmoother {
         return smoothed;
     }
 
-    /**The poses where the vehicle no longer fits, or that turn tighter from the pose before than it can.**/
-    private static List<Integer> findMisfits(List<SummonRoute.Pose> poses, PoseChecker checker, double maxCurvature) {
+    /**
+     * The poses where the vehicle no longer fits with the margin to spare, or that turn tighter from the pose before
+     * than it can.  Poses where they were before smoothing were checked when the route was planned, so they fit.
+     */
+    private static List<Integer> findMisfits(List<SummonRoute.Pose> poses, List<SummonRoute.Pose> originals, PoseChecker checker, double maxCurvature, double margin) {
         List<Integer> misfits = new ArrayList<>();
         for (int i = 0; i < poses.size(); ++i) {
             SummonRoute.Pose pose = poses.get(i);
-            boolean fits = checker.canDrive(pose.x, pose.y, pose.z, pose.yaw);
+            SummonRoute.Pose original = originals.get(i);
+            boolean unmoved = pose.x == original.x && pose.z == original.z && pose.yaw == original.yaw;
+            //Where the route was planned only just clear of things, as there's no more room, that's all it needs.
+            boolean fits = unmoved || checker.canDrive(pose.x, pose.y, pose.z, pose.yaw, margin) || (!checker.canDrive(original.x, original.y, original.z, original.yaw, margin) && checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
             if (fits && i > 0 && !pose.pivot) {
                 SummonRoute.Pose last = poses.get(i - 1);
                 double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);

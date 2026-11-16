@@ -810,7 +810,10 @@ final class VehicleSummonJob {
         PathTracker.Settings settings = new PathTracker.Settings();
         settings.braking = BRAKING;
         tracker = new PathTracker(route, profile, kinematics, settings);
-        tracker.setRudder(vehicle.rudderInputVar.currentValue);
+        //Turn the wheel for the curve it sets off on, which a vehicle can do standing, and one placed is placed doing.
+        double startRudder = DriveControls.getStartRudder(route, kinematics, getSpeed());
+        set(vehicle.rudderInputVar, startRudder);
+        tracker.setRudder(startRudder);
         driver = new DriveControls(BRAKING);
         //Have MTS change gear up and down as it goes, as it does for automatic gearboxes, or it'd stay in first.
         if (simpleThrottleBefore == null) {

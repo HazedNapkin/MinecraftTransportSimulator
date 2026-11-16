@@ -15,6 +15,7 @@ public class DriveControlsTest {
     private static PathTracker.Command command(double targetSpeed, double rudder, boolean reverse) {
         PathTracker.Command command = new PathTracker.Command();
         command.targetSpeed = targetSpeed;
+        command.targetSpeedAhead = targetSpeed;
         command.rudder = rudder;
         command.reverse = reverse;
         command.remaining = 20;

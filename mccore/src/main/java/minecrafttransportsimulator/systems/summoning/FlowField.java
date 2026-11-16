@@ -65,6 +65,14 @@ final class FlowField {
         double maxDistance = Double.POSITIVE_INFINITY;
         /**Most cells to reach.**/
         int maxCells = 40000;
+        /**
+         * Room the vehicle would like either side of the cell it's in, in blocks as for {@link #clearance}, and how much
+         * more than its length each block through a cell with less costs, as a fraction.  The flood spreads the cheapest
+         * way, which keeps off tight places where it can, and says what getting to the sources costs as well as how far
+         * it is: see {@link FlowField#getCost}.
+         */
+        double comfortableClearance;
+        double tightCost;
     }
 
     private final TerrainMap terrain;
@@ -76,7 +84,7 @@ final class FlowField {
     private final Map<Long, Double> clearanceCache = new HashMap<>();
     private final Map<Long, Boolean> openCache = new HashMap<>();
     /**Cells to spread from, each with the distance it was queued at, nearest first.**/
-    private final PriorityQueue<Queued> open = new PriorityQueue<>((a, b) -> Double.compare(a.distance, b.distance));
+    private final PriorityQueue<Queued> open = new PriorityQueue<>((a, b) -> Double.compare(a.cost, b.cost));
     private boolean finished;
     /**Where the flood only needs to reach, and how far past it to carry on, if set: see {@link #setTarget}.**/
     private int[] target;
@@ -101,7 +109,7 @@ final class FlowField {
         if (!isPassable(x, y, z)) {
             return false;
         }
-        reach(x, y, z, null, extraDistance);
+        reach(x, y, z, null, extraDistance, extraDistance);
         ++sourceCount;
         return true;
     }
@@ -132,7 +140,7 @@ final class FlowField {
             }
             Cell current = queued.cell;
             //Skip cells already spread from, or reached more cheaply since this was queued.
-            if (current.closed || queued.distance > current.distance) {
+            if (current.closed || queued.cost > current.cost) {
                 continue;
             }
             current.closed = true;
@@ -174,30 +182,33 @@ final class FlowField {
         if (diagonal && (!terrain.isOpen(current.x + dx, current.y, current.z, above, below, settings.headroom) || !terrain.isOpen(current.x, current.y, current.z + dz, above, below, settings.headroom))) {
             return;
         }
-        double distance = current.distance + (diagonal ? Math.sqrt(2) : 1);
+        double step = diagonal ? Math.sqrt(2) : 1;
+        double distance = current.distance + step;
         if (distance > settings.maxDistance) {
             return;
         }
         for (int y = current.y + above; y >= current.y - below; --y) {
             if (isPassable(x, y, z)) {
-                reach(x, y, z, current, distance);
+                double weight = getClearance(x, y, z) < settings.comfortableClearance ? 1 + settings.tightCost : 1;
+                reach(x, y, z, current, distance, current.cost + step * weight);
             }
         }
     }
 
-    private void reach(int x, int y, int z, Cell from, double distance) {
+    private void reach(int x, int y, int z, Cell from, double distance, double cost) {
         long key = TerrainMap.blockKey(x, y, z);
         Cell cell = cells.get(key);
         if (cell == null) {
             cell = new Cell(x, y, z);
             cells.put(key, cell);
-        } else if (cell.closed || distance >= cell.distance) {
+        } else if (cell.closed || cost >= cell.cost) {
             return;
         }
         cell.distance = distance;
+        cell.cost = cost;
         cell.next = from;
         cell.source = from != null ? from.source : sourceCount;
-        open.add(new Queued(cell, distance));
+        open.add(new Queued(cell, cost));
     }
 
     /**Returns true if the vehicle could be at the surface: it's a surface, and it has the room.**/
@@ -253,6 +264,24 @@ final class FlowField {
         return Double.POSITIVE_INFINITY;
     }
 
+    /**
+     * What getting to the sources from the column costs, at the surface nearest y within tolerance blocks of it, or
+     * infinity if the flood hasn't reached any of those: the distance, plus {@link Settings#tightCost} for each block of
+     * it through tight places.
+     */
+    double getCost(int x, int y, int z, int tolerance) {
+        for (int offset = 0; offset <= tolerance; ++offset) {
+            Cell cell = getCell(x, y + offset, z);
+            if (cell == null && offset > 0) {
+                cell = getCell(x, y - offset, z);
+            }
+            if (cell != null) {
+                return cell.cost;
+            }
+        }
+        return Double.POSITIVE_INFINITY;
+    }
+
     /**How many cells the flood has reached so far.**/
     int getCellCount() {
         return cells.size();
@@ -265,11 +294,11 @@ final class FlowField {
 
     private static final class Queued {
         final Cell cell;
-        final double distance;
+        final double cost;
 
-        Queued(Cell cell, double distance) {
+        Queued(Cell cell, double cost) {
             this.cell = cell;
-            this.distance = distance;
+            this.cost = cost;
         }
     }
 
@@ -279,6 +308,8 @@ final class FlowField {
         final int y;
         final int z;
         double distance = Double.POSITIVE_INFINITY;
+        /**What getting to the sources from here the cheapest way costs: see {@link FlowField#getCost}.**/
+        double cost = Double.POSITIVE_INFINITY;
         /**The next cell on the way to the sources, or null for a source.**/
         Cell next;
         /**Which source the way from here leads to, numbered in the order they were added.**/

@@ -118,7 +118,8 @@ final class SimDrive {
         ArrivalPlanner gaps = setup.player != null ? new ArrivalPlanner(new PoseChecker(new TerrainMap(setup.terrain != null ? setup.terrain : FakeTerrain.flat(1)), setup.shape), new ArrivalPlanner.Settings(), setup.player, 0) : null;
         int groundY = start.y;
         DriveControls driver = new DriveControls(VehicleSummonJob.BRAKING);
-        double sentRudder = 0;
+        double sentRudder = DriveControls.getStartRudder(route, kinematics, vehicle.getSpeed());
+        tracker.setRudder(sentRudder);
         double sentThrottle = 0;
         double sentBrake = 0;
         int pedal = 0;
@@ -187,7 +188,11 @@ final class SimDrive {
             vehicle.step(sentRudder, sentThrottle, sentBrake);
             result.topSpeed = Math.max(result.topSpeed, vehicle.getSpeed());
             result.peakBraking = Math.max(result.peakBraking, (speed - vehicle.getSpeed()) / SimVehicle.TICK);
+            int clippedBefore = result.clippedTicks;
             groundY = measure(result, vehicle, checker, gaps, groundY);
+            if (setup.trace != null && result.clippedTicks > clippedBefore) {
+                setup.trace.println(String.format("CLIP  %4d at %.2f, %.2f facing %.1f", ticks, vehicle.x, vehicle.z, vehicle.yaw));
+            }
 
             if (ticks % STUCK_CHECK_INTERVAL == 0) {
                 boolean stuck = ticks - directionChangeTick >= STUCK_CHECK_INTERVAL && Math.hypot(vehicle.x - lastProgressX, vehicle.z - lastProgressZ) < STUCK_DISTANCE;

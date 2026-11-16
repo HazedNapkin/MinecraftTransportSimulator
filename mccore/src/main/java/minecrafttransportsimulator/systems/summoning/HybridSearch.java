@@ -76,6 +76,15 @@ final class HybridSearch {
     private static final double LONG_ROUTE_FACTOR = 2;
     /**Estimate of the cost left from somewhere the goal flow field didn't reach, on top of the distance to the player.**/
     private static final double UNREACHED_ESTIMATE = 30;
+    /**
+     * Cost of each block driven only just clear of things, without the margin to spare, in blocks of route.  A
+     * vehicle that strays a little off the route there scrapes them, so a route keeps clear if that's not far round.
+     */
+    static final double TIGHT_COST = 2;
+    /**How a pose fits: see {@link #fit}.**/
+    private static final int CLEAR = 0;
+    private static final int TIGHT = 1;
+    private static final int NO_FIT = -1;
     /**How near the start of a run-in a state must be, in blocks, for the search to try joining it exactly.**/
     static final double JOIN_RANGE = 15;
     /**How near the start of a run-in a state must be, in blocks, for the estimate to count which way it faces.**/
@@ -131,6 +140,13 @@ final class HybridSearch {
         boolean allowPivot;
         double pivotRate = 45;
         double pivotPlayerClearance = 1.5;
+        /**
+         * How much further off things than its shape needs the vehicle would like to keep as it drives, in blocks, so it
+         * still clears them when it strays a little off the route.  Driving any closer costs {@link #TIGHT_COST} a block.
+         * Where it pulls up, its run-in and where it turns on the spot needn't, as it's slow there: see
+         * {@link PoseChecker#canDrive(double, int, double, double, double)}.
+         */
+        double margin;
     }
 
     /**Somewhere the route may set off from, facing the yaw, and what's wrong with setting off from there, in blocks of route.**/
@@ -207,6 +223,8 @@ final class HybridSearch {
                 root.root = true;
                 add(root);
                 expectedCost = Math.min(expectedCost, root.g + root.h);
+                //Try driving straight onto a run-in from where it sets off, however far, as from some starts that's the only way.
+                tryJoin(root, true);
             }
         }
         if (open.isEmpty()) {
@@ -417,12 +435,17 @@ final class HybridSearch {
      * cheapest few are checked, and the first that fits is queued as a route, at what it costs in all.
      */
     private void tryJoin(Node node) {
+        tryJoin(node, false);
+    }
+
+    /**Like {@link #tryJoin(Node)}, but from any distance from the run-ins if anyRange is set.**/
+    private void tryJoin(Node node, boolean anyRange) {
         ++joinTries;
         List<Join> joins = new ArrayList<>();
         double bestCost = bestFinish != null ? bestFinish.g : Double.MAX_VALUE;
         for (RunIn runIn : runIns) {
             double[] target = runIn.poses[0];
-            if (Math.hypot(node.x - target[0], node.z - target[1]) > JOIN_RANGE) {
+            if (!anyRange && Math.hypot(node.x - target[0], node.z - target[1]) > JOIN_RANGE) {
                 continue;
             }
             addJoins(joins, node, runIn, target[2], Double.NaN, bestCost);
@@ -525,6 +548,8 @@ final class HybridSearch {
     private Node drive(Node node, Join join) {
         AnalyticPaths.Path path = join.path;
         List<double[]> poses = new ArrayList<>();
+        //How far it drives only just clearing things.
+        double tight = 0;
         int laterY = node.y;
         double x = node.x;
         double z = node.z;
@@ -563,9 +588,11 @@ final class HybridSearch {
                     pose = new double[] { target[0], target[1], Double.isNaN(join.pivotYaw) ? target[2] : join.pivotYaw };
                 }
                 int y = checker.terrain.findSurface((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), laterY, settings.maxUp, settings.maxDown, headroom);
-                if (y == TerrainMap.NO_SURFACE || !checker.canDrive(pose[0], y, pose[1], pose[2])) {
+                int fit = y == TerrainMap.NO_SURFACE ? NO_FIT : fit(pose[0], y, pose[1], pose[2]);
+                if (fit == NO_FIT) {
                     return null;
                 }
+                tight += fit == TIGHT ? runLength / samples : 0;
                 laterY = y;
                 poses.add(new double[] { pose[0], pose[1], pose[2], y, curvature, reverse ? 1 : 0 });
             }
@@ -593,7 +620,7 @@ final class HybridSearch {
             poses.add(runInPoses[i]);
         }
         double[] end = poses.get(poses.size() - 1);
-        Node finish = new Node(end[0], (int) end[3], end[1], end[2], 0, false, node, join.g, node.length + join.path.length + join.runIn.length, poses.toArray(new double[0][]));
+        Node finish = new Node(end[0], (int) end[3], end[1], end[2], 0, false, node, join.g + TIGHT_COST * tight, node.length + join.path.length + join.runIn.length, poses.toArray(new double[0][]));
         finish.goal = join.runIn.goal;
         return finish;
     }
@@ -612,13 +639,16 @@ final class HybridSearch {
         double[][] poses = new double[samples][];
         int earlierY = earlier.y;
         int steps = 0;
+        int tightSamples = 0;
         double direction = reverse ? -1 : 1;
         for (int i = 1; i <= samples; ++i) {
             double[] pose = arc(earlier.x, earlier.z, earlier.yaw, curvature, direction * length * i / samples);
             int y = checker.terrain.findSurface((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), earlierY, settings.maxUp, settings.maxDown, headroom);
-            if (y == TerrainMap.NO_SURFACE || !checker.canDrive(pose[0], y, pose[1], pose[2])) {
+            int fit = y == TerrainMap.NO_SURFACE ? NO_FIT : fit(pose[0], y, pose[1], pose[2]);
+            if (fit == NO_FIT) {
                 return null;
             }
+            tightSamples += fit == TIGHT ? 1 : 0;
             if (y != earlierY) {
                 ++steps;
             }
@@ -626,11 +656,22 @@ final class HybridSearch {
             poses[i - 1] = new double[] { pose[0], pose[1], pose[2], y, curvature, reverse ? 1 : 0 };
         }
         double[] latest = poses[samples - 1];
-        double cost = getMoveCost(earlier, curvature, reverse, cusp, length, steps, latest);
+        double cost = getMoveCost(earlier, curvature, reverse, cusp, length, steps, latest) + TIGHT_COST * length * tightSamples / samples;
         Node later = new Node(latest[0], (int) latest[3], latest[1], latest[2], curvature, reverse, earlier, earlier.g + cost, earlier.length + length, poses);
         later.cusps = earlier.cusps + (cusp ? 1 : 0);
         later.segmentLength = (cusp || earlier.isStopped() ? 0 : earlier.segmentLength) + length;
         return later;
+    }
+
+    /**
+     * How the vehicle fits with its origin over x,z, its wheels at height y, facing the yaw: {@link #CLEAR} of things
+     * by the margin, {@link #TIGHT} only just clear of them, or {@link #NO_FIT} not at all.
+     */
+    private int fit(double x, int y, double z, double yaw) {
+        if (checker.canDrive(x, y, z, yaw, settings.margin)) {
+            return CLEAR;
+        }
+        return settings.margin > 0 && checker.canDrive(x, y, z, yaw) ? TIGHT : NO_FIT;
     }
 
     /**The cost of driving a stretch of the curvature: its length, more for turns too tight to take at cruise speed and for backing up slowly.**/
@@ -687,7 +728,7 @@ final class HybridSearch {
      * further off are at least {@link #HEADING_RANGE} away, so that's the most this can add.
      */
     private double estimate(Node node) {
-        double distance = guide != null ? guide.getDistance((int) Math.floor(node.x), node.y, (int) Math.floor(node.z), 1) : Double.POSITIVE_INFINITY;
+        double distance = guide != null ? guide.getCost((int) Math.floor(node.x), node.y, (int) Math.floor(node.z), 1) : Double.POSITIVE_INFINITY;
         if (Double.isInfinite(distance)) {
             distance = Math.hypot(node.x - player.x, node.z - player.z) + UNREACHED_ESTIMATE;
         }

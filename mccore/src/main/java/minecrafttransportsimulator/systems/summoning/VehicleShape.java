@@ -22,7 +22,7 @@ import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
  */
 final class VehicleShape {
     /**Boxes that overlap a block by less than this are not counted as being in it.**/
-    private static final double CELL_OVERLAP_TOLERANCE = 0.15;
+    static final double CELL_OVERLAP_TOLERANCE = 0.15;
     /**
      * Boxes starting this high above the ground or higher aren't counted in the length of the vehicle's body: they're
      * things up over it, like a gun barrel or a roof rack, that stick out past it.
@@ -82,11 +82,21 @@ final class VehicleShape {
      * grid round the origin rather than a map.  Nothing reaches further than {@link #radius} from the origin.
      */
     List<Column> getFootprint(double originX, double originZ, double yaw) {
+        return getFootprint(originX, originZ, yaw, 0);
+    }
+
+    /**
+     * Like {@link #getFootprint(double, double, double)}, but counting a box as in every block it comes within the
+     * margin of overlapping by {@link #CELL_OVERLAP_TOLERANCE}, in blocks, so the vehicle keeps that much further off.
+     */
+    List<Column> getFootprint(double originX, double originZ, double yaw, double margin) {
         double sin = Math.sin(Math.toRadians(yaw));
         double cos = Math.cos(Math.toRadians(yaw));
-        int baseX = (int) Math.floor(originX - radius) - 1;
-        int baseZ = (int) Math.floor(originZ - radius) - 1;
-        int size = (int) Math.ceil(2 * radius) + 3;
+        double tolerance = CELL_OVERLAP_TOLERANCE - margin;
+        int reach = 1 + (int) Math.ceil(Math.max(0, margin));
+        int baseX = (int) Math.floor(originX - radius) - reach;
+        int baseZ = (int) Math.floor(originZ - radius) - reach;
+        int size = (int) Math.ceil(2 * radius) + 1 + 2 * reach;
         double[] lows = new double[size * size];
         double[] highs = new double[size * size];
         boolean[] used = new boolean[size * size];
@@ -94,10 +104,10 @@ final class VehicleShape {
         for (ShapeBox box : boxes) {
             double centerX = originX + box.x * cos + box.z * sin;
             double centerZ = originZ - box.x * sin + box.z * cos;
-            int minX = (int) Math.floor(centerX - box.radius + CELL_OVERLAP_TOLERANCE);
-            int maxX = (int) Math.floor(centerX + box.radius - CELL_OVERLAP_TOLERANCE);
-            int minZ = (int) Math.floor(centerZ - box.radius + CELL_OVERLAP_TOLERANCE);
-            int maxZ = (int) Math.floor(centerZ + box.radius - CELL_OVERLAP_TOLERANCE);
+            int minX = (int) Math.floor(centerX - box.radius + tolerance);
+            int maxX = (int) Math.floor(centerX + box.radius - tolerance);
+            int minZ = (int) Math.floor(centerZ - box.radius + tolerance);
+            int maxZ = (int) Math.floor(centerZ + box.radius - tolerance);
             //Small boxes might not overlap any block by enough, but still need the block they're in.
             if (maxX < minX) {
                 minX = maxX = (int) Math.floor(centerX);

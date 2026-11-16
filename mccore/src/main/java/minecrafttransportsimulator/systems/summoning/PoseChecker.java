@@ -81,10 +81,18 @@ final class PoseChecker {
      * pitch up onto, and each wheel may be on the ground, on a step, or in a dip it rolls through.
      */
     boolean canDrive(double x, int y, double z, double yaw) {
+        return canDrive(x, y, z, yaw, 0);
+    }
+
+    /**
+     * Like {@link #canDrive(double, int, double, double)}, but keeping the margin, in blocks, further off things than
+     * the vehicle's shape needs, so it still clears them if it strays that far off where it's meant to be.
+     */
+    boolean canDrive(double x, int y, double z, double yaw, double margin) {
         if (!terrain.isSolid((int) Math.floor(x), y - 1, (int) Math.floor(z))) {
             return false;
         }
-        for (Column column : shape.getFootprint(x, z, yaw)) {
+        for (Column column : shape.getFootprint(x, z, yaw, margin)) {
             if (!canDriveThrough(column, y)) {
                 return false;
             }

@@ -49,18 +49,18 @@ final class VehicleSummonJob {
      */
     private static final double PLACEMENT_MAX_EXTRA_GAP = 16;
     /**Speed to drive in at, in km/h, if the vehicle doesn't set its own summonSpeed.**/
-    private static final double DEFAULT_SUMMON_SPEED = 30;
+    static final double DEFAULT_SUMMON_SPEED = 30;
     /**
      * Speed routes plan their turns for, in m/s.  Vehicles steer less the faster they go, so the
      * drive slows to this before turns to make them as tight as planned.
      */
-    private static final double TURN_SPEED = 3;
+    static final double TURN_SPEED = 3;
     /**How much wider than the vehicle's tightest turn the route's turns are, to leave room for steering error.**/
-    private static final double TURN_RADIUS_MARGIN = 1.25;
+    static final double TURN_RADIUS_MARGIN = 1.25;
     /**The least to drive at short of the end, in m/s.**/
-    private static final double MIN_SPEED = 1;
+    static final double MIN_SPEED = 1;
     /**How hard the drive plans to brake, in m/s per second, so it slows smoothly to a stop at the end.**/
-    private static final double BRAKING = 2.5;
+    static final double BRAKING = 2.5;
     /**
      * If set, a vehicle placed to drive in is placed already moving at the speed planned for where it sets off, so it
      * rolls in rather than pulling away from a standstill.
@@ -78,21 +78,8 @@ final class VehicleSummonJob {
     private static final boolean PIVOT_ENABLED = true;
     /**How fast MTS turns a skid steering vehicle on the spot at full lock, in degrees a second: a twentieth of the steering angle a tick.**/
     private static final double PIVOT_RATE = EntityVehicleF_Physics.MAX_RUDDER_ANGLE / 20 * 20;
-    /**
-     * How slow the vehicle must be to shift between forward and reverse, and how slow it must be going the new way
-     * before it's steered, in m/s.  MTS only turns a vehicle the way it's going once it's going that way, and a
-     * vehicle that can skid steer spins on the spot in neutral, so it's held straight until then.
-     */
-    private static final double SHIFT_SPEED = 0.3;
-    private static final double STEER_SETTLE_SPEED = 0.5;
     /**Extra time allowed for each change of direction, for stopping, shifting and setting off, in seconds.**/
     private static final double DIRECTION_CHANGE_SECONDS = 4;
-    /**
-     * How near the end a vehicle that's all but stopped counts as there, in blocks, and how slow is all but stopped,
-     * in m/s.  Braking can bring it to rest just short, and it shouldn't sit there until it's called stuck.
-     */
-    private static final double STALLED_ARRIVE_DISTANCE = 1;
-    private static final double STALLED_SPEED = 0.3;
     private static final int STUCK_CHECK_INTERVAL = 100;
     /**How many ticks into the drive debug markers are first sent, once clients have the vehicle, and how often after.**/
     private static final int DEBUG_SEND_DELAY = 5;
@@ -198,6 +185,8 @@ final class VehicleSummonJob {
     /**The speeds planned along the route, and what steers the vehicle along it.**/
     private SpeedProfile profile;
     private PathTracker tracker;
+    /**What the driver does with the controls each tick: see {@link DriveControls}.**/
+    private final DriveControls.Controls controls = new DriveControls.Controls();
     /**How the drive's going, kept if summon debugging is on, else null.**/
     private SummonDriveReport driveReport;
     /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
@@ -837,7 +826,7 @@ final class VehicleSummonJob {
         if (driveReport != null) {
             driveReport.record(command, speed);
         }
-        boolean stalledAtEnd = command.remaining < STALLED_ARRIVE_DISTANCE && speed < STALLED_SPEED && phaseTicks > 20;
+        boolean stalledAtEnd = DriveControls.isStalledAtEnd(command, speed, phaseTicks);
         boolean playerInTheWay = !command.arrived && !stalledAtEnd && !command.pivot && isPlayerInTheWay(player, command.reverse);
         if (command.arrived || stalledAtEnd || playerInTheWay) {
             reportDrive(player, command.arrived ? "arrived" : stalledAtEnd ? "stalled short" : "player in the way", command, speed);
@@ -853,35 +842,20 @@ final class VehicleSummonJob {
         if (command.pivot) {
             return pivot(player, position, command, speed);
         }
-        //Get into gear for the way it's going.  If it's in gear the other way, stop and shift first, held straight.
-        if (shiftFor(command.reverse, speed)) {
-            tracker.setRudder(0);
-            set(vehicle.rudderInputVar, 0);
-            set(vehicle.throttleVar, 0);
-            set(vehicle.brakeVar, 1);
-            return checkProgress(player, position);
-        }
-        //Only steer once MTS sees it going the way it's meant to, or it'd turn the wrong way.
-        if (vehicle.goingInReverse != command.reverse && speed >= STEER_SETTLE_SPEED) {
-            tracker.setRudder(0);
-            set(vehicle.rudderInputVar, 0);
-        } else {
-            set(vehicle.rudderInputVar, command.rudder);
-        }
-
-        //Keep to the planned speed, which slows for turns and steps, and brakes to a stop at the end.
-        double targetSpeed = command.targetSpeed;
-        if (speed < targetSpeed) {
-            set(vehicle.throttleVar, Math.max(0, Math.min(0.8, 0.25 + (targetSpeed - speed) * 0.15)));
-            set(vehicle.brakeVar, 0);
-        } else if (speed > targetSpeed + 1) {
-            set(vehicle.throttleVar, 0);
-            set(vehicle.brakeVar, Math.min(1, (speed - targetSpeed) * 0.25));
-        } else {
-            set(vehicle.throttleVar, targetSpeed > 0.5 ? 0.15 : 0);
-            set(vehicle.brakeVar, 0);
-        }
+        //Get into gear for the way it's going, then steer and keep to the planned speed: see DriveControls.
+        DriveControls.drive(command, speed, vehicle.goingInReverse, shiftFor(command.reverse, speed), controls);
+        applyControls();
         return checkProgress(player, position);
+    }
+
+    /**Does what the controls say to the vehicle.**/
+    private void applyControls() {
+        if (controls.straightened) {
+            tracker.setRudder(0);
+        }
+        set(vehicle.rudderInputVar, controls.rudder);
+        set(vehicle.throttleVar, controls.throttle);
+        set(vehicle.brakeVar, controls.brake);
     }
 
     /**
@@ -892,20 +866,16 @@ final class VehicleSummonJob {
      */
     private boolean pivot(IWrapperPlayer player, Point3D position, PathTracker.Command command, double speed) {
         directionChangeTick = phaseTicks;
-        set(vehicle.throttleVar, 0);
-        if (speed > SHIFT_SPEED) {
-            set(vehicle.rudderInputVar, 0);
-            set(vehicle.brakeVar, 1);
-            return checkProgress(player, position);
-        }
-        set(vehicle.brakeVar, 0);
-        set(vehicle.parkingBrakeVar, 0);
-        for (PartEngine engine : getWorkingEngines(false)) {
-            if (engine.running && engine.currentGearVar.currentValue != 0) {
-                engine.shiftNeutral();
+        DriveControls.pivot(command, speed, controls);
+        if (controls.neutral) {
+            set(vehicle.parkingBrakeVar, 0);
+            for (PartEngine engine : getWorkingEngines(false)) {
+                if (engine.running && engine.currentGearVar.currentValue != 0) {
+                    engine.shiftNeutral();
+                }
             }
         }
-        set(vehicle.rudderInputVar, command.rudder);
+        applyControls();
         return checkProgress(player, position);
     }
 
@@ -921,19 +891,12 @@ final class VehicleSummonJob {
                 continue;
             }
             double gear = engine.currentGearVar.currentValue;
-            if (reverse ? gear < 0 : gear > 0) {
-                continue;
-            }
-            //In gear the wrong way, or in neutral on the way between, as it only shifts a gear a tick.
-            if (gear != 0 || reverse) {
-                shifting = true;
-            }
-            if (gear == 0 || speed < SHIFT_SPEED) {
-                if (reverse) {
-                    engine.shiftDown();
-                } else {
-                    engine.shiftUp();
-                }
+            shifting |= DriveControls.isShifting(gear, reverse);
+            DriveControls.Shift shift = DriveControls.getShift(gear, reverse, speed);
+            if (shift == DriveControls.Shift.DOWN) {
+                engine.shiftDown();
+            } else if (shift == DriveControls.Shift.UP) {
+                engine.shiftUp();
             }
         }
         return shifting;

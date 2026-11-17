@@ -1,6 +1,17 @@
 package minecrafttransportsimulator.systems.summoning;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.DriveControls;
+import minecrafttransportsimulator.systems.navigation.FakeTerrain;
+import minecrafttransportsimulator.systems.navigation.ITerrainQuery;
+import minecrafttransportsimulator.systems.navigation.PathTracker;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.SpeedProfile;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Drives a route the way the {@link VehicleSummonJob} does, with the same {@link SpeedProfile}, {@link PathTracker}
@@ -11,6 +22,8 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * What it measures is what a player notices: whether the vehicle got there, how far from where it should have stopped
  * and how squarely, how near it came to them, whether it cut through anything on the way, how long it took, and how
  * smoothly it was driven.  It also counts the control changes the job would send to clients.
+ *
+ * @author HazedNapkin
  */
 final class SimDrive {
     /**As the job has them: how often it checks the vehicle's getting somewhere, in ticks, and how far it must have got, in blocks.**/
@@ -34,7 +47,7 @@ final class SimDrive {
     /**Where a drive happens, and how it sets off.**/
     static final class Setup {
         /**The world, to check the vehicle keeps clear of it, or null not to check.**/
-        TerrainQuery terrain;
+        ITerrainQuery terrain;
         /**The vehicle's shape, for checking it keeps clear of the world and the player.  Needed if either is set.**/
         VehicleShape shape;
         /**The player it's coming to, to measure how near it comes to them, or null not to.**/
@@ -95,7 +108,7 @@ final class SimDrive {
     }
 
     /**Drives the route with a vehicle that steers by the kinematics and speeds up and stops by the spec.**/
-    static Result run(SummonRoute route, VehicleKinematics kinematics, SimVehicle.Spec spec, Setup setup) {
+    static Result run(Route route, VehicleKinematics kinematics, SimVehicle.Spec spec, Setup setup) {
         //Planned and tracked as the job does.
         SpeedProfile.Settings profileSettings = new SpeedProfile.Settings();
         profileSettings.cruiseSpeed = setup.cruiseSpeed;
@@ -108,7 +121,7 @@ final class SimDrive {
         PathTracker tracker = new PathTracker(route, profile, kinematics, trackerSettings);
 
         //A placed vehicle sets off already moving at the speed planned for there, its engine just started, in neutral.
-        SummonRoute.Pose start = route.getStart();
+        Route.Pose start = route.getStart();
         double startYaw = start.yaw + setup.yawOffset;
         SimVehicle vehicle = new SimVehicle(spec, kinematics, start.x + Math.cos(Math.toRadians(start.yaw)) * setup.sideOffset, start.z - Math.sin(Math.toRadians(start.yaw)) * setup.sideOffset, startYaw, route.placed ? profile.speeds[0] : 0);
 
@@ -216,7 +229,7 @@ final class SimDrive {
             groundY = measure(result, vehicle, checker, gaps, groundY);
         }
         result.rollOut = Math.hypot(vehicle.x - parkX, vehicle.z - parkZ);
-        SummonRoute.Pose end = route.getEnd();
+        Route.Pose end = route.getEnd();
         double endSin = Math.sin(Math.toRadians(end.yaw));
         double endCos = Math.cos(Math.toRadians(end.yaw));
         result.x = vehicle.x;
@@ -225,7 +238,7 @@ final class SimDrive {
         result.stopError = Math.hypot(vehicle.x - end.x, vehicle.z - end.z);
         result.overshoot = (vehicle.x - end.x) * endSin + (vehicle.z - end.z) * endCos;
         result.sideError = Math.abs((vehicle.x - end.x) * endCos - (vehicle.z - end.z) * endSin);
-        result.yawError = Math.abs(VehicleSummonFlight.clampAngle(vehicle.yaw - end.yaw));
+        result.yawError = Math.abs(RotationMatrix.clampAngle(vehicle.yaw - end.yaw));
         if (gaps != null) {
             result.restGap = gaps.getNearestDistance(vehicle.x, vehicle.z, vehicle.yaw);
             result.plannedGap = gaps.getNearestDistance(end.x, end.z, end.yaw);

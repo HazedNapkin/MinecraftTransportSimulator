@@ -5,6 +5,16 @@ import java.util.Collections;
 import java.util.List;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.FlowField;
+import minecrafttransportsimulator.systems.navigation.HybridSearch;
+import minecrafttransportsimulator.systems.navigation.PathSmoother;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Plans a ground vehicle's drive in to the player, a slice at a time so it never stalls the server.
@@ -14,6 +24,8 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * set off from ({@link SpawnSelector}), then search forward from those for the route ({@link HybridSearch}), guided by
  * the flood.  A vehicle that's already nearby skips picking places and searches from where it is, backing up if it can
  * and that's what gets it out, and the flood stops once it's reached it.  If it never does, there's no way in.
+ *
+ * @author HazedNapkin
  */
 final class RoutePlanner {
     /**How much further than the longest drive in the flood spreads from the player, in blocks.**/
@@ -73,12 +85,12 @@ final class RoutePlanner {
     private final double fieldRadius;
     private final ArrivalPlanner arrival;
     private Stage stage = Stage.ARRIVAL;
-    private SummonRoute.Pose start;
-    private List<ArrivalPlanner.Goal> goals = Collections.emptyList();
+    private Route.Pose start;
+    private List<RouteGoal> goals = Collections.emptyList();
     private FlowField goalField;
     private SpawnSelector spawns;
     private HybridSearch search;
-    private SummonRoute route;
+    private Route route;
     /**Time spent in each stage, in nanoseconds, and how many times it's been stepped, for tuning.**/
     private final long[] stageNanos = new long[Stage.values().length];
     private int steps;
@@ -100,7 +112,7 @@ final class RoutePlanner {
 
     /**Makes the route start where the vehicle already is, rather than anywhere it could be placed.  Call before stepping.**/
     void setStart(double x, int y, double z, double yaw) {
-        start = new SummonRoute.Pose(x, y, z, yaw, 0);
+        start = new Route.Pose(x, y, z, yaw, 0);
     }
 
     /**Plans until it's done or maxNanos pass.  Returns true once it's done, whether it found a route or not.**/
@@ -188,12 +200,12 @@ final class RoutePlanner {
     }
 
     /**The route found, or null if there isn't one or it's not done.**/
-    SummonRoute getRoute() {
+    Route getRoute() {
         return route;
     }
 
     /**Where the vehicle could pull up, best first.  The best is where to bring it if it can't drive in.  Empty if it fits nowhere.**/
-    List<ArrivalPlanner.Goal> getGoals() {
+    List<RouteGoal> getGoals() {
         return goals;
     }
 
@@ -258,7 +270,7 @@ final class RoutePlanner {
             goalField.setTarget((int) Math.floor(start.x), start.y, (int) Math.floor(start.z), (int) Math.ceil(checker.shape.bodyLength / 2) + 1, FIELD_MARGIN + checker.shape.bodyLength);
         }
         double runIn = getSearchSettings().runIn;
-        for (ArrivalPlanner.Goal goal : goals) {
+        for (RouteGoal goal : goals) {
             double length = Math.min(runIn, goal.runIn);
             double[] runInStart = HybridSearch.arc(goal.x, goal.z, goal.yaw, 0, -length);
             int y = checker.terrain.findSurface((int) Math.floor(runInStart[0]), (int) Math.floor(runInStart[1]), goal.y, settings.maxDown, settings.maxUp, checker.shape.top - checker.shape.bottom);
@@ -287,8 +299,8 @@ final class RoutePlanner {
     private List<HybridSearch.Start> getStarts(List<SpawnSelector.Target> targets) {
         List<HybridSearch.Start> starts = new ArrayList<>();
         for (SpawnSelector.Target target : targets) {
-            double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(target.x - player.x, target.z - player.z)) - lookYaw));
-            starts.add(new HybridSearch.Start(target.x, target.y, target.z, target.yaw, HybridSearch.getStartCost(target.length, settings.summonDistance, target.visible, offFront)));
+            double offFront = Math.abs(RotationMatrix.clampAngle(Math.toDegrees(Math.atan2(target.x - player.x, target.z - player.z)) - lookYaw));
+            starts.add(new HybridSearch.Start(target.x, target.y, target.z, target.yaw, SpawnSelector.getStartCost(target.length, settings.summonDistance, target.visible, offFront)));
         }
         return starts;
     }
@@ -307,7 +319,7 @@ final class RoutePlanner {
         search.cuspCost = settings.cuspCost;
         search.allowPivot = settings.allowPivot;
         search.pivotRate = settings.pivotRate;
-        search.pivotPlayerClearance = ArrivalPlanner.getPivotPlayerClearance(settings.arrival);
+        search.pivotClearance = ArrivalPlanner.getPivotPlayerClearance(settings.arrival);
         search.margin = settings.margin;
         //Each way it goes should be a fair part of its length, or the changes of direction are just shuffling.
         search.minGearLength = Math.max(search.minGearLength, checker.shape.bodyLength / 2);

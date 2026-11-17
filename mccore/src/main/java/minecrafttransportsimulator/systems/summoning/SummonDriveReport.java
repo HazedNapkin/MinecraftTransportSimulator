@@ -1,13 +1,20 @@
 package minecrafttransportsimulator.systems.summoning;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
-import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.PathTracker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.SpeedProfile;
+import minecrafttransportsimulator.systems.navigation.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * How a summoned vehicle's drive in went, for tuning.  It's kept tick by tick as the vehicle drives, and told to the
  * player as it stops when summon debugging is on: how far off where it should have pulled up it is, and how well it
  * kept to the route and the planned speeds on the way.
+ *
+ * @author HazedNapkin
  */
 final class SummonDriveReport {
     /**Rudder input at or over this counts as full lock.**/
@@ -15,7 +22,7 @@ final class SummonDriveReport {
     /**Which tick of the drive the speed it set off at is taken from.  It takes a moment for a placed vehicle's motion to settle.**/
     private static final int SET_OFF_TICK = 2;
 
-    private final SummonRoute route;
+    private final Route route;
     private final double routeLength;
     private final double plannedSeconds;
     private final double cruiseSpeed;
@@ -33,7 +40,7 @@ final class SummonDriveReport {
     private final int plannedDirectionChanges;
 
     /**Starts a report on driving the route, with the speeds planned along it, planning to set off at plannedStartSpeed.**/
-    SummonDriveReport(SummonRoute route, SpeedProfile profile, double cruiseSpeed, double plannedStartSpeed) {
+    SummonDriveReport(Route route, SpeedProfile profile, double cruiseSpeed, double plannedStartSpeed) {
         this.route = route;
         this.cruiseSpeed = cruiseSpeed;
         this.plannedStartSpeed = plannedStartSpeed;
@@ -83,8 +90,8 @@ final class SummonDriveReport {
         for (ShapeBox box : shape.boxes) {
             seenGap = Math.min(seenGap, Math.hypot(Math.max(0, Math.abs(local.x - box.x) - box.radius), Math.max(0, Math.abs(local.z - box.z) - box.radius)));
         }
-        double headingError = VehicleSummonFlight.clampAngle(vehicle.orientation.angles.y - route.goal.yaw);
-        return String.format("Summon stop (%s): side %.0f deg off (saw %.0f, wanted %.0f), gap %.2f (wanted %.2f), %.2f blocks %s, %.2f to the %s, heading %.1f deg off, still at %.1f m/s", reason, VehicleSummonFlight.clampAngle(seenAngle - arrivalAngle), VehicleSummonFlight.clampAngle(seenAngle), arrivalAngle, seenGap, gap, Math.abs(command.remaining), command.remaining >= 0 ? "short" : "past", Math.abs(command.crossTrack), command.crossTrack >= 0 ? "left" : "right", headingError, speed);
+        double headingError = RotationMatrix.clampAngle(vehicle.orientation.angles.y - route.goal.yaw);
+        return String.format("Summon stop (%s): side %.0f deg off (saw %.0f, wanted %.0f), gap %.2f (wanted %.2f), %.2f blocks %s, %.2f to the %s, heading %.1f deg off, still at %.1f m/s", reason, RotationMatrix.clampAngle(seenAngle - arrivalAngle), RotationMatrix.clampAngle(seenAngle), arrivalAngle, seenGap, gap, Math.abs(command.remaining), command.remaining >= 0 ? "short" : "past", Math.abs(command.crossTrack), command.crossTrack >= 0 ? "left" : "right", headingError, speed);
     }
 
     /**

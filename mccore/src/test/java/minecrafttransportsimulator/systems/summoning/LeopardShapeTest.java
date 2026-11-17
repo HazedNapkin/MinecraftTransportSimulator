@@ -6,14 +6,21 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
-
 import org.junit.Test;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.systems.navigation.FakeTerrain;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Plans with the shape a real tank pack gives: a Leopard 1, its hull and turret 62 collision boxes that only collide
  * with entities, a gun barrel of small boxes reaching far out in front, and 4 track wheels.  Taken from its summon debug log.
+ *
+ * @author HazedNapkin
  */
 public class LeopardShapeTest {
     static final List<double[]> BOXES = Arrays.asList(
@@ -107,7 +114,7 @@ public class LeopardShapeTest {
             ++ticks;
         }
         System.out.println(String.format("LEOPARD plan %.0f ms over %d ticks: %s", (System.nanoTime() - start) / 1e6, ticks, planner.getTimings()));
-        SummonRoute route = planner.getRoute();
+        Route route = planner.getRoute();
         assertNotNull(route);
         //The player isn't between the tracks, 1.5 either side of the origin.
         assertTrue(Math.hypot(route.goal.x - PLAYER.x, route.goal.z - PLAYER.z) >= 1.5 + 1.2 - 0.1);

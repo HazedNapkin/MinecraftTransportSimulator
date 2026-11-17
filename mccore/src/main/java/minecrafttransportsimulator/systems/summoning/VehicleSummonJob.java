@@ -6,6 +6,7 @@ import java.util.UUID;
 
 import minecrafttransportsimulator.baseclasses.ComputedVariable;
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.blocks.components.ABlockBase.Axis;
 import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
@@ -17,11 +18,21 @@ import minecrafttransportsimulator.mcinterface.IWrapperEntity;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
-import minecrafttransportsimulator.packets.instances.PacketPartEngine;
 import minecrafttransportsimulator.packets.instances.PacketPartEngine.Signal;
+import minecrafttransportsimulator.packets.instances.PacketPartEngine;
 import minecrafttransportsimulator.systems.ConfigSystem;
-import minecrafttransportsimulator.systems.LanguageSystem;
 import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
+import minecrafttransportsimulator.systems.LanguageSystem;
+import minecrafttransportsimulator.systems.navigation.DriveControls;
+import minecrafttransportsimulator.systems.navigation.ITerrainQuery;
+import minecrafttransportsimulator.systems.navigation.PathTracker;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.SpeedProfile;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * One vehicle answering one phone call.  Runs on the server, one step per tick.
@@ -39,6 +50,8 @@ import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
  * the player until a player gets in.  Other aircraft are teleported straight onto the ground near the player.
  * <p>
  * Wherever a vehicle ends up by the player, it has the side its summonArrivalAngle says towards them.
+ *
+ * @author HazedNapkin
  */
 final class VehicleSummonJob {
     private static final int DEFAULT_SUMMON_DISTANCE = 30;
@@ -177,7 +190,7 @@ final class VehicleSummonJob {
     private VehicleKinematics kinematics;
     private RoutePlanner planner;
     /**Where the vehicle is brought if it can't drive in: the best place by the player it fits, or null if it fits nowhere.**/
-    private ArrivalPlanner.Goal fallbackGoal;
+    private RouteGoal fallbackGoal;
     /**
      * Markers showing the plan being driven, if summon debugging is on, else null.  They're sent a few ticks into the
      * drive and every so often after: sent as a placed vehicle is spawned, clients don't have it yet and drop them.
@@ -185,7 +198,7 @@ final class VehicleSummonJob {
     private List<VehicleSummonDebug.Marker> planMarkers;
 
     //Driving.
-    private SummonRoute route;
+    private Route route;
     /**The speeds planned along the route, and what steers the vehicle along it.**/
     private SpeedProfile profile;
     private PathTracker tracker;
@@ -501,7 +514,7 @@ final class VehicleSummonJob {
      * can be placed.  Returns false, and starts nothing, if it's to set off from here but isn't on ground it can drive from.
      */
     private boolean startPlanner(boolean fromHere) {
-        TerrainMap terrain = new TerrainMap(TerrainQuery.of(world));
+        TerrainMap terrain = new TerrainMap(ITerrainQuery.of(world));
         RoutePlanner.Settings settings = new RoutePlanner.Settings();
         settings.summonDistance = getSummonDistance();
         settings.cruiseSpeed = getCruiseSpeed();
@@ -545,7 +558,7 @@ final class VehicleSummonJob {
         setArrival(settings);
         settings.drivesIn = false;
         settings.maxExtraGap = PLACEMENT_MAX_EXTRA_GAP;
-        placementSearch = new ArrivalPlanner(new PoseChecker(new TerrainMap(TerrainQuery.of(world)), shape), settings, center, Math.toDegrees(frontAngle));
+        placementSearch = new ArrivalPlanner(new PoseChecker(new TerrainMap(ITerrainQuery.of(world)), shape), settings, center, Math.toDegrees(frontAngle));
         spotPurpose = purpose;
         setPhase(Phase.FIND_SPOT);
     }
@@ -555,7 +568,7 @@ final class VehicleSummonJob {
         if (!placementSearch.step(tickTime)) {
             return false;
         }
-        ArrivalPlanner.Goal spot = placementSearch.getGoals().isEmpty() ? null : placementSearch.getGoals().get(0);
+        RouteGoal spot = placementSearch.getGoals().isEmpty() ? null : placementSearch.getGoals().get(0);
         placementSearch = null;
         switch (spotPurpose) {
             case FALLBACK: {
@@ -623,7 +636,7 @@ final class VehicleSummonJob {
 
     /**How far round from straight ahead of the player an offset from them is, in degrees from 0 to 180.**/
     private double getAngleOffFront(double dx, double dz) {
-        return Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(dx, dz) - frontAngle)));
+        return Math.abs(RotationMatrix.clampAngle(Math.toDegrees(Math.atan2(dx, dz) - frontAngle)));
     }
 
     /**The horizontal direction the player is looking, as an angle for sin/cos (x, z).**/
@@ -641,7 +654,7 @@ final class VehicleSummonJob {
         if (!planner.getGoals().isEmpty()) {
             fallbackGoal = planner.getGoals().get(0);
         }
-        SummonRoute found = planner.getRoute();
+        Route found = planner.getRoute();
         if (found == null) {
             return groundFallback(player);
         }
@@ -668,12 +681,12 @@ final class VehicleSummonJob {
     /**Tells the player where the vehicle's to pull up, and how near the player that is, if summon debugging is on.**/
     private void reportGoal(IWrapperPlayer player) {
         if (VehicleSummonDebug.isEnabled()) {
-            List<ArrivalPlanner.Goal> goals = planner.getGoals();
+            List<RouteGoal> goals = planner.getGoals();
             if (goals.isEmpty()) {
                 player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, String.format("Summon goal: none fits by the player, even pulling up %.2f away", planner.getArrival().getGap()));
                 return;
             }
-            ArrivalPlanner.Goal goal = planner.getRoute() != null ? planner.getRoute().goal : goals.get(0);
+            RouteGoal goal = planner.getRoute() != null ? planner.getRoute().goal : goals.get(0);
             for (String line : SummonPlanReport.getGoal(goal, planner.getArrival(), shape, planCenter, planner.getLookYaw(), goals.size())) {
                 player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, line);
             }
@@ -711,13 +724,13 @@ final class VehicleSummonJob {
      * Sets off along the route, placing the vehicle at its start first if that's where it starts from.  The message
      * is sent as it sets off, unless it's null.
      */
-    private void startRoute(IWrapperPlayer player, SummonRoute newRoute, LanguageEntry startMessage) {
+    private void startRoute(IWrapperPlayer player, Route newRoute, LanguageEntry startMessage) {
         route = newRoute;
         planRouteSpeeds();
         planMarkers = getPlanMarkers();
         planner = null;
         if (route.placed) {
-            SummonRoute.Pose start = route.getStart();
+            Route.Pose start = route.getStart();
             teleport(new Point3D(start.x, start.y + shape.groundOffset(), start.z), start.yaw, spawnSpeed, Phase.DRIVE, startMessage);
         } else {
             if (startMessage != null) {
@@ -764,7 +777,7 @@ final class VehicleSummonJob {
         markers.add(new VehicleSummonDebug.Marker(route.getStart().getGround(), VehicleSummonDebug.Kind.SPAWN));
         markers.add(new VehicleSummonDebug.Marker(route.getEnd().getGround(), VehicleSummonDebug.Kind.GOAL));
         markers.addAll(SummonPlanReport.getShapeMarkers(shape, route.goal));
-        for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+        for (RouteGoal goal : planner.getGoals()) {
             if (goal != route.goal) {
                 markers.add(new VehicleSummonDebug.Marker(goal.getGround(), VehicleSummonDebug.Kind.CANDIDATE));
             }
@@ -1032,7 +1045,7 @@ final class VehicleSummonJob {
             return false;
         }
         reportPlanTimings(player);
-        SummonRoute found = planner.getRoute();
+        Route found = planner.getRoute();
         if (found == null || found.poses.size() < 2) {
             planner = null;
             return stuckFallback(player);
@@ -1069,7 +1082,7 @@ final class VehicleSummonJob {
 
     private boolean startFlight(IWrapperPlayer player) {
         Point3D playerPosition = player.getPosition();
-        landingChecker = new PoseChecker(new TerrainMap(TerrainQuery.of(world)), shape);
+        landingChecker = new PoseChecker(new TerrainMap(ITerrainQuery.of(world)), shape);
         cruiseY = getCruiseHeight(playerPosition);
         startEngines(true);
         //A new call takes over from any earlier one that left it in the sky.

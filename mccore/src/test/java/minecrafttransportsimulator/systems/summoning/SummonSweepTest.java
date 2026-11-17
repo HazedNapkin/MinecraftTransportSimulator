@@ -4,14 +4,21 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
-
 import org.junit.Test;
+
+import minecrafttransportsimulator.systems.navigation.CountingTerrain;
+import minecrafttransportsimulator.systems.navigation.DriveSimulator;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
 
 /**
  * Plans and drives summons for a spread of vehicles over a spread of terrain, and prints how each went, for tuning:
  * how long planning took, how much it searched, how many questions it asked the world, and how the route drove.
  * It fails only on things that should never happen: a route that can't be driven, or one not found where there's
  * plenty of room.
+ *
+ * @author HazedNapkin
  */
 public class SummonSweepTest {
     /**What planning and driving one summon came to.**/
@@ -36,7 +43,7 @@ public class SummonSweepTest {
         result.worldCalls = counter.getWorldCalls();
         result.raycasts = counter.lines;
         result.expansions = planner.getSearchExpansions();
-        SummonRoute route = planner.getRoute();
+        Route route = planner.getRoute();
         String line = String.format("SWEEP %-5s %-7s | %5.0f %3d %5d %5d %5d %4d | %6d %6d %6d %5d |", vehicle.name, place.name, result.millis, ticks + 1, result.expansions, planner.getFirstRouteExpansion(), planner.getGoalSideExpansions(), planner.getFailedJoins(), counter.blocks, counter.clear, result.worldCalls, counter.lines);
         if (route == null) {
             line += String.format(" none (%d goals)", planner.getGoals().size());
@@ -47,7 +54,7 @@ public class SummonSweepTest {
             result.found = true;
             String seen = "    ";
             if (route.placed) {
-                SummonRoute.Pose first = route.getStart();
+                Route.Pose first = route.getStart();
                 result.hidden = !SpawnSelector.isVisible(new PoseChecker(new TerrainMap(place.terrain), vehicle.shape), place.player, first.x, first.y, first.z);
                 seen = result.hidden ? "hid " : "seen";
             }

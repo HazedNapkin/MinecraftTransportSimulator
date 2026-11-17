@@ -21,6 +21,8 @@ import minecrafttransportsimulator.systems.summoning.VehiclePhone.PhoneEntry;
 /**
  * Runs vehicle phone calls on the server.  One job per vehicle; calling a vehicle that's already on its
  * way restarts its call.
+ *
+ * @author HazedNapkin
  */
 public final class VehicleSummonManager {
     /**
@@ -47,7 +49,13 @@ public final class VehicleSummonManager {
         }
         IWrapperItemStack stack = player.getHeldStack();
         List<PhoneEntry> entries = VehiclePhone.getEntries(stack);
-        PhoneEntry entry = entries.stream().filter(e -> e.vehicleID.equals(vehicleID)).findFirst().orElse(null);
+        PhoneEntry entry = null;
+        for (PhoneEntry possibleEntry : entries) {
+            if (possibleEntry.vehicleID.equals(vehicleID)) {
+                entry = possibleEntry;
+                break;
+            }
+        }
         if (entry == null) {
             return;
         }

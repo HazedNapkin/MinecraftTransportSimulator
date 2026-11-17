@@ -4,10 +4,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.entities.instances.PartSeat;
-import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Finds where a vehicle pulls up by the player: its goal poses.  Each is exact, not snapped to blocks or headings.
@@ -28,6 +33,8 @@ import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
  * <p>
  * Goals are ranked by how far round from straight ahead they are, how far above or below the player, how much
  * further out than the gap they had to go, and how short or bumpy their run-in is.
+ *
+ * @author HazedNapkin
  */
 final class ArrivalPlanner {
     /**How far apart the bearings tried round the player are, in degrees.**/
@@ -123,7 +130,7 @@ final class ArrivalPlanner {
     private int offsetIndex;
     /**The gap being tried, which is the one in the settings until nothing fits at that.**/
     private double gap;
-    private final List<Goal> goals = new ArrayList<>();
+    private final List<RouteGoal> goals = new ArrayList<>();
 
     ArrivalPlanner(PoseChecker checker, Settings settings, Point3D player, double lookYaw) {
         this.checker = checker;
@@ -172,7 +179,7 @@ final class ArrivalPlanner {
     }
 
     /**The goals found, cheapest first, at most {@link #MAX_GOALS}.  Empty if the vehicle fits nowhere by the player.**/
-    List<Goal> getGoals() {
+    List<RouteGoal> getGoals() {
         return goals;
     }
 
@@ -195,7 +202,7 @@ final class ArrivalPlanner {
      * round from the bearing, and each degree the angle goes round towards its front turns it a degree further.
      */
     static double getArrivalYaw(double bearing, double arrivalAngle) {
-        return VehicleSummonFlight.clampAngle(bearing + 90 + arrivalAngle);
+        return RotationMatrix.clampAngle(bearing + 90 + arrivalAngle);
     }
 
     /**
@@ -259,7 +266,7 @@ final class ArrivalPlanner {
                 return;
             }
             double[] origin = getOrigin(lookYaw + offset, gap + extraGap);
-            Goal goal = tryOrigin(origin[0], origin[1], origin[2], getBearingCost(offset) + extraGap * EXTRA_GAP_COST);
+            RouteGoal goal = tryOrigin(origin[0], origin[1], origin[2], getBearingCost(offset) + extraGap * EXTRA_GAP_COST);
             if (goal != null) {
                 addGoal(goal);
                 return;
@@ -292,7 +299,7 @@ final class ArrivalPlanner {
      * Returns the goal with the vehicle's origin over x,z facing the yaw, at the height nearest the player's it can
      * park, and if it drives in, has a long enough run-in and can turn in at, or null if there isn't one.
      */
-    private Goal tryOrigin(double x, double z, double yaw, double cost) {
+    private RouteGoal tryOrigin(double x, double z, double yaw, double cost) {
         int playerY = (int) Math.floor(player.y);
         for (int dy = 0; dy <= Math.max(settings.heightUp, settings.heightDown); ++dy) {
             for (int y : dy == 0 ? new int[] { playerY } : new int[] { playerY + dy, playerY - dy }) {
@@ -300,7 +307,7 @@ final class ArrivalPlanner {
                     continue;
                 }
                 if (!settings.drivesIn) {
-                    return new Goal(x, y, z, yaw, 0, cost + Math.abs(y - playerY) * HEIGHT_COST);
+                    return new RouteGoal(x, y, z, yaw, 0, cost + Math.abs(y - playerY) * HEIGHT_COST);
                 }
                 double[] runIn = measureRunIn(x, y, z, yaw);
                 if (runIn[0] < minRunIn) {
@@ -316,7 +323,7 @@ final class ArrivalPlanner {
                         continue;
                     }
                 }
-                return new Goal(x, y, z, yaw, runIn[0], cost + Math.abs(y - playerY) * HEIGHT_COST + (preferredRunIn - runIn[0]) * RUN_IN_SHORT_COST + runIn[1] * RUN_IN_STEP_COST);
+                return new RouteGoal(x, y, z, yaw, runIn[0], cost + Math.abs(y - playerY) * HEIGHT_COST + (preferredRunIn - runIn[0]) * RUN_IN_SHORT_COST + runIn[1] * RUN_IN_STEP_COST);
             }
         }
         return null;
@@ -411,7 +418,7 @@ final class ArrivalPlanner {
         return new double[] { length, steps, startY };
     }
 
-    private void addGoal(Goal goal) {
+    private void addGoal(RouteGoal goal) {
         int index = 0;
         while (index < goals.size() && goals.get(index).cost <= goal.cost) {
             ++index;
@@ -444,31 +451,5 @@ final class ArrivalPlanner {
             }
         }
         return best;
-    }
-
-    /**Where the vehicle pulls up: its origin over x,z, its wheels on the ground at y, facing the yaw.**/
-    static final class Goal {
-        final double x;
-        final int y;
-        final double z;
-        final double yaw;
-        /**How long the clear straight run-in behind it is, in blocks.**/
-        final double runIn;
-        /**Extra cost of ending a route here, in blocks of route.**/
-        final double cost;
-
-        Goal(double x, int y, double z, double yaw, double runIn, double cost) {
-            this.x = x;
-            this.y = y;
-            this.z = z;
-            this.yaw = yaw;
-            this.runIn = runIn;
-            this.cost = cost;
-        }
-
-        /**The ground point under the vehicle origin.**/
-        Point3D getGround() {
-            return new Point3D(x, y, z);
-        }
     }
 }

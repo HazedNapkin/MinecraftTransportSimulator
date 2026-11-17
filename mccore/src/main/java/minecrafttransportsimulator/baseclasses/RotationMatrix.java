@@ -1,5 +1,6 @@
 package minecrafttransportsimulator.baseclasses;
 
+
 /**
  * 3D Matrix class for rotation operations.  This should be used
  * instead of Euler angles for all things in the code.
@@ -507,5 +508,19 @@ public class RotationMatrix {
         m22 = (1.0 - 2.0 * quatNeti * quatNeti - 2.0 * quatNetj * quatNetj);
 
         bypassAngles();
+    }
+
+    /**
+     * Returns the angle, in degrees, wrapped to between -180 and 180.  Useful for the difference between two
+     * headings, which is the shortest turn from one to the other.
+     */
+    public static double clampAngle(double angle) {
+        angle %= 360;
+        if (angle > 180) {
+            angle -= 360;
+        } else if (angle < -180) {
+            angle += 360;
+        }
+        return angle;
     }
 }

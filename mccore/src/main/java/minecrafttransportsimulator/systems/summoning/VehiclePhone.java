@@ -24,6 +24,8 @@ import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
 /**
  * Helpers for vehicle phone items.  Vehicles are registered on a phone by sneak-clicking them,
  * and are stored on the phone's stack, so whoever holds the phone can call them.
+ *
+ * @author HazedNapkin
  */
 public final class VehiclePhone {
     /**MTS's landing gear variable: 1 raises the gear, 0 lowers it.**/

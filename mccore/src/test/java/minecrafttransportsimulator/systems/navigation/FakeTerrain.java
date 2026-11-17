@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.BitSet;
 
@@ -8,11 +8,13 @@ import java.util.BitSet;
  * Blocks are kept as bits rather than in a set, so asking about one allocates nothing, and the memory a test sees
  * planning allocate is planning's own.  It reaches {@link #REACH} blocks out from the origin, and from {@link #MIN_Y}
  * up to {@link #MAX_Y}: there's nothing beyond, and nothing can be put there.
+ *
+ * @author HazedNapkin
  */
-final class FakeTerrain implements TerrainQuery {
-    static final int REACH = 256;
-    static final int MIN_Y = -16;
-    static final int MAX_Y = 47;
+public final class FakeTerrain implements ITerrainQuery {
+    public static final int REACH = 256;
+    public static final int MIN_Y = -16;
+    public static final int MAX_Y = 47;
     private final BitSet solid = new BitSet();
     private final BitSet liquid = new BitSet();
 
@@ -33,14 +35,14 @@ final class FakeTerrain implements TerrainQuery {
     }
 
     /**Makes flat ground with its top at y = 0, so surfaces are at y = 0, over the square from -size to size.**/
-    static FakeTerrain flat(int size) {
+    public static FakeTerrain flat(int size) {
         FakeTerrain terrain = new FakeTerrain();
         terrain.fill(-size, -1, -size, size, -1, size);
         return terrain;
     }
 
     /**Fills the box of blocks, corners included.**/
-    FakeTerrain fill(int x1, int y1, int z1, int x2, int y2, int z2) {
+    public FakeTerrain fill(int x1, int y1, int z1, int x2, int y2, int z2) {
         for (int x = Math.min(x1, x2); x <= Math.max(x1, x2); ++x) {
             for (int y = Math.min(y1, y2); y <= Math.max(y1, y2); ++y) {
                 for (int z = Math.min(z1, z2); z <= Math.max(z1, z2); ++z) {
@@ -51,7 +53,7 @@ final class FakeTerrain implements TerrainQuery {
         return this;
     }
 
-    FakeTerrain addLiquid(int x, int y, int z) {
+    public FakeTerrain addLiquid(int x, int y, int z) {
         liquid.set(indexToSet(x, y, z));
         return this;
     }
@@ -62,7 +64,7 @@ final class FakeTerrain implements TerrainQuery {
         return index < 0 ? 0 : (solid.get(index) ? SOLID : 0) | (liquid.get(index) ? LIQUID : 0);
     }
 
-    boolean isSolid(int x, int y, int z) {
+    public boolean isSolid(int x, int y, int z) {
         int index = index(x, y, z);
         return index >= 0 && solid.get(index);
     }

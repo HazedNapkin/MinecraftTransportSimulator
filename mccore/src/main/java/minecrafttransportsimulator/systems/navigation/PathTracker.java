@@ -1,7 +1,8 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.List;
 
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 
 /**
@@ -24,86 +25,88 @@ import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
  * Where the route turns on the spot, it stops, then steers to turn it to the yaw the turn ends at, the more lock the
  * further it has to go, until it's near enough that.  The command says it's turning on the spot, which a vehicle that
  * skid steers does stopped and in neutral, and the steering is what turns it.
+ *
+ * @author HazedNapkin
  */
-final class PathTracker {
+public final class PathTracker {
     /**How it steers and stops.**/
-    static final class Settings {
+    public static final class Settings {
         /**How far ahead in time the route's curvature is steered for, in seconds.  The vehicle takes a moment to respond.**/
-        double previewTime = 0.25;
+        public double previewTime = 0.25;
         /**How far ahead in time the speed to be doing is looked at, in seconds: see {@link Command#targetSpeedAhead}.**/
-        double speedPreviewTime = 0.5;
+        public double speedPreviewTime = 0.5;
         /**
          * Distance over which errors are corrected: this many seconds of travel at the speed, but no shorter than the
          * least, in blocks.  Longer is smoother, shorter holds the route more tightly.
          */
-        double correctionTime = 0.5;
-        double minCorrectionDistance = 2;
+        public double correctionTime = 0.5;
+        public double minCorrectionDistance = 2;
         /**The most the steering may change in a tick, in degrees of rudder input.**/
-        double maxSteeringRate = 5;
+        public double maxSteeringRate = 5;
         /**How near the end counts as there, in blocks.**/
-        double arriveTolerance = 0.2;
+        public double arriveTolerance = 0.2;
         /**How hard it plans to brake for the end, in m/s per second.**/
-        double braking = 2.5;
+        public double braking = 2.5;
         /**How far off the route it may be before it slows down, and the most off it's corrected for, in blocks.**/
-        double offRouteDistance = 1;
-        double maxCorrectedError = 2;
+        public double offRouteDistance = 1;
+        public double maxCorrectedError = 2;
         /**How many poses on from the last nearest one to look for the nearest one now.**/
-        int trackWindow = 24;
+        public int trackWindow = 24;
         /**How near where it changes direction, in blocks, and how slow, in m/s, counts as stopped there to go the other way.**/
-        double cuspTolerance = 0.5;
-        double stoppedSpeed = 0.5;
+        public double cuspTolerance = 0.5;
+        public double stoppedSpeed = 0.5;
         /**Least speed to aim for setting off again after changing direction, in m/s, or it'd aim for the stop it set off from.**/
-        double minSpeed = 1;
+        public double minSpeed = 1;
         /**
          * How fast the vehicle turns on the spot at full lock, in degrees a tick, and how near the yaw it's turning to
          * counts as there, in degrees.  MTS turns skid steering vehicles a twentieth of the steering angle a tick.
          */
-        double pivotRate = EntityVehicleF_Physics.MAX_RUDDER_ANGLE / 20;
-        double pivotTolerance = 1;
+        public double pivotRate = EntityVehicleF_Physics.MAX_RUDDER_ANGLE / 20;
+        public double pivotTolerance = 1;
     }
 
     /**What to do this tick.**/
-    static final class Command {
+    public static final class Command {
         /**The rudder input to steer with.**/
-        double rudder;
+        public double rudder;
         /**
          * The speed to be doing, in m/s, and the least it should be doing a moment ahead, never more than now: see
          * {@link Settings#speedPreviewTime}.  Slowing towards that, rather than what it should be doing now, has it
          * slowed for a turn by the time it's there, as a vehicle takes a moment to slow.
          */
-        double targetSpeed;
-        double targetSpeedAhead;
+        public double targetSpeed;
+        public double targetSpeedAhead;
         /**True once the vehicle's at the end.**/
-        boolean arrived;
+        public boolean arrived;
         /**True if it should be backing up, so in reverse gear.**/
-        boolean reverse;
+        public boolean reverse;
         /**True if it just got to where it changes direction, this tick, or started or finished turning on the spot.**/
-        boolean changedDirection;
+        public boolean changedDirection;
         /**True if it should be turning on the spot, stopped and in neutral, steering with the rudder.**/
-        boolean pivot;
+        public boolean pivot;
         /**How far the vehicle is to the left of the route, in blocks, negative to the right.**/
-        double crossTrack;
+        public double crossTrack;
         /**How far along the route the vehicle is, and how far is left, to the end and to where it next changes direction, in blocks.**/
-        double along;
-        double remaining;
-        double legRemaining;
+        public double along;
+        public double remaining;
+        public double legRemaining;
     }
 
-    private final SummonRoute route;
-    private final List<SummonRoute.Pose> poses;
+    private final Route route;
+    private final List<Route.Pose> poses;
     private final SpeedProfile profile;
     private final VehicleKinematics kinematics;
     private final Settings settings;
     private final double length;
     /**The segment, from pose segment to segment + 1, the vehicle was last nearest.**/
     private int segment;
-    /**Each way it goes, as {@link SummonRoute#getLegs()} has them, and which it's on.**/
+    /**Each way it goes, as {@link Route#getLegs()} has them, and which it's on.**/
     private final List<int[]> legs;
     private int leg;
     private double lastRudder;
     private final Command command = new Command();
 
-    PathTracker(SummonRoute route, SpeedProfile profile, VehicleKinematics kinematics, Settings settings) {
+    public PathTracker(Route route, SpeedProfile profile, VehicleKinematics kinematics, Settings settings) {
         this.route = route;
         this.poses = route.poses;
         this.profile = profile;
@@ -114,20 +117,20 @@ final class PathTracker {
     }
 
     /**How many times the route changes direction.**/
-    int getCusps() {
+    public int getCusps() {
         return route.getCusps().size();
     }
 
     /**Starts the steering from the rudder input the vehicle already has, so it doesn't jump.**/
-    void setRudder(double rudder) {
+    public void setRudder(double rudder) {
         lastRudder = rudder;
     }
 
     /**Works out what to do with the vehicle's origin at x,z, facing the yaw, going at the speed in m/s.**/
-    Command update(double x, double z, double yaw, double speed) {
+    public Command update(double x, double z, double yaw, double speed) {
         int legStart = legs.get(leg)[0];
         int legEnd = legs.get(leg)[1];
-        if (legs.get(leg)[2] == SummonRoute.LEG_PIVOT) {
+        if (legs.get(leg)[2] == Route.LEG_PIVOT) {
             return pivot(legStart, legEnd, yaw, speed);
         }
         command.pivot = false;
@@ -137,8 +140,8 @@ final class PathTracker {
         double fraction = 0;
         int nearest = segment;
         for (int i = segment; i < Math.min(legEnd, segment + settings.trackWindow); ++i) {
-            SummonRoute.Pose from = poses.get(i);
-            SummonRoute.Pose to = poses.get(i + 1);
+            Route.Pose from = poses.get(i);
+            Route.Pose to = poses.get(i + 1);
             double segmentX = to.x - from.x;
             double segmentZ = to.z - from.z;
             double segmentLengthSquared = segmentX * segmentX + segmentZ * segmentZ;
@@ -153,21 +156,21 @@ final class PathTracker {
             }
         }
         segment = nearest;
-        SummonRoute.Pose from = poses.get(segment);
-        SummonRoute.Pose to = poses.get(segment + 1);
+        Route.Pose from = poses.get(segment);
+        Route.Pose to = poses.get(segment + 1);
         double segmentLength = profile.distances[segment + 1] - profile.distances[segment];
         command.along = profile.distances[segment] + fraction * segmentLength;
         command.remaining = length - command.along;
         command.legRemaining = profile.distances[legEnd] - command.along;
 
         //How far off the route it is to the side, and in heading.
-        double pathYaw = fraction >= 1 ? to.yaw : from.yaw + VehicleSummonFlight.clampAngle(to.yaw - from.yaw) * fraction;
+        double pathYaw = fraction >= 1 ? to.yaw : from.yaw + RotationMatrix.clampAngle(to.yaw - from.yaw) * fraction;
         double pathX = from.x + (to.x - from.x) * fraction;
         double pathZ = from.z + (to.z - from.z) * fraction;
         double leftX = Math.cos(Math.toRadians(pathYaw));
         double leftZ = -Math.sin(Math.toRadians(pathYaw));
         command.crossTrack = (x - pathX) * leftX + (z - pathZ) * leftZ;
-        double headingError = Math.toRadians(VehicleSummonFlight.clampAngle(yaw - pathYaw));
+        double headingError = Math.toRadians(RotationMatrix.clampAngle(yaw - pathYaw));
 
         //Steer for the route's curvature a moment ahead, and to bring it back onto the route over the correction distance.
         //It only looks ahead as far as the way it's going goes, as the steering after it is for going the other way.
@@ -212,7 +215,7 @@ final class PathTracker {
         if (leg < legs.size() - 1 && (command.legRemaining <= 0 || (command.legRemaining <= settings.cuspTolerance && speed < settings.stoppedSpeed))) {
             ++leg;
             segment = legEnd;
-            command.reverse = legs.get(leg)[2] == SummonRoute.LEG_REVERSE;
+            command.reverse = legs.get(leg)[2] == Route.LEG_REVERSE;
             command.changedDirection = true;
             command.targetSpeed = 0;
             command.targetSpeedAhead = 0;
@@ -225,7 +228,7 @@ final class PathTracker {
      * what turns it this tick, held to full lock and to how fast the wheel turns, and it's done once it's near enough.
      */
     private Command pivot(int start, int end, double yaw, double speed) {
-        double error = VehicleSummonFlight.clampAngle(poses.get(end).yaw - yaw);
+        double error = RotationMatrix.clampAngle(poses.get(end).yaw - yaw);
         command.pivot = true;
         command.reverse = false;
         command.changedDirection = false;
@@ -255,14 +258,14 @@ final class PathTracker {
                 leg = legs.size() - 1;
                 command.arrived = true;
             } else {
-                command.reverse = legs.get(leg)[2] == SummonRoute.LEG_REVERSE;
+                command.reverse = legs.get(leg)[2] == Route.LEG_REVERSE;
             }
         }
         return command;
     }
 
     /**The route's curvature the distance along it, or 0 past its end.**/
-    double getCurvatureAt(double along) {
+    public double getCurvatureAt(double along) {
         int index = getIndexAt(along);
         if (index >= poses.size() - 1) {
             return 0;
@@ -272,7 +275,7 @@ final class PathTracker {
     }
 
     /**The planned speed the distance along the route.**/
-    double getSpeedAt(double along) {
+    public double getSpeedAt(double along) {
         int index = getIndexAt(along);
         if (index >= poses.size() - 1) {
             return 0;

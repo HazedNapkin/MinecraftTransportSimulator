@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -19,36 +19,38 @@ import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
  * Heights are measured up from the bottom of the wheels, which is where the ground is when the
  * vehicle is parked.  Like the vehicle's own collision boxes, each box stays square and
  * axis-aligned in the world as the vehicle turns: only its center rotates with the vehicle.
+ *
+ * @author HazedNapkin
  */
-final class VehicleShape {
+public final class VehicleShape {
     /**Boxes that overlap a block by less than this are not counted as being in it.**/
-    static final double CELL_OVERLAP_TOLERANCE = 0.15;
+    public static final double CELL_OVERLAP_TOLERANCE = 0.15;
     /**
      * Boxes starting this high above the ground or higher aren't counted in the length of the vehicle's body: they're
      * things up over it, like a gun barrel or a roof rack, that stick out past it.
      */
-    static final double BODY_HEIGHT = 1.5;
+    public static final double BODY_HEIGHT = 1.5;
 
     /**Everything that needs room: the collision boxes and the wheels.**/
-    final List<ShapeBox> boxes;
+    public final List<ShapeBox> boxes;
     /**Where the wheels touch the ground.  These need ground under them.**/
-    final List<ShapeBox> supports;
+    public final List<ShapeBox> supports;
     /**Lowest point below the vehicle origin (negative), usually the bottom of the wheels.**/
-    final double bottom;
+    public final double bottom;
     /**Highest point above the vehicle origin.**/
-    final double top;
+    public final double top;
     /**Furthest point forwards of the vehicle origin.**/
-    final double front;
+    public final double front;
     /**Furthest point behind the vehicle origin, as a distance behind it.**/
-    final double back;
+    public final double back;
     /**Furthest point to either side of the vehicle origin.**/
-    final double side;
+    public final double side;
     /**
      * Length of the vehicle's body, front to back, leaving out things up over it that stick out past it (see
      * {@link #BODY_HEIGHT}).  It's how far the vehicle drives straight to settle lined up, which a long gun barrel
      * shouldn't stretch.
      */
-    final double bodyLength;
+    public final double bodyLength;
     /**Distance from the origin to the furthest point of the vehicle, so it fits in this circle at any yaw.**/
     private final double radius;
 
@@ -65,12 +67,12 @@ final class VehicleShape {
     }
 
     /**Radius of a circle around the vehicle origin the vehicle fits in at any yaw.**/
-    double radius() {
+    public double radius() {
         return radius;
     }
 
     /**How far above the ground the vehicle origin sits when parked.**/
-    double groundOffset() {
+    public double groundOffset() {
         return -bottom + 0.1;
     }
 
@@ -81,7 +83,7 @@ final class VehicleShape {
      * This is the hot path of planning, run for every pose checked, so it gathers the columns in a flat
      * grid round the origin rather than a map.  Nothing reaches further than {@link #radius} from the origin.
      */
-    List<Column> getFootprint(double originX, double originZ, double yaw) {
+    public List<Column> getFootprint(double originX, double originZ, double yaw) {
         return getFootprint(originX, originZ, yaw, 0);
     }
 
@@ -89,7 +91,7 @@ final class VehicleShape {
      * Like {@link #getFootprint(double, double, double)}, but counting a box as in every block it comes within the
      * margin of overlapping by {@link #CELL_OVERLAP_TOLERANCE}, in blocks, so the vehicle keeps that much further off.
      */
-    List<Column> getFootprint(double originX, double originZ, double yaw, double margin) {
+    public List<Column> getFootprint(double originX, double originZ, double yaw, double margin) {
         double sin = Math.sin(Math.toRadians(yaw));
         double cos = Math.cos(Math.toRadians(yaw));
         double tolerance = CELL_OVERLAP_TOLERANCE - margin;
@@ -143,7 +145,7 @@ final class VehicleShape {
      * Returns the block columns under the wheels, with the vehicle origin at the passed-in point
      * and facing the passed-in yaw.
      */
-    List<Column> getSupports(double originX, double originZ, double yaw) {
+    public List<Column> getSupports(double originX, double originZ, double yaw) {
         List<Column> columns = new ArrayList<>();
         double sin = Math.sin(Math.toRadians(yaw));
         double cos = Math.cos(Math.toRadians(yaw));
@@ -155,7 +157,7 @@ final class VehicleShape {
         return columns;
     }
 
-    static long columnKey(int x, int z) {
+    public static long columnKey(int x, int z) {
         return ((long) x << 32) | (z & 0xFFFFFFFFL);
     }
 
@@ -163,7 +165,7 @@ final class VehicleShape {
      * Takes the vehicle's shape as it is now.  The vehicle must have ticked at least once, so its
      * collision boxes are in place.
      */
-    static VehicleShape of(EntityVehicleF_Physics vehicle) {
+    public static VehicleShape of(EntityVehicleF_Physics vehicle) {
         List<double[]> rawBoxes = new ArrayList<>();
         List<double[]> rawWheels = new ArrayList<>();
         //Packs often leave a body out of block collision and only give it entity collision, so take both.
@@ -185,7 +187,7 @@ final class VehicleShape {
      * Makes the shape from boxes and wheels in the vehicle's local space, each as {x, y, z, horizontal radius,
      * vertical radius}.  Also used to make shapes for tests.
      */
-    static VehicleShape of(List<double[]> rawBoxes, List<double[]> rawWheels) {
+    public static VehicleShape of(List<double[]> rawBoxes, List<double[]> rawWheels) {
         if (rawBoxes.isEmpty() && rawWheels.isEmpty()) {
             //Nothing to go on.  Treat it as a block-sized box.
             rawBoxes = Collections.singletonList(new double[] { 0, 0, 0, 0.5, 0.5 });
@@ -284,7 +286,7 @@ final class VehicleShape {
     /**
      * Boxes filling the space between the wheels, as high as the wheels.  Whatever a pack gives the vehicle to collide
      * with, its body spans its wheels, so this keeps the planner from thinking the middle of it is empty and letting it
-     * pull up with the player between its wheels or tracks.
+     * pull up with someone between its wheels or tracks.
      */
     private static List<ShapeBox> getUnderbody(List<double[]> rawWheels, double bottom) {
         List<ShapeBox> fill = new ArrayList<>();
@@ -329,12 +331,12 @@ final class VehicleShape {
     }
 
     /**A box of the vehicle: square in the horizontal, with heights measured up from the ground.**/
-    static final class ShapeBox {
-        final double x;
-        final double z;
-        final double radius;
-        final double low;
-        final double high;
+    public static final class ShapeBox {
+        public final double x;
+        public final double z;
+        public final double radius;
+        public final double low;
+        public final double high;
 
         private ShapeBox(double[] raw, double ground) {
             this.x = raw[0];
@@ -346,11 +348,11 @@ final class VehicleShape {
     }
 
     /**A block column the vehicle covers, and the height range above the ground it needs clear there.**/
-    static final class Column {
-        final int x;
-        final int z;
-        double low;
-        double high;
+    public static final class Column {
+        public final int x;
+        public final int z;
+        public double low;
+        public double high;
 
         private Column(int x, int z, double low, double high) {
             this.x = x;

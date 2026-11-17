@@ -1,8 +1,10 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 
 /**
  * Smooths a route found by the {@link HybridSearch}.  Its routes are strings of arcs, each a fixed steering angle,
@@ -24,8 +26,10 @@ import java.util.List;
  * do the poses either side, so it still stops there facing the way it was planned to, and no pose is smoothed
  * against ones the other side of a change of direction, which would round off the corner it makes there.  Where it
  * turns on the spot is held the same way, and the turn itself is left exactly as it was.
+ *
+ * @author HazedNapkin
  */
-final class PathSmoother {
+public final class PathSmoother {
     /**
      * How strongly each pose is moved to lessen the bending, and back to where it was, each pass.  The first must stay
      * under 1/16, or the passes overshoot and the route shakes apart.
@@ -58,16 +62,16 @@ final class PathSmoother {
      * Returns the route smoothed, or the route as it was if smoothing couldn't be made to fit.  The route ends with a
      * straight run-in runIn blocks long, the end of which is held as it is, and no part may turn tighter than maxCurvature.
      */
-    static SummonRoute smooth(SummonRoute route, PoseChecker checker, double maxCurvature, double runIn) {
+    public static Route smooth(Route route, PoseChecker checker, double maxCurvature, double runIn) {
         return smooth(route, checker, maxCurvature, runIn, 0);
     }
 
     /**
-     * Like {@link #smooth(SummonRoute, PoseChecker, double, double)}, but every pose that's moved must keep the margin,
+     * Like {@link #smooth(Route, PoseChecker, double, double)}, but every pose that's moved must keep the margin,
      * in blocks, further off things than the vehicle needs, if it did before it was moved.
      */
-    static SummonRoute smooth(SummonRoute route, PoseChecker checker, double maxCurvature, double runIn, double margin) {
-        List<SummonRoute.Pose> poses = route.poses;
+    public static Route smooth(Route route, PoseChecker checker, double maxCurvature, double runIn, double margin) {
+        List<Route.Pose> poses = route.poses;
         int count = poses.size();
         if (count < 5) {
             return route;
@@ -80,7 +84,7 @@ final class PathSmoother {
         double heldRunIn = Math.max(MIN_HELD_RUN_IN, runIn - EASE_OUT);
         double fromEnd = 0;
         for (int i = count - 1; i >= 0; --i) {
-            SummonRoute.Pose pose = poses.get(i);
+            Route.Pose pose = poses.get(i);
             originalX[i] = x[i] = pose.x;
             originalZ[i] = z[i] = pose.z;
             if (i < count - 1) {
@@ -113,10 +117,10 @@ final class PathSmoother {
                     }
                 }
             }
-            List<SummonRoute.Pose> smoothed = toPoses(route, x, z, held);
+            List<Route.Pose> smoothed = toPoses(route, x, z, held);
             List<Integer> misfits = findMisfits(smoothed, poses, checker, maxCurvature, margin);
             if (misfits.isEmpty()) {
-                return new SummonRoute(Collections.unmodifiableList(smoothed), route.placed, route.goal);
+                return new Route(Collections.unmodifiableList(smoothed), route.placed, route.goal);
             }
             for (int misfit : misfits) {
                 for (int i = Math.max(0, misfit - HOLD_SPREAD); i <= Math.min(count - 1, misfit + HOLD_SPREAD); ++i) {
@@ -143,8 +147,8 @@ final class PathSmoother {
      * way it's going from there.  Held poses keep their yaw, as the start's, the run-in's and those either side of
      * changes of direction must be exact.  Heights stay as they were, as points only move a little.
      */
-    private static List<SummonRoute.Pose> toPoses(SummonRoute route, double[] x, double[] z, boolean[] held) {
-        List<SummonRoute.Pose> poses = route.poses;
+    private static List<Route.Pose> toPoses(Route route, double[] x, double[] z, boolean[] held) {
+        List<Route.Pose> poses = route.poses;
         int count = poses.size();
         double[] yaws = new double[count];
         for (int i = 0; i < count; ++i) {
@@ -154,10 +158,10 @@ final class PathSmoother {
                 int before = Math.max(0, i - 1);
                 int after = Math.min(count - 1, i + 1);
                 double heading = Math.toDegrees(Math.atan2(x[after] - x[before], z[after] - z[before]));
-                yaws[i] = route.leavesInReverse(i) ? VehicleSummonFlight.clampAngle(heading + 180) : heading;
+                yaws[i] = route.leavesInReverse(i) ? RotationMatrix.clampAngle(heading + 180) : heading;
             }
         }
-        List<SummonRoute.Pose> smoothed = new ArrayList<>(count);
+        List<Route.Pose> smoothed = new ArrayList<>(count);
         for (int i = 0; i < count; ++i) {
             //Where it changes direction, the steering is for the way it sets off from there.
             int before = route.isCusp(i) ? i : Math.max(0, i - 1);
@@ -166,17 +170,17 @@ final class PathSmoother {
             for (int j = before; j < after; ++j) {
                 length += Math.hypot(x[j + 1] - x[j], z[j + 1] - z[j]);
             }
-            double curvature = length > 0 ? Math.toRadians(VehicleSummonFlight.clampAngle(yaws[after] - yaws[before])) / length : 0;
+            double curvature = length > 0 ? Math.toRadians(RotationMatrix.clampAngle(yaws[after] - yaws[before])) / length : 0;
             //Backing up, the yaw changes the other way for the same steering.
             if (route.leavesInReverse(i)) {
                 curvature = -curvature;
             }
-            SummonRoute.Pose pose = poses.get(i);
+            Route.Pose pose = poses.get(i);
             if (pose.pivot || (i < count - 1 && poses.get(i + 1).pivot) || (i > 0 && poses.get(i - 1).pivot)) {
                 //By a turn on the spot, the yaw changes without moving, so it says nothing of the steering.
                 curvature = pose.curvature;
             }
-            smoothed.add(new SummonRoute.Pose(x[i], pose.y, z[i], yaws[i], curvature, pose.reverse, pose.pivot));
+            smoothed.add(new Route.Pose(x[i], pose.y, z[i], yaws[i], curvature, pose.reverse, pose.pivot));
         }
         return smoothed;
     }
@@ -185,18 +189,18 @@ final class PathSmoother {
      * The poses where the vehicle no longer fits with the margin to spare, or that turn tighter from the pose before
      * than it can.  Poses where they were before smoothing were checked when the route was planned, so they fit.
      */
-    private static List<Integer> findMisfits(List<SummonRoute.Pose> poses, List<SummonRoute.Pose> originals, PoseChecker checker, double maxCurvature, double margin) {
+    private static List<Integer> findMisfits(List<Route.Pose> poses, List<Route.Pose> originals, PoseChecker checker, double maxCurvature, double margin) {
         List<Integer> misfits = new ArrayList<>();
         for (int i = 0; i < poses.size(); ++i) {
-            SummonRoute.Pose pose = poses.get(i);
-            SummonRoute.Pose original = originals.get(i);
+            Route.Pose pose = poses.get(i);
+            Route.Pose original = originals.get(i);
             boolean unmoved = pose.x == original.x && pose.z == original.z && pose.yaw == original.yaw;
             //Where the route was planned only just clear of things, as there's no more room, that's all it needs.
             boolean fits = unmoved || checker.canDrive(pose.x, pose.y, pose.z, pose.yaw, margin) || (!checker.canDrive(original.x, original.y, original.z, original.yaw, margin) && checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
             if (fits && i > 0 && !pose.pivot) {
-                SummonRoute.Pose last = poses.get(i - 1);
+                Route.Pose last = poses.get(i - 1);
                 double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);
-                double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
+                double turn = Math.toRadians(Math.abs(RotationMatrix.clampAngle(pose.yaw - last.yaw)));
                 fits = spacing > 0 && turn / spacing <= maxCurvature * CURVATURE_TOLERANCE;
             }
             if (!fits) {

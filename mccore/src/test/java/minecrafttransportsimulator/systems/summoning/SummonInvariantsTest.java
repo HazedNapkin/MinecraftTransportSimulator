@@ -5,8 +5,13 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
-
 import org.junit.Test;
+
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.HybridSearch;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
 
 /**
  * What must be true of every summon, whatever the vehicle and wherever it is, checked over every place there is and
@@ -19,6 +24,8 @@ import org.junit.Test;
  * them are found today: see {@link SummonScenarios#countMisfitsBetweenPoses}.
  * Planning must find the same route however its time is sliced, as in game that depends on what else the server is
  * doing.  And driven by a vehicle that does as the drive plans, it must get there without touching the player.
+ *
+ * @author HazedNapkin
  */
 public class SummonInvariantsTest {
     /**How many made-up places are checked, and the vehicles summoned to each.**/
@@ -83,24 +90,24 @@ public class SummonInvariantsTest {
 
     /**Adds what's wrong with the route planned for the case, if anything, to the list.**/
     private static void checkRoute(Case each, SummonScenarios.Plan plan, List<String> broken) {
-        SummonRoute route = plan.route;
-        List<SummonRoute.Pose> poses = route.poses;
+        Route route = plan.route;
+        List<Route.Pose> poses = route.poses;
         String name = each.name();
         PoseChecker checker = new PoseChecker(new TerrainMap(each.place.terrain), each.vehicle.shape);
         ArrivalPlanner gaps = new ArrivalPlanner(new PoseChecker(new TerrainMap(each.place.terrain), each.vehicle.shape), new ArrivalPlanner.Settings(), each.place.player, 0);
         double maxCurvature = 1 / plan.settings.turnRadius;
 
         //Where it sets off and pulls up.
-        SummonRoute.Pose start = route.getStart();
-        SummonRoute.Pose end = route.getEnd();
+        Route.Pose start = route.getStart();
+        Route.Pose end = route.getEnd();
         if (each.place.start != null) {
-            if (route.placed || Math.hypot(start.x - each.place.start.x, start.z - each.place.start.z) > 1e-6 || Math.abs(VehicleSummonFlight.clampAngle(start.yaw - each.place.start.yaw)) > 1e-6) {
+            if (route.placed || Math.hypot(start.x - each.place.start.x, start.z - each.place.start.z) > 1e-6 || Math.abs(RotationMatrix.clampAngle(start.yaw - each.place.start.yaw)) > 1e-6) {
                 broken.add(name + ": doesn't set off from where the vehicle is");
             }
         } else if (!route.placed || !checker.canPark(start.x, start.y, start.z, start.yaw)) {
             broken.add(name + ": can't be placed where it sets off");
         }
-        if (route.goal == null || Math.hypot(end.x - route.goal.x, end.z - route.goal.z) > 1e-6 || end.y != route.goal.y || Math.abs(VehicleSummonFlight.clampAngle(end.yaw - route.goal.yaw)) > 1e-6) {
+        if (route.goal == null || Math.hypot(end.x - route.goal.x, end.z - route.goal.z) > 1e-6 || end.y != route.goal.y || Math.abs(RotationMatrix.clampAngle(end.yaw - route.goal.yaw)) > 1e-6) {
             broken.add(name + ": doesn't end at its goal");
         } else if (!plan.planner.getGoals().contains(route.goal)) {
             broken.add(name + ": ends at a goal that isn't one of the planner's");
@@ -126,7 +133,7 @@ public class SummonInvariantsTest {
 
         //All the way along.
         for (int i = 0; i < poses.size(); ++i) {
-            SummonRoute.Pose pose = poses.get(i);
+            Route.Pose pose = poses.get(i);
             if (!checker.canDrive(pose.x, pose.y, pose.z, pose.yaw)) {
                 broken.add(String.format("%s: doesn't fit at pose %d of %d", name, i, poses.size()));
                 break;
@@ -138,9 +145,9 @@ public class SummonInvariantsTest {
             if (i == 0) {
                 continue;
             }
-            SummonRoute.Pose last = poses.get(i - 1);
+            Route.Pose last = poses.get(i - 1);
             double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);
-            double turn = VehicleSummonFlight.clampAngle(pose.yaw - last.yaw);
+            double turn = RotationMatrix.clampAngle(pose.yaw - last.yaw);
             if (pose.pivot) {
                 if (spacing > 1e-6) {
                     broken.add(String.format("%s: moves while turning on the spot at pose %d", name, i));
@@ -187,8 +194,8 @@ public class SummonInvariantsTest {
         }
         assertEquals(name + ": poses", expected.route.poses.size(), actual.route.poses.size());
         for (int i = 0; i < expected.route.poses.size(); ++i) {
-            SummonRoute.Pose a = expected.route.poses.get(i);
-            SummonRoute.Pose b = actual.route.poses.get(i);
+            Route.Pose a = expected.route.poses.get(i);
+            Route.Pose b = actual.route.poses.get(i);
             assertTrue(name + ": pose " + i + " differs", a.x == b.x && a.y == b.y && a.z == b.z && a.yaw == b.yaw && a.curvature == b.curvature && a.reverse == b.reverse && a.pivot == b.pivot);
         }
     }

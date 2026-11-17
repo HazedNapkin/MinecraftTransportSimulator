@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -7,7 +7,8 @@ import java.util.Map;
 import java.util.Set;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
-import minecrafttransportsimulator.systems.summoning.VehicleShape.Column;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.VehicleShape.Column;
 
 /**
  * Checks whether a vehicle fits at a pose: its origin at any point, its wheels on the ground at a block height,
@@ -16,10 +17,12 @@ import minecrafttransportsimulator.systems.summoning.VehicleShape.Column;
  * <p>
  * Parking is strict: everything clear and every wheel on level ground, as the vehicle is put there.  Driving
  * lets the body pass over low bumps, pitch up onto steps, and wheels roll through dips, as it does when driving.
+ *
+ * @author HazedNapkin
  */
-final class PoseChecker {
+public final class PoseChecker {
     /**Height the vehicle is placed above the ground when teleported, so nothing lower needs to be clear.**/
-    static final double PARKING_CLEARANCE = 0.1;
+    public static final double PARKING_CLEARANCE = 0.1;
     /**
      * Yaws to try landing an aircraft at, as offsets from the one it'd like: as it'd like, side-on both ways,
      * reversed, then the diagonals.
@@ -28,8 +31,8 @@ final class PoseChecker {
     /**How far apart the yaws an aircraft turns through on its way down are checked, in degrees.**/
     private static final double LANDING_TURN_STEP = 15;
 
-    final TerrainMap terrain;
-    final VehicleShape shape;
+    public final TerrainMap terrain;
+    public final VehicleShape shape;
     /**Block columns no part of the vehicle may be in, keyed by {@link VehicleShape#columnKey(int, int)}.**/
     private final Set<Long> keptClear = new HashSet<>();
     /**
@@ -39,16 +42,17 @@ final class PoseChecker {
      */
     private final Map<Long, Map<Integer, Boolean>> drivableColumns = new HashMap<>();
 
-    PoseChecker(TerrainMap terrain, VehicleShape shape) {
+    public PoseChecker(TerrainMap terrain, VehicleShape shape) {
         this.terrain = terrain;
         this.shape = shape;
     }
 
     /**
      * Keeps the vehicle out of every block column within radius blocks of the position, square on.  Used to keep
-     * it off the player it's coming to, as a long vehicle swinging round could sweep right through them.
+     * it off someone standing there, like the player a summoned vehicle comes to, as a long vehicle swinging round
+     * could sweep right through them.
      */
-    void keepClear(Point3D position, double radius) {
+    public void keepClear(Point3D position, double radius) {
         for (int x = (int) Math.floor(position.x - radius); x <= (int) Math.floor(position.x + radius); ++x) {
             for (int z = (int) Math.floor(position.z - radius); z <= (int) Math.floor(position.z + radius); ++z) {
                 keptClear.add(VehicleShape.columnKey(x, z));
@@ -58,7 +62,7 @@ final class PoseChecker {
     }
 
     /**Returns true if the vehicle can be placed with its origin over x,z, its wheels on the ground at height y, facing the yaw.**/
-    boolean canPark(double x, int y, double z, double yaw) {
+    public boolean canPark(double x, int y, double z, double yaw) {
         if (!terrain.isSolid((int) Math.floor(x), y - 1, (int) Math.floor(z))) {
             return false;
         }
@@ -80,7 +84,7 @@ final class PoseChecker {
      * Parts of it may hang over terrain up to {@link TerrainMap#STEP_CLEARANCE} high, or over a step it can
      * pitch up onto, and each wheel may be on the ground, on a step, or in a dip it rolls through.
      */
-    boolean canDrive(double x, int y, double z, double yaw) {
+    public boolean canDrive(double x, int y, double z, double yaw) {
         return canDrive(x, y, z, yaw, 0);
     }
 
@@ -88,7 +92,7 @@ final class PoseChecker {
      * Like {@link #canDrive(double, int, double, double)}, but keeping the margin, in blocks, further off things than
      * the vehicle's shape needs, so it still clears them if it strays that far off where it's meant to be.
      */
-    boolean canDrive(double x, int y, double z, double yaw, double margin) {
+    public boolean canDrive(double x, int y, double z, double yaw, double margin) {
         if (!terrain.isSolid((int) Math.floor(x), y - 1, (int) Math.floor(z))) {
             return false;
         }
@@ -111,7 +115,7 @@ final class PoseChecker {
      * origin over x,z and its wheels on the ground at height y.  Every column it covers must be clear all the way down,
      * and each wheel must come down within a block of that ground, so it doesn't land half off a ledge.
      */
-    boolean canLand(double x, int y, double z, double yaw, double fromY) {
+    public boolean canLand(double x, int y, double z, double yaw, double fromY) {
         if (!isClearDown(x, y, z, yaw, fromY)) {
             return false;
         }
@@ -132,10 +136,10 @@ final class PoseChecker {
      * at once it's finished turning, as it can turn up at cruise height where there's nothing in the way.  Returns null
      * if it can't land here at all.
      */
-    double[] findLandingYaw(double x, int y, double z, double preferredYaw, double currentYaw, double fromY) {
+    public double[] findLandingYaw(double x, int y, double z, double preferredYaw, double currentYaw, double fromY) {
         double[] turnFirst = null;
         for (double offset : LANDING_YAW_ORDER) {
-            double yaw = VehicleSummonFlight.clampAngle(preferredYaw + offset);
+            double yaw = RotationMatrix.clampAngle(preferredYaw + offset);
             if (canLand(x, y, z, yaw, fromY)) {
                 if (canTurnOnWayDown(x, y, z, currentYaw, yaw, fromY)) {
                     return new double[] { yaw, 1 };
@@ -153,7 +157,7 @@ final class PoseChecker {
      * turns, has room all the way down from its origin being at fromY to the ground at height y.
      */
     private boolean canTurnOnWayDown(double x, int y, double z, double fromYaw, double toYaw, double fromY) {
-        double turn = VehicleSummonFlight.clampAngle(toYaw - fromYaw);
+        double turn = RotationMatrix.clampAngle(toYaw - fromYaw);
         int steps = (int) Math.ceil(Math.abs(turn) / LANDING_TURN_STEP);
         for (int i = 0; i < steps; ++i) {
             if (!isClearDown(x, y, z, fromYaw + turn * i / steps, fromY)) {

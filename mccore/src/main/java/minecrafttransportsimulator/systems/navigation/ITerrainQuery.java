@@ -1,14 +1,16 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 
 /**
- * The block questions summon planning asks of the world.  Planning only goes through this, so it can be run
+ * The block questions route planning asks of the world.  Planning only goes through this, so it can be run
  * against a made-up world in tests.  Answers aren't cached here: callers cache what they need.
+ *
+ * @author HazedNapkin
  */
-interface TerrainQuery {
+public interface ITerrainQuery {
     /**Flags from {@link #getBlock}: the block has a solid top to stand on, and the block is a liquid.**/
     int SOLID = AWrapperWorld.BLOCK_SOLID_TOP;
     int LIQUID = AWrapperWorld.BLOCK_LIQUID;
@@ -26,8 +28,8 @@ interface TerrainQuery {
     boolean isLineClear(double x1, double y1, double z1, double x2, double y2, double z2);
 
     /**Asks the world itself.**/
-    static TerrainQuery of(AWrapperWorld world) {
-        return new TerrainQuery() {
+    static ITerrainQuery of(AWrapperWorld world) {
+        return new ITerrainQuery() {
             @Override
             public int getBlock(int x, int y, int z) {
                 return world.getBlockSurfaceFlags(new Point3D(x + 0.5, y + 0.5, z + 0.5));

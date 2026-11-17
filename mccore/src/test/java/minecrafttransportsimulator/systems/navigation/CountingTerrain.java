@@ -1,22 +1,24 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 /**
  * Wraps a world and counts the questions planning asks it, for measuring.  In game each is a real world lookup, so
  * how many a summon makes matters more than how long a test takes.
+ *
+ * @author HazedNapkin
  */
-final class CountingTerrain implements TerrainQuery {
-    private final TerrainQuery world;
-    int blocks;
-    int clear;
-    int loaded;
-    int lines;
+public final class CountingTerrain implements ITerrainQuery {
+    private final ITerrainQuery world;
+    public int blocks;
+    public int clear;
+    public int loaded;
+    public int lines;
 
-    CountingTerrain(TerrainQuery world) {
+    public CountingTerrain(ITerrainQuery world) {
         this.world = world;
     }
 
     /**Every block lookup made: what blocks are, collision checks and chunk checks.  Raycasts are counted apart.**/
-    int getWorldCalls() {
+    public int getWorldCalls() {
         return blocks + clear + loaded;
     }
 

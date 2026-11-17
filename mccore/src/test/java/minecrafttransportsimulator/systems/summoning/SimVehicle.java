@@ -1,5 +1,9 @@
 package minecrafttransportsimulator.systems.summoning;
 
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.DriveControls;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+
 /**
  * A made-up ground vehicle for testing how well the summon drive controls a real one.  Unlike {@link DriveSimulator},
  * which goes at whatever speed it's told, this one has to be driven with the throttle, brake and gears, and doesn't do
@@ -11,6 +15,8 @@ package minecrafttransportsimulator.systems.summoning;
  * The numbers in a {@link Spec} are stand-ins, not taken from MTS's physics.  What matters is that the controls cope
  * with the whole spread of them.  To tie one to a real vehicle, drive it in game with summon debugging on and set the
  * spec to match what {@link SummonDriveReport} says of it.
+ *
+ * @author HazedNapkin
  */
 final class SimVehicle {
     /**The length of a tick, in seconds.**/
@@ -145,6 +151,6 @@ final class SimVehicle {
         double midYaw = Math.toRadians(yaw + turn / 2);
         x += Math.sin(midYaw) * moved;
         z += Math.cos(midYaw) * moved;
-        yaw = VehicleSummonFlight.clampAngle(yaw + turn);
+        yaw = RotationMatrix.clampAngle(yaw + turn);
     }
 }

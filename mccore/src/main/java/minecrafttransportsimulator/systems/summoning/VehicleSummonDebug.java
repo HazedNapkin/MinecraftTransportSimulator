@@ -19,6 +19,8 @@ import minecrafttransportsimulator.systems.ConfigSystem;
  * Shows what summon planning decided, for tuning it.  When the summonDebug config is on, the server sends each
  * vehicle's plan to clients as markers, and they draw them as small boxes along with the vehicle's hitboxes (F3+B).
  * A vehicle's markers stay until its next plan replaces them.
+ *
+ * @author HazedNapkin
  */
 public final class VehicleSummonDebug {
     /**Most markers sent at once, so a huge plan can't make a huge packet.**/

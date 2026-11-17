@@ -7,11 +7,21 @@ import java.util.List;
 import java.util.Random;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.CountingTerrain;
+import minecrafttransportsimulator.systems.navigation.FakeTerrain;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * The vehicles and places summon tests share, and how a summon is planned for one of each, so every test measures
  * the same things the same way.  Add a vehicle or a place here and the sweep, the scorecard and the invariants all
  * pick it up.
+ *
+ * @author HazedNapkin
  */
 final class SummonScenarios {
     private SummonScenarios() {
@@ -77,7 +87,7 @@ final class SummonScenarios {
         /**True if there's plenty of room, so every vehicle should find a route.**/
         final boolean roomy;
         /**Where the vehicle already is, if it sets off from there rather than being placed, or null.**/
-        SummonRoute.Pose start;
+        Route.Pose start;
         /**The vehicles to summon here, or null for all of them.**/
         List<String> only;
         /**True if the vehicles skid steer, so turn on the spot rather than backing up.**/
@@ -91,7 +101,7 @@ final class SummonScenarios {
         }
 
         /**Makes the vehicle set off from where it is, for only the vehicles named.**/
-        Place from(SummonRoute.Pose start, String... only) {
+        Place from(Route.Pose start, String... only) {
             this.start = start;
             this.only = Arrays.asList(only);
             return this;
@@ -149,14 +159,14 @@ final class SummonScenarios {
 
         //Vehicles already nearby: in the open, nosed into an alley, in a street too narrow to turn round in, and out in
         //the open coming to a player at the end of a short passage.
-        places.add(new Place("open", FakeTerrain.flat(80), 0, true).from(new SummonRoute.Pose(-14.5, 0, 16.5, 90, 0), "car", "bus", "tank"));
-        places.add(new Place("alley", RoutePlannerTest.alley(), 0, true).from(new SummonRoute.Pose(-27.5, 0, 17, -90, 0), "car"));
-        places.add(new Place("street", RoutePlannerTest.narrowStreet(), 0, true).from(new SummonRoute.Pose(-40.5, 0, 14.5, -90, 0), "car"));
-        places.add(new Place("cramped", passage(), 0, true).from(new SummonRoute.Pose(0.5, 0, 34.5, 0, 0), "car", "bike"));
+        places.add(new Place("open", FakeTerrain.flat(80), 0, true).from(new Route.Pose(-14.5, 0, 16.5, 90, 0), "car", "bus", "tank"));
+        places.add(new Place("alley", RoutePlannerTest.alley(), 0, true).from(new Route.Pose(-27.5, 0, 17, -90, 0), "car"));
+        places.add(new Place("street", RoutePlannerTest.narrowStreet(), 0, true).from(new Route.Pose(-40.5, 0, 14.5, -90, 0), "car"));
+        places.add(new Place("cramped", passage(), 0, true).from(new Route.Pose(0.5, 0, 34.5, 0, 0), "car", "bike"));
 
         //Skid steering vehicles nosed into a bay too narrow to turn round in, and out in the open.
-        places.add(new Place("bay", FakeTerrain.flat(80).fill(-31, 0, 13, -14, 2, 13).fill(-31, 0, 21, -14, 2, 21).fill(-31, 0, 13, -31, 2, 21), 0, true).from(new SummonRoute.Pose(-26.5, 0, 17.5, -90, 0), "car", "bike").skidSteering());
-        places.add(new Place("skidopen", FakeTerrain.flat(80), 0, true).from(new SummonRoute.Pose(-14.5, 0, 16.5, -90, 0), "car", "tank").skidSteering());
+        places.add(new Place("bay", FakeTerrain.flat(80).fill(-31, 0, 13, -14, 2, 13).fill(-31, 0, 21, -14, 2, 21).fill(-31, 0, 13, -31, 2, 21), 0, true).from(new Route.Pose(-26.5, 0, 17.5, -90, 0), "car", "bike").skidSteering());
+        places.add(new Place("skidopen", FakeTerrain.flat(80), 0, true).from(new Route.Pose(-14.5, 0, 16.5, -90, 0), "car", "tank").skidSteering());
         return places;
     }
 
@@ -219,7 +229,7 @@ final class SummonScenarios {
         RoutePlanner planner;
         RoutePlanner.Settings settings;
         /**The route, or null if none was found.**/
-        SummonRoute route;
+        Route route;
         CountingTerrain counter;
         double millis;
         /**How many slices planning took, and the longest any took, in milliseconds.**/
@@ -262,13 +272,13 @@ final class SummonScenarios {
      * block.  Planning only checks it fits at the poses, half a block apart, so a corner of it can brush through a
      * block between two of them.  Between poses at different heights it may be at either, as the step could be anywhere.
      */
-    static int countMisfitsBetweenPoses(Place place, Vehicle vehicle, SummonRoute route) {
+    static int countMisfitsBetweenPoses(Place place, Vehicle vehicle, Route route) {
         PoseChecker checker = new PoseChecker(new TerrainMap(place.terrain), vehicle.shape);
         int misfits = 0;
         for (int i = 1; i < route.poses.size(); ++i) {
-            SummonRoute.Pose last = route.poses.get(i - 1);
-            SummonRoute.Pose pose = route.poses.get(i);
-            double turn = VehicleSummonFlight.clampAngle(pose.yaw - last.yaw);
+            Route.Pose last = route.poses.get(i - 1);
+            Route.Pose pose = route.poses.get(i);
+            double turn = RotationMatrix.clampAngle(pose.yaw - last.yaw);
             int steps = (int) Math.ceil(Math.hypot(pose.x - last.x, pose.z - last.z) / 0.125);
             for (int step = 1; step < steps; ++step) {
                 double t = (double) step / steps;

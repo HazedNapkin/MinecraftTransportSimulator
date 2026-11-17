@@ -1,12 +1,12 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
-
 import org.junit.Test;
+
 
 public class SpeedProfileTest {
     private static final VehicleKinematics KINEMATICS = new VehicleKinematics(2.6, 0.35, 0, false);
@@ -25,7 +25,7 @@ public class SpeedProfileTest {
 
     @Test
     public void speedsUpCruisesAndStops() {
-        SummonRoute route = PathSmootherTest.route(new double[] { 60, 0 });
+        Route route = PathSmootherTest.route(new double[] { 60, 0 });
         SpeedProfile.Settings settings = new SpeedProfile.Settings();
         SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, settings, 0);
         checkLimits(profile, settings);
@@ -37,7 +37,7 @@ public class SpeedProfileTest {
     @Test
     public void slowsForTurns() {
         double curvature = 0.2;
-        SummonRoute route = PathSmootherTest.route(new double[] { 20, 0 }, new double[] { 10, curvature }, new double[] { 20, 0 });
+        Route route = PathSmootherTest.route(new double[] { 20, 0 }, new double[] { 10, curvature }, new double[] { 20, 0 });
         SpeedProfile.Settings settings = new SpeedProfile.Settings();
         SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, settings, 0);
         checkLimits(profile, settings);
@@ -52,14 +52,14 @@ public class SpeedProfileTest {
 
     @Test
     public void slowsForSteps() {
-        SummonRoute flat = PathSmootherTest.route(new double[] { 40, 0 });
-        List<SummonRoute.Pose> poses = new ArrayList<>();
+        Route flat = PathSmootherTest.route(new double[] { 40, 0 });
+        List<Route.Pose> poses = new ArrayList<>();
         for (int i = 0; i < flat.poses.size(); ++i) {
-            SummonRoute.Pose pose = flat.poses.get(i);
-            poses.add(new SummonRoute.Pose(pose.x, i >= 40 ? 1 : 0, pose.z, pose.yaw, 0));
+            Route.Pose pose = flat.poses.get(i);
+            poses.add(new Route.Pose(pose.x, i >= 40 ? 1 : 0, pose.z, pose.yaw, 0));
         }
         SpeedProfile.Settings settings = new SpeedProfile.Settings();
-        SpeedProfile profile = SpeedProfile.plan(new SummonRoute(poses, true, flat.goal), KINEMATICS, settings, 0);
+        SpeedProfile profile = SpeedProfile.plan(new Route(poses, true, flat.goal), KINEMATICS, settings, 0);
         checkLimits(profile, settings);
         assertTrue(profile.speeds[40] <= settings.stepSpeed + 1e-9);
         assertTrue(profile.speeds[30] > settings.stepSpeed);
@@ -67,14 +67,14 @@ public class SpeedProfileTest {
 
     @Test
     public void carriesOnAtTheSpeedItsDoing() {
-        SummonRoute route = PathSmootherTest.route(new double[] { 40, 0 });
+        Route route = PathSmootherTest.route(new double[] { 40, 0 });
         SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, new SpeedProfile.Settings(), 6);
         assertEquals(6, profile.speeds[0], 1e-9);
     }
 
     @Test
     public void stopsToChangeDirectionAndBacksUpSlowly() {
-        SummonRoute route = PathSmootherTest.route(new double[] { 10, 0 }, new double[] { 12, 0, 1 }, new double[] { 30, 0 });
+        Route route = PathSmootherTest.route(new double[] { 10, 0 }, new double[] { 12, 0, 1 }, new double[] { 30, 0 });
         SpeedProfile.Settings settings = new SpeedProfile.Settings();
         SpeedProfile profile = SpeedProfile.plan(route, KINEMATICS, settings, 0);
         checkLimits(profile, settings);

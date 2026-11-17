@@ -7,16 +7,21 @@ import java.util.TreeSet;
 
 import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.entities.instances.PartGroundDevice;
 import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
-import minecrafttransportsimulator.systems.summoning.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.VehicleShape.ShapeBox;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Describes what summon planning worked from and what it chose, for tracking down plans that go wrong, when summon
  * debugging is on.  The shape planning thinks the vehicle has is the usual suspect: everything that keeps it off
  * things and off the player goes by it, so a shape missing part of the vehicle lets that part through.
+ *
+ * @author HazedNapkin
  */
 final class SummonPlanReport {
     /**How much smaller across than the vehicle's whole box its shape may be before that's worth a warning.**/
@@ -95,10 +100,10 @@ final class SummonPlanReport {
      * how near any part of its shape comes to them against the gap that was aimed for, how it faces, and how many
      * places were found.  Warns if its origin is closer to the player than half its width, as then it's on them.
      */
-    static List<String> getGoal(ArrivalPlanner.Goal goal, ArrivalPlanner arrival, VehicleShape shape, Point3D player, double lookYaw, int goalCount) {
+    static List<String> getGoal(RouteGoal goal, ArrivalPlanner arrival, VehicleShape shape, Point3D player, double lookYaw, int goalCount) {
         List<String> lines = new ArrayList<>();
         double distance = Math.hypot(goal.x - player.x, goal.z - player.z);
-        double bearing = VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(goal.x - player.x, goal.z - player.z)) - lookYaw);
+        double bearing = RotationMatrix.clampAngle(Math.toDegrees(Math.atan2(goal.x - player.x, goal.z - player.z)) - lookYaw);
         lines.add(String.format("Summon goal: origin %.2f from the player at %.0f deg off where they look, %d blocks %s, facing %.0f; nearest part %.2f away (aimed for %.2f); run-in %.1f, cost %.1f; best of %d", distance, bearing, Math.abs(goal.y - (int) Math.floor(player.y)), goal.y >= (int) Math.floor(player.y) ? "up" : "down", goal.yaw, arrival.getNearestDistance(goal.x, goal.z, goal.yaw), arrival.getGap(), goal.runIn, goal.cost, goalCount));
         if (distance < shape.side) {
             lines.add(String.format("Summon goal: WARNING its origin is only %.2f from the player, closer than half its width (%.2f), so it'll be on top of them.  The shape is likely missing what's round its origin", distance, shape.side));
@@ -110,7 +115,7 @@ final class SummonPlanReport {
      * Debug markers outlining the shape with the vehicle at the goal: the middle and corners of each box, at its
      * middle height.  Shows what the planner thinks the vehicle covers there.
      */
-    static List<VehicleSummonDebug.Marker> getShapeMarkers(VehicleShape shape, ArrivalPlanner.Goal goal) {
+    static List<VehicleSummonDebug.Marker> getShapeMarkers(VehicleShape shape, RouteGoal goal) {
         List<VehicleSummonDebug.Marker> markers = new ArrayList<>();
         double sin = Math.sin(Math.toRadians(goal.yaw));
         double cos = Math.cos(Math.toRadians(goal.yaw));

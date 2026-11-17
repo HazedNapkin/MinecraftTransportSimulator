@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7,12 +7,14 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+
 public class PoseCheckerTest {
     /**Height the aircraft comes down from, with its origin this high above the ground at y = 0.**/
     private static final double FROM_Y = 20;
 
     private static PoseChecker checker(FakeTerrain terrain) {
-        return new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car());
+        return new PoseChecker(new TerrainMap(terrain), TestShapes.car());
     }
 
     @Test
@@ -32,7 +34,7 @@ public class PoseCheckerTest {
         //It'd like to face +X, but can only land facing along z.  Turning there from +X on the way down would hit
         //the pillars, so it has to finish turning first.
         double[] yaw = checker.findLandingYaw(0.5, 0, 0.5, 90, 90, FROM_Y);
-        assertEquals(0, Math.abs(VehicleSummonFlight.clampAngle(yaw[0])) % 180, 1e-9);
+        assertEquals(0, Math.abs(RotationMatrix.clampAngle(yaw[0])) % 180, 1e-9);
         assertEquals(0, yaw[1], 0);
         //Already facing along z, it can come straight down.
         assertEquals(1, checker.findLandingYaw(0.5, 0, 0.5, 0, 0, FROM_Y)[1], 0);

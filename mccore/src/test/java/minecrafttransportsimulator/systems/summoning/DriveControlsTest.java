@@ -6,10 +6,16 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import minecrafttransportsimulator.systems.navigation.DriveControls;
+import minecrafttransportsimulator.systems.navigation.PathTracker;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
+
 /**
  * What the driver does with the controls: see {@link DriveControls}.  These hold for any sensible way of driving, so
  * they should still pass when how it keeps to its speed or changes gear is reworked.  How well it drives is scored by
  * the {@link SummonScorecardTest}.
+ *
+ * @author HazedNapkin
  */
 public class DriveControlsTest {
     private static PathTracker.Command command(double targetSpeed, double rudder, boolean reverse) {

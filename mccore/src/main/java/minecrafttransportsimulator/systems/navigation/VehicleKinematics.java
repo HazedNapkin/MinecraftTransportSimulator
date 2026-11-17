@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 
@@ -12,8 +12,10 @@ import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
  * The vehicle yaws about its origin, so that's the point that follows the curves worked out here.
  * <p>
  * Speeds here are in m/s, and curvatures in radians per block, positive turning left (towards the vehicle's +X).
+ *
+ * @author HazedNapkin
  */
-final class VehicleKinematics {
+public final class VehicleKinematics {
     /**Ground velocity above which steering weakens with speed, unless the vehicle ignores speed.**/
     private static final double STEERING_FADE_VELOCITY = 0.35;
     private static final double STEERING_FADE_BASE = 0.3;
@@ -26,7 +28,7 @@ final class VehicleKinematics {
     /**Curvature at full lock before any fade with speed, or 0 if the vehicle can't steer.**/
     private final double baseMaxCurvature;
 
-    VehicleKinematics(double wheelbase, double speedFactor, double steeringForceFactor, boolean steeringIgnoresSpeed) {
+    public VehicleKinematics(double wheelbase, double speedFactor, double steeringForceFactor, boolean steeringIgnoresSpeed) {
         this.wheelbase = wheelbase;
         this.speedFactor = speedFactor;
         this.steeringForceFactor = steeringForceFactor;
@@ -35,23 +37,23 @@ final class VehicleKinematics {
     }
 
     /**Takes the vehicle's steering as it is now.  It should be on the ground, as only grounded wheels count towards its wheelbase.**/
-    static VehicleKinematics of(EntityVehicleF_Physics vehicle) {
+    public static VehicleKinematics of(EntityVehicleF_Physics vehicle) {
         double wheelbase = vehicle.definition.motorized.hasPermanentSkidSteer ? 1 : vehicle.groundDeviceCollective.getTurningWheelbase();
         return new VehicleKinematics(wheelbase, vehicle.speedFactor, vehicle.steeringForceFactorVar.currentValue, vehicle.steeringForceIgnoresSpeedVar.isActive);
     }
 
     /**True if the vehicle can steer at all.**/
-    boolean canSteer() {
+    public boolean canSteer() {
         return baseMaxCurvature > 0 && (!steeringIgnoresSpeed || steeringForceFactor > 0);
     }
 
     /**MTS's ground velocity for a speed: the motion per tick before the speed factor is applied.**/
-    double toGroundVelocity(double speed) {
+    public double toGroundVelocity(double speed) {
         return speed / 20D / speedFactor;
     }
 
     /**How much steering is left at the speed, from 1 down towards 0.**/
-    double getSteeringScale(double speed) {
+    public double getSteeringScale(double speed) {
         if (steeringIgnoresSpeed) {
             return Math.max(0, steeringForceFactor);
         }
@@ -60,12 +62,12 @@ final class VehicleKinematics {
     }
 
     /**The tightest curvature the vehicle can drive at the speed, at full lock.**/
-    double getMaxCurvature(double speed) {
+    public double getMaxCurvature(double speed) {
         return baseMaxCurvature * getSteeringScale(speed);
     }
 
     /**The radius of the tightest circle the vehicle can drive round at the speed, or infinity if it can't steer.**/
-    double getTurnRadius(double speed) {
+    public double getTurnRadius(double speed) {
         double curvature = getMaxCurvature(speed);
         return curvature > 0 ? 1 / curvature : Double.POSITIVE_INFINITY;
     }
@@ -74,7 +76,7 @@ final class VehicleKinematics {
      * The fastest the vehicle can go and still drive the curvature, either way.  Returns infinity if speed doesn't
      * limit it, and 0 if it can't drive it at any speed.
      */
-    double getMaxSpeed(double curvature) {
+    public double getMaxSpeed(double curvature) {
         double needed = Math.abs(curvature);
         if (needed == 0) {
             return Double.POSITIVE_INFINITY;
@@ -103,7 +105,7 @@ final class VehicleKinematics {
      * The rudder input that drives the curvature at the speed, held to full lock.  MTS steers cars with the rudder
      * input, and a positive input steers right, so it's the opposite sign to the curvature.
      */
-    double getRudderInput(double curvature, double speed) {
+    public double getRudderInput(double curvature, double speed) {
         double maxCurvature = getMaxCurvature(speed);
         if (maxCurvature <= 0) {
             return 0;
@@ -113,11 +115,11 @@ final class VehicleKinematics {
     }
 
     /**The curvature the vehicle drives with the rudder input at the speed.  The opposite of {@link #getRudderInput}.**/
-    double getCurvature(double rudderInput, double speed) {
+    public double getCurvature(double rudderInput, double speed) {
         return -rudderInput / EntityVehicleF_Physics.MAX_RUDDER_ANGLE * getMaxCurvature(speed);
     }
 
-    double getWheelbase() {
+    public double getWheelbase() {
         return wheelbase;
     }
 }

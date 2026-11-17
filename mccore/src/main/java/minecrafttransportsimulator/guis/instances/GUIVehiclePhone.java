@@ -22,6 +22,8 @@ import minecrafttransportsimulator.systems.summoning.VehiclePhone.PhoneEntry;
  * GUI for vehicle phones.  Lists the vehicles registered on the phone, with buttons to call one,
  * stop a call in progress, or remove it from the phone.  The texture, size, layout and colors
  * come from the phone item's {@link JSONPhone} section.
+ *
+ * @author HazedNapkin
  */
 public class GUIVehiclePhone extends AGUIBase {
     private static final int ROW_HEIGHT = 18;

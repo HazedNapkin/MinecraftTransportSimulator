@@ -9,19 +9,27 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.FakeTerrain;
+import minecrafttransportsimulator.systems.navigation.HybridSearch;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.TestShapes;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
 
 public class RoutePlannerTest {
     private static final Point3D PLAYER = new Point3D(0.5, 0, 0.5);
     private static final VehicleKinematics KINEMATICS = new VehicleKinematics(2.6, 0.35, 0, false);
 
-    private static RoutePlanner plan(FakeTerrain terrain, Point3D player, SummonRoute.Pose start) {
+    private static RoutePlanner plan(FakeTerrain terrain, Point3D player, Route.Pose start) {
         return plan(terrain, player, start, false);
     }
 
-    private static RoutePlanner plan(FakeTerrain terrain, Point3D player, SummonRoute.Pose start, boolean allowReverse) {
+    private static RoutePlanner plan(FakeTerrain terrain, Point3D player, Route.Pose start, boolean allowReverse) {
         RoutePlanner.Settings settings = new RoutePlanner.Settings();
         settings.allowReverse = allowReverse;
-        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car()), KINEMATICS, settings, player, 0);
+        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), TestShapes.car()), KINEMATICS, settings, player, 0);
         if (start != null) {
             planner.setStart(start.x, start.y, start.z, start.yaw);
         }
@@ -30,35 +38,35 @@ public class RoutePlannerTest {
     }
 
     /**Checks the route is one the vehicle can drive, and returns it.**/
-    private static SummonRoute checkDrivable(FakeTerrain terrain, RoutePlanner planner) {
-        SummonRoute route = planner.getRoute();
+    private static Route checkDrivable(FakeTerrain terrain, RoutePlanner planner) {
+        Route route = planner.getRoute();
         assertNotNull(route);
         RoutePlanner.Settings settings = new RoutePlanner.Settings();
-        PoseChecker checker = new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car());
+        PoseChecker checker = new PoseChecker(new TerrainMap(terrain), TestShapes.car());
         for (int i = 0; i < route.poses.size(); ++i) {
-            SummonRoute.Pose pose = route.poses.get(i);
+            Route.Pose pose = route.poses.get(i);
             assertTrue("fits at pose " + i, checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
             if (i > 0) {
-                SummonRoute.Pose last = route.poses.get(i - 1);
+                Route.Pose last = route.poses.get(i - 1);
                 double spacing = Math.hypot(pose.x - last.x, pose.z - last.z);
                 //Smoothing evens out the poses a little, so they may be a touch further apart than the search put them.
                 assertTrue("spacing at pose " + i, spacing > 0.1 && spacing <= HybridSearch.SAMPLE_SPACING * 1.2);
-                double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
+                double turn = Math.toRadians(Math.abs(RotationMatrix.clampAngle(pose.yaw - last.yaw)));
                 //Points are a chord apart, a touch shorter than the arc between them.
                 assertTrue("turn at pose " + i, turn / spacing <= 1.01 / settings.turnRadius);
                 assertTrue("step at pose " + i, pose.y - last.y <= settings.maxUp && last.y - pose.y <= settings.maxDown);
             }
         }
         //It ends exactly where it pulls up, having driven straight in.
-        SummonRoute.Pose end = route.getEnd();
+        Route.Pose end = route.getEnd();
         assertEquals(route.goal.x, end.x, 1e-9);
         assertEquals(route.goal.z, end.z, 1e-9);
         assertEquals(route.goal.yaw, end.yaw, 1e-9);
         //The last 2 blocks of the run-in are always held straight; the start of it eases out of the last turn.
-        SummonRoute.Pose runInStart = route.poses.get(route.poses.size() - 1 - 4);
+        Route.Pose runInStart = route.poses.get(route.poses.size() - 1 - 4);
         assertEquals(end.yaw, runInStart.yaw, 1e-9);
         if (route.placed) {
-            SummonRoute.Pose start = route.getStart();
+            Route.Pose start = route.getStart();
             assertTrue(checker.canPark(start.x, start.y, start.z, start.yaw));
             assertTrue(route.getLength() >= settings.summonDistance * 0.6);
             assertTrue(Math.hypot(start.x - PLAYER.x, start.z - PLAYER.z) >= settings.summonDistance / 2);
@@ -86,7 +94,7 @@ public class RoutePlannerTest {
     public void drivesInOnFlatGround() {
         FakeTerrain terrain = FakeTerrain.flat(60);
         RoutePlanner planner = plan(terrain, PLAYER, null);
-        SummonRoute route = checkDrivable(terrain, planner);
+        Route route = checkDrivable(terrain, planner);
         assertTrue(route.placed);
         assertNotNull(planner.getSpawnTargets());
     }
@@ -95,7 +103,7 @@ public class RoutePlannerTest {
     public void drivesInFromTheSummonDistanceInTheOpen() {
         //Nowhere to hide, so nothing should pull it nearer than the summon distance.
         FakeTerrain terrain = FakeTerrain.flat(60);
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, null));
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, null));
         assertTrue(route.placed);
         assertEquals(new RoutePlanner.Settings().summonDistance, route.getLength(), 4);
     }
@@ -104,9 +112,9 @@ public class RoutePlannerTest {
     public void findsTheWayOutOfAWalledYard() {
         //Walls 12 out all round the player, with one gap on the +X side.
         FakeTerrain terrain = FakeTerrain.flat(60).fill(-12, 0, -12, 12, 2, -12).fill(-12, 0, 12, 12, 2, 12).fill(-12, 0, -12, -12, 2, 12).fill(12, 0, -12, 12, 2, -4).fill(12, 0, 4, 12, 2, 12);
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, null));
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, null));
         //It starts outside the yard.
-        SummonRoute.Pose start = route.getStart();
+        Route.Pose start = route.getStart();
         assertTrue(Math.abs(start.x) > 12 || Math.abs(start.z) > 12);
     }
 
@@ -119,9 +127,9 @@ public class RoutePlannerTest {
             terrain.fill(-edge, step, -edge, edge, step, edge);
         }
         Point3D player = new Point3D(0.5, 4, 0.5);
-        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car()), KINEMATICS, new RoutePlanner.Settings(), player, 0);
+        RoutePlanner planner = new RoutePlanner(new PoseChecker(new TerrainMap(terrain), TestShapes.car()), KINEMATICS, new RoutePlanner.Settings(), player, 0);
         planner.finish();
-        SummonRoute route = planner.getRoute();
+        Route route = planner.getRoute();
         assertNotNull(route);
         assertEquals(4, route.getEnd().y);
         assertTrue(route.getStart().y < route.getEnd().y);
@@ -132,17 +140,17 @@ public class RoutePlannerTest {
         //A tall wall across the player's view, 14 blocks out, which hides what's behind it.
         FakeTerrain terrain = FakeTerrain.flat(60).fill(-10, 0, 14, 10, 6, 15);
         RoutePlanner planner = plan(terrain, PLAYER, null);
-        SummonRoute route = checkDrivable(terrain, planner);
-        SummonRoute.Pose start = route.getStart();
-        PoseChecker checker = new PoseChecker(new TerrainMap(terrain), ArrivalPlannerTest.car());
+        Route route = checkDrivable(terrain, planner);
+        Route.Pose start = route.getStart();
+        PoseChecker checker = new PoseChecker(new TerrainMap(terrain), TestShapes.car());
         assertFalse(SpawnSelector.isVisible(checker, PLAYER, start.x, start.y, start.z));
     }
 
     @Test
     public void startsFromWhereANearbyVehicleIs() {
         FakeTerrain terrain = FakeTerrain.flat(60);
-        SummonRoute.Pose start = new SummonRoute.Pose(-14.5, 0, 16.5, 90, 0);
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start));
+        Route.Pose start = new Route.Pose(-14.5, 0, 16.5, 90, 0);
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, start));
         assertFalse(route.placed);
         assertTrue(Math.hypot(route.getStart().x - start.x, route.getStart().z - start.z) <= 1);
     }
@@ -157,7 +165,7 @@ public class RoutePlannerTest {
         return FakeTerrain.flat(60).fill(-51, 0, 10, -10, 2, 10).fill(-51, 0, 18, -10, 2, 18).fill(-51, 0, 10, -51, 2, 18);
     }
 
-    private static void checkDirections(SummonRoute route) {
+    private static void checkDirections(Route route) {
         int maxCusps = new HybridSearch.Settings().maxCusps;
         assertTrue("too many changes of direction", route.getCusps().size() <= maxCusps);
         //It always drives the run-in forward, so it pulls up facing the right way.
@@ -168,15 +176,15 @@ public class RoutePlannerTest {
     @Test
     public void cantLeaveAnAlleyNoseInWithoutReversing() {
         FakeTerrain terrain = alley();
-        SummonRoute.Pose start = new SummonRoute.Pose(-27.5, 0, 17, -90, 0);
+        Route.Pose start = new Route.Pose(-27.5, 0, 17, -90, 0);
         assertNull(plan(terrain, PLAYER, start, false).getRoute());
     }
 
     @Test
     public void backsOutOfAnAlleyItsNosedInto() {
         FakeTerrain terrain = alley();
-        SummonRoute.Pose start = new SummonRoute.Pose(-27.5, 0, 17, -90, 0);
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        Route.Pose start = new Route.Pose(-27.5, 0, 17, -90, 0);
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
         checkDirections(route);
         assertTrue(route.getStart().reverse);
         assertFalse(route.getCusps().isEmpty());
@@ -186,9 +194,9 @@ public class RoutePlannerTest {
     @Test
     public void turnsRoundInAStreetTooNarrowToUTurn() {
         FakeTerrain terrain = narrowStreet();
-        SummonRoute.Pose start = new SummonRoute.Pose(-40.5, 0, 14.5, -90, 0);
+        Route.Pose start = new Route.Pose(-40.5, 0, 14.5, -90, 0);
         assertNull(plan(terrain, PLAYER, start, false).getRoute());
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
         checkDirections(route);
         assertFalse(route.getCusps().isEmpty());
         //It turns round where it is rather than backing all the way out.
@@ -198,8 +206,8 @@ public class RoutePlannerTest {
     @Test
     public void doesntReverseWhenItHasRoom() {
         FakeTerrain terrain = FakeTerrain.flat(60);
-        SummonRoute.Pose start = new SummonRoute.Pose(-14.5, 0, 16.5, 90, 0);
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
+        Route.Pose start = new Route.Pose(-14.5, 0, 16.5, 90, 0);
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, start, true));
         assertTrue(route.getCusps().isEmpty());
         assertFalse(route.getStart().reverse);
     }
@@ -207,7 +215,7 @@ public class RoutePlannerTest {
     @Test
     public void placedVehiclesNeverReverse() {
         FakeTerrain terrain = narrowStreet();
-        SummonRoute route = checkDrivable(terrain, plan(terrain, PLAYER, null, true));
+        Route route = checkDrivable(terrain, plan(terrain, PLAYER, null, true));
         assertTrue(route.getCusps().isEmpty());
         assertEquals(0, route.getReverseLength(), 0);
     }

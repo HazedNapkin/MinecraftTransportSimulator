@@ -1,7 +1,9 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 
 /**
  * Exact ways to drive from one pose to another, ignoring what's in the way, made of arcs at full lock and straights.
@@ -13,8 +15,10 @@ import java.util.List;
  * <p>
  * Poses are as the search has them: x and z, and a yaw in degrees that rises turning left.  Lengths are in blocks,
  * negative backing up.
+ *
+ * @author HazedNapkin
  */
-final class AnalyticPaths {
+public final class AnalyticPaths {
     /**How far off the end pose a path may end, in blocks and degrees, and still count.**/
     private static final double END_TOLERANCE = 1e-4;
     private static final double END_YAW_TOLERANCE = 1e-3;
@@ -23,16 +27,16 @@ final class AnalyticPaths {
     private static final double TWO_PI = Math.PI * 2;
 
     /**One way to drive between the poses: pieces of each kind, turning left, right or straight, and how far each goes.**/
-    static final class Path {
+    public static final class Path {
         /**'L', 'R' or 'S' for each piece.**/
-        final char[] types;
+        public final char[] types;
         /**How far each piece drives, in blocks, negative backing up.**/
-        final double[] lengths;
+        public final double[] lengths;
         /**How far it drives in all, either way, in blocks.**/
-        final double length;
-        final double radius;
+        public final double length;
+        public final double radius;
 
-        Path(char[] types, double[] lengths, double radius) {
+        public Path(char[] types, double[] lengths, double radius) {
             this.types = types;
             this.lengths = lengths;
             this.radius = radius;
@@ -44,12 +48,12 @@ final class AnalyticPaths {
         }
 
         /**The curvature of the piece, in radians per block driven forward, positive turning left.**/
-        double getCurvature(int piece) {
+        public double getCurvature(int piece) {
             return types[piece] == 'L' ? 1 / radius : types[piece] == 'R' ? -1 / radius : 0;
         }
 
         /**True if it backs up anywhere.**/
-        boolean reverses() {
+        public boolean reverses() {
             for (double each : lengths) {
                 if (each < -ZERO) {
                     return true;
@@ -59,7 +63,7 @@ final class AnalyticPaths {
         }
 
         /**Where driving it from the pose ends, as {x, z, yaw}.**/
-        double[] drive(double x, double z, double yaw) {
+        public double[] drive(double x, double z, double yaw) {
             double[] pose = { x, z, yaw };
             for (int i = 0; i < types.length; ++i) {
                 pose = HybridSearch.arc(pose[0], pose[1], pose[2], getCurvature(i), lengths[i]);
@@ -72,7 +76,7 @@ final class AnalyticPaths {
     }
 
     /**Every forward-only path from the first pose to the second turning at the radius, shortest first.**/
-    static List<Path> dubins(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
+    public static List<Path> dubins(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
         double[] local = toLocal(x0, z0, yaw0, x1, z1, yaw1, radius);
         List<double[]> raw = new ArrayList<>();
         List<char[]> types = new ArrayList<>();
@@ -91,7 +95,7 @@ final class AnalyticPaths {
     }
 
     /**Every path from the first pose to the second turning at the radius that may back up, shortest first.**/
-    static List<Path> reedsShepp(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
+    public static List<Path> reedsShepp(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
         double[] local = toLocal(x0, z0, yaw0, x1, z1, yaw1, radius);
         double x = local[0];
         double y = local[1];
@@ -143,7 +147,7 @@ final class AnalyticPaths {
      * How long the shortest forward-only path from the first pose to the second is, in blocks.  Quick enough to use as
      * an estimate for every state near a goal, as it builds no paths.
      */
-    static double dubinsLength(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
+    public static double dubinsLength(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
         double[] local = toLocal(x0, z0, yaw0, x1, z1, yaw1, radius);
         double shortest = Double.POSITIVE_INFINITY;
         for (int reflect = 0; reflect < 2; ++reflect) {
@@ -159,7 +163,7 @@ final class AnalyticPaths {
     }
 
     /**How long the shortest path from the first pose to the second that may back up is, in blocks, as quick as {@link #dubinsLength}.**/
-    static double reedsSheppLength(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
+    public static double reedsSheppLength(double x0, double z0, double yaw0, double x1, double z1, double yaw1, double radius) {
         double[] local = toLocal(x0, z0, yaw0, x1, z1, yaw1, radius);
         double x = local[0];
         double y = local[1];
@@ -200,7 +204,7 @@ final class AnalyticPaths {
         double sin = Math.sin(Math.toRadians(yaw0));
         double cos = Math.cos(Math.toRadians(yaw0));
         //Forward is (sin, cos) of the yaw, and left (cos, -sin).
-        return new double[] { (dx * sin + dz * cos) / radius, (dx * cos - dz * sin) / radius, Math.toRadians(VehicleSummonFlight.clampAngle(yaw1 - yaw0)) };
+        return new double[] { (dx * sin + dz * cos) / radius, (dx * cos - dz * sin) / radius, Math.toRadians(RotationMatrix.clampAngle(yaw1 - yaw0)) };
     }
 
     /**Drives each path to check it really ends at the pose, and returns those that do, in blocks, shortest first.**/
@@ -213,7 +217,7 @@ final class AnalyticPaths {
             }
             Path path = new Path(types.get(i), lengths, radius);
             double[] end = path.drive(x0, z0, yaw0);
-            if (Math.hypot(end[0] - x1, end[1] - z1) < END_TOLERANCE * Math.max(1, radius) && Math.abs(VehicleSummonFlight.clampAngle(end[2] - yaw1)) < END_YAW_TOLERANCE) {
+            if (Math.hypot(end[0] - x1, end[1] - z1) < END_TOLERANCE * Math.max(1, radius) && Math.abs(RotationMatrix.clampAngle(end[2] - yaw1)) < END_YAW_TOLERANCE) {
                 paths.add(path);
             }
         }

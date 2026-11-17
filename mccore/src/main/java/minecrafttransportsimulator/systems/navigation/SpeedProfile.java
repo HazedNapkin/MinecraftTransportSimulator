@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.List;
 
@@ -13,28 +13,30 @@ import java.util.List;
  * stops, and so it does where it turns on the spot.  Then a pass back from the end slows each pose to what braking
  * gently from it can get down to the speeds after it, ending at a stop, and a pass forward from the start limits
  * each to what speeding up gently from the speed it sets off at, or from each stop, can reach.
+ *
+ * @author HazedNapkin
  */
-final class SpeedProfile {
+public final class SpeedProfile {
     /**What limits the speeds, in m/s, m/s per second and blocks.**/
-    static final class Settings {
-        double cruiseSpeed = 8.3;
+    public static final class Settings {
+        public double cruiseSpeed = 8.3;
         /**How much more steering than a turn needs to keep in hand, for correcting drift, as a multiple.**/
-        double steeringMargin = 1.25;
+        public double steeringMargin = 1.25;
         /**Most sideways acceleration in turns, in m/s per second.  About a third of a g looks brisk without skidding.**/
-        double sideAcceleration = 3;
-        double acceleration = 2;
-        double braking = 2.5;
+        public double sideAcceleration = 3;
+        public double acceleration = 2;
+        public double braking = 2.5;
         /**Speed to be down to at a step up or down, and the least to plan for anywhere short of the end.**/
-        double stepSpeed = 2.5;
-        double minSpeed = 1;
+        public double stepSpeed = 2.5;
+        public double minSpeed = 1;
         /**Fastest it backs up.  Steering going backwards is twitchy, and reverse gears are low.**/
-        double reverseSpeed = 2.5;
+        public double reverseSpeed = 2.5;
     }
 
     /**How far along the route each pose is, in blocks.**/
-    final double[] distances;
+    public final double[] distances;
     /**The speed to be doing at each pose, in m/s.  The last is 0, and so is any it changes direction at.**/
-    final double[] speeds;
+    public final double[] speeds;
 
     private SpeedProfile(double[] distances, double[] speeds) {
         this.distances = distances;
@@ -42,20 +44,20 @@ final class SpeedProfile {
     }
 
     /**Plans the speeds along the route for the vehicle, setting off at startSpeed.**/
-    static SpeedProfile plan(SummonRoute route, VehicleKinematics kinematics, Settings settings, double startSpeed) {
-        List<SummonRoute.Pose> poses = route.poses;
+    public static SpeedProfile plan(Route route, VehicleKinematics kinematics, Settings settings, double startSpeed) {
+        List<Route.Pose> poses = route.poses;
         int count = poses.size();
         double[] distances = new double[count];
         double[] speeds = new double[count];
         for (int i = 0; i < count; ++i) {
-            SummonRoute.Pose pose = poses.get(i);
+            Route.Pose pose = poses.get(i);
             double curvature = Math.abs(pose.curvature);
             double speed = Math.min(settings.cruiseSpeed, kinematics.getMaxSpeed(curvature * settings.steeringMargin));
             if (curvature > 0) {
                 speed = Math.min(speed, Math.sqrt(settings.sideAcceleration / curvature));
             }
             if (i > 0) {
-                SummonRoute.Pose last = poses.get(i - 1);
+                Route.Pose last = poses.get(i - 1);
                 distances[i] = distances[i - 1] + Math.hypot(pose.x - last.x, pose.z - last.z);
                 if (pose.y != last.y) {
                     speed = Math.min(speed, settings.stepSpeed);

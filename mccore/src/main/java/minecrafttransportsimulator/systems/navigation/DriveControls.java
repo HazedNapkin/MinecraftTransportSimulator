@@ -1,10 +1,10 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 /**
  * Turns what the {@link PathTracker} says to do each tick into what the driver does with the controls: steering,
  * throttle, brake and gears, and when to put the parking brake on.  It knows nothing of the vehicle but what it's
- * told, so it can be run against a made-up vehicle in tests as well as by the {@link VehicleSummonJob}, which is what
- * does it to a real one.  Make one for each drive: it learns how the vehicle it's driving responds.
+ * told, so it can be run against a made-up vehicle in tests as well as by whatever drives a real
+ * one, like a vehicle summon.  Make one for each drive: it learns how the vehicle it's driving responds.
  * <p>
  * It works out how hard it wants to speed up or slow down: towards the speed the tracker asks for, or, once it's on
  * the way to stopping where it changes direction or pulls up, exactly hard enough to stop there.  Wanting to slow less
@@ -17,106 +17,108 @@ package minecrafttransportsimulator.systems.summoning;
  * of it or after rolling past.  Changing between forward and reverse, it stops first, held straight, and only steers
  * again once the vehicle's going the new way.  Turning on the spot, it stops, held straight, then lets go of the
  * brakes in neutral and steers, which is what turns a vehicle that skid steers.
+ *
+ * @author HazedNapkin
  */
-final class DriveControls {
+public final class DriveControls {
     /**The length of a tick, in seconds.**/
-    static final double TICK = 0.05;
+    public static final double TICK = 0.05;
     /**
      * How slow the vehicle must be to shift between forward and reverse, and how slow it must be going the new way
      * before it's steered, in m/s.  MTS only turns a vehicle the way it's going once it's going that way, and a
      * vehicle that can skid steer spins on the spot in neutral, so it's held straight until then.
      */
-    static final double SHIFT_SPEED = 0.3;
-    static final double STEER_SETTLE_SPEED = 0.5;
+    public static final double SHIFT_SPEED = 0.3;
+    public static final double STEER_SETTLE_SPEED = 0.5;
     /**
      * How near the end a vehicle that's all but stopped counts as there, in blocks, how slow is all but stopped, in
      * m/s, and how many ticks in a row it must be like that.  If it's come to rest just short and can't get going
      * again, it shouldn't sit there until it's called stuck.
      */
-    static final double STALLED_ARRIVE_DISTANCE = 1;
-    static final double STALLED_SPEED = 0.3;
-    static final int STALLED_TICKS = 20;
+    public static final double STALLED_ARRIVE_DISTANCE = 1;
+    public static final double STALLED_SPEED = 0.3;
+    public static final int STALLED_TICKS = 20;
     /**How long it takes to make up a difference from the speed it should be doing, in seconds.**/
-    static final double SPEED_RESPONSE_TIME = 0.5;
+    public static final double SPEED_RESPONSE_TIME = 0.5;
     /**
      * How near to slowing as hard as the drive plans to brake it must be, as a fraction, before it brakes to stop
      * exactly where it stops, rather than just keeping to the speed the tracker asks for.
      */
-    static final double STOPPING_FRACTION = 0.97;
+    public static final double STOPPING_FRACTION = 0.97;
     /**The most throttle used, and what it sets off with before it's learnt what the vehicle needs.**/
-    static final double MAX_THROTTLE = 0.8;
-    static final double INITIAL_THROTTLE = 0.3;
+    public static final double MAX_THROTTLE = 0.8;
+    public static final double INITIAL_THROTTLE = 0.3;
     /**How much throttle for each m/s short of the speed, and how much more for each m/s it's been short each second.**/
-    static final double THROTTLE_GAIN = 0.2;
-    static final double THROTTLE_INTEGRAL_GAIN = 0.3;
+    public static final double THROTTLE_GAIN = 0.2;
+    public static final double THROTTLE_INTEGRAL_GAIN = 0.3;
     /**
      * What it guesses the vehicle slows by at full brake, and on its own with neither pedal down, in m/s per second,
      * before it's learnt them, and the most and least they may be learnt as.
      */
-    static final double INITIAL_BRAKING = 5;
-    static final double MIN_BRAKING = 0.5;
-    static final double MAX_BRAKING = 40;
-    static final double INITIAL_COASTING = 0.3;
-    static final double MAX_COASTING = 5;
+    public static final double INITIAL_BRAKING = 5;
+    public static final double MIN_BRAKING = 0.5;
+    public static final double MAX_BRAKING = 40;
+    public static final double INITIAL_COASTING = 0.3;
+    public static final double MAX_COASTING = 5;
     /**
      * How much of each tick's measurement of coasting goes into what it's learnt, and how much of what it's measured
      * of braking is kept each tick, as it's weighed by how hard it braked: braking lightly says little of how hard
      * braking fully stops it.  What it guesses at first counts as this many ticks at full brake.
      */
-    static final double LEARNING_RATE = 0.2;
-    static final double BRAKING_MEMORY = 0.97;
-    static final double BRAKING_PRIOR = 0.5;
+    public static final double LEARNING_RATE = 0.2;
+    public static final double BRAKING_MEMORY = 0.97;
+    public static final double BRAKING_PRIOR = 0.5;
     /**
      * How many ticks after letting go of the throttle before it measures, as the engine takes a moment to stop
      * pushing, how fast it must be going to measure, in m/s, and the least brake it measures from.
      */
-    static final int SETTLE_TICKS = 10;
-    static final double LEARN_SPEED = 0.5;
-    static final double LEARN_BRAKE = 0.05;
+    public static final int SETTLE_TICKS = 10;
+    public static final double LEARN_SPEED = 0.5;
+    public static final double LEARN_BRAKE = 0.05;
     /**
      * How much of the braking it's learnt to count on: when deciding when to park, so it doesn't park too late, and
      * when deciding when to start stopping, so a vehicle with weaker brakes than planned starts earlier.
      */
-    static final double PARK_BRAKING_FRACTION = 1;
-    static final double STOPPING_BRAKING_FRACTION = 0.8;
+    public static final double PARK_BRAKING_FRACTION = 1;
+    public static final double STOPPING_BRAKING_FRACTION = 0.8;
     /**
      * How far short of the end it may park, in blocks, as it's never exactly there on a tick, and the furthest short of
      * it it ever parks, however fast it's going, so a wrong idea of its brakes can't have it park far off.
      */
-    static final double PARK_MARGIN = 0.05;
-    static final double MAX_PARK_DISTANCE = 1;
+    public static final double PARK_MARGIN = 0.05;
+    public static final double MAX_PARK_DISTANCE = 1;
     /**
      * How much harder than it slows on its own it must want to slow before it brakes, in m/s per second, so it doesn't
      * flick between the pedals.
      */
-    static final double BRAKE_THRESHOLD = 1.0;
+    public static final double BRAKE_THRESHOLD = 1.0;
     /**The steps the pedals are set in, so they're not changed, and sent to clients, for every tiny difference.**/
-    static final double PEDAL_STEP = 0.05;
+    public static final double PEDAL_STEP = 0.05;
     /**The steps the steering is set in, in degrees of rudder input, for the same reason.  It makes no difference to where it goes that matters.**/
-    static final double RUDDER_STEP = 0.5;
+    public static final double RUDDER_STEP = 0.5;
     /**Slower than this, in m/s, with nowhere to go, it holds itself still with the brake.**/
-    static final double HOLD_SPEED = 0.3;
+    public static final double HOLD_SPEED = 0.3;
 
     /**A change of gear to make.**/
-    enum Shift {
+    public enum Shift {
         NONE,
         UP,
         DOWN
     }
 
     /**What to do with the controls this tick.**/
-    static final class Controls {
+    public static final class Controls {
         /**The rudder input to steer with.**/
-        double rudder;
-        double throttle;
-        double brake;
+        public double rudder;
+        public double throttle;
+        public double brake;
         /**True if the steering was let go of, so the tracker should carry on from straight ahead rather than where it had it.**/
-        boolean straightened;
+        public boolean straightened;
         /**True if it's turning on the spot, so the parking brake must be off and engines in neutral.**/
-        boolean neutral;
+        public boolean neutral;
         /**True once it's there: put the parking brake on and finish.  Why, for debugging.**/
-        boolean park;
-        String parkReason;
+        public boolean park;
+        public String parkReason;
     }
 
     private final double plannedBraking;
@@ -144,17 +146,17 @@ final class DriveControls {
     private double lastLegRemaining = Double.MAX_VALUE;
 
     /**Makes the controls for one drive, planned to brake no harder than plannedBraking, in m/s per second.**/
-    DriveControls(double plannedBraking) {
+    public DriveControls(double plannedBraking) {
         this.plannedBraking = plannedBraking;
     }
 
     /**What it's learnt the vehicle slows by at full brake, in m/s per second.**/
-    double getBraking() {
+    public double getBraking() {
         return braking;
     }
 
     /**What it's learnt the vehicle slows by on its own, with neither pedal down, in m/s per second.**/
-    double getCoasting() {
+    public double getCoasting() {
         return coasting;
     }
 
@@ -162,7 +164,7 @@ final class DriveControls {
      * Works out the controls for the command at the speed in m/s.  goingInReverse is whether MTS counts it as backing
      * up, and shifting whether any engine's still changing between forward and reverse: see {@link #isShifting}.
      */
-    Controls update(PathTracker.Command command, double speed, boolean goingInReverse, boolean shifting) {
+    public Controls update(PathTracker.Command command, double speed, boolean goingInReverse, boolean shifting) {
         learn(speed);
         controls.park = false;
         controls.parkReason = null;
@@ -220,7 +222,7 @@ final class DriveControls {
     }
 
     /**How far the vehicle would go, in blocks, before full brakes stopped it from the speed in m/s.**/
-    double getStoppingDistance(double speed) {
+    public double getStoppingDistance(double speed) {
         double stopping = Math.max(MIN_BRAKING, (braking + coasting) * PARK_BRAKING_FRACTION);
         return speed * speed / (2 * stopping);
     }
@@ -249,7 +251,7 @@ final class DriveControls {
      * stopping once slowing as hard as planned from here, or as hard as its brakes can if they're weaker, would only
      * just stop it there.
      */
-    double getWantedAcceleration(PathTracker.Command command, double speed) {
+    public double getWantedAcceleration(PathTracker.Command command, double speed) {
         double left = command.legRemaining;
         if (left <= 0) {
             //Past where it stops.
@@ -339,7 +341,7 @@ final class DriveControls {
      * The steering to set off along the route with at the speed in m/s, already turned for the curve it starts on.  A
      * vehicle placed mid-turn would otherwise run wide while the wheel turned.  None if it starts by turning on the spot.
      */
-    static double getStartRudder(SummonRoute route, VehicleKinematics kinematics, double speed) {
+    public static double getStartRudder(Route route, VehicleKinematics kinematics, double speed) {
         if (route.poses.size() < 2 || route.poses.get(1).pivot) {
             return 0;
         }
@@ -351,7 +353,7 @@ final class DriveControls {
      * backing up if reverse is set, at the speed in m/s.  From neutral it shifts without stopping, as when engines have
      * just started.  In gear the other way, it only shifts once it's stopped.
      */
-    static Shift getShift(double gear, boolean reverse, double speed) {
+    public static Shift getShift(double gear, boolean reverse, double speed) {
         if (isInGear(gear, reverse) || (gear != 0 && speed >= SHIFT_SPEED)) {
             return Shift.NONE;
         }
@@ -362,7 +364,7 @@ final class DriveControls {
      * True while an engine in the gear is still changing between forward and reverse, so the vehicle's held still: it's
      * in gear the wrong way, or in neutral on the way to reverse, as it only shifts a gear a tick.
      */
-    static boolean isShifting(double gear, boolean reverse) {
+    public static boolean isShifting(double gear, boolean reverse) {
         return !isInGear(gear, reverse) && (gear != 0 || reverse);
     }
 

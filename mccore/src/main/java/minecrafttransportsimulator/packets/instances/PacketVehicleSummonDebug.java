@@ -15,6 +15,8 @@ import minecrafttransportsimulator.systems.summoning.VehicleSummonDebug.Marker;
 /**
  * Packet sent from the server to clients with the markers showing a vehicle's summon plan, when the
  * summonDebug config is on.  Positions are sent as floats, which is plenty for markers.
+ *
+ * @author HazedNapkin
  */
 public class PacketVehicleSummonDebug extends APacketEntity<EntityVehicleF_Physics> {
     private final List<Marker> markers;

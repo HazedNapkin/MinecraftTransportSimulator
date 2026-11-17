@@ -6,26 +6,25 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
-
 import org.junit.Test;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.systems.navigation.FakeTerrain;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.TestShapes;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 public class ArrivalPlannerTest {
     private static final Point3D PLAYER = new Point3D(0.5, 0, 0.5);
 
     /**A car 2 wide, 4 long and 1.25 high, with its origin in the middle and a wheel near each corner.**/
-    static VehicleShape car() {
-        List<double[]> boxes = Arrays.asList(new double[] { 0, 0.75, -1, 1, 0.5 }, new double[] { 0, 0.75, 1, 1, 0.5 });
-        List<double[]> wheels = Arrays.asList(new double[] { 0.8, 0.25, 1.3, 0.25, 0.25 }, new double[] { -0.8, 0.25, 1.3, 0.25, 0.25 }, new double[] { 0.8, 0.25, -1.3, 0.25, 0.25 }, new double[] { -0.8, 0.25, -1.3, 0.25, 0.25 });
-        return VehicleShape.of(boxes, wheels);
-    }
-
     private static ArrivalPlanner planner(FakeTerrain terrain, ArrivalPlanner.Settings settings) {
-        return new ArrivalPlanner(new PoseChecker(new TerrainMap(terrain), car()), settings, PLAYER, 0);
+        return new ArrivalPlanner(new PoseChecker(new TerrainMap(terrain), TestShapes.car()), settings, PLAYER, 0);
     }
 
-    private static double bearingOf(ArrivalPlanner.Goal goal) {
+    private static double bearingOf(RouteGoal goal) {
         return Math.toDegrees(Math.atan2(goal.x - PLAYER.x, goal.z - PLAYER.z));
     }
 
@@ -86,9 +85,9 @@ public class ArrivalPlannerTest {
         ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
         ArrivalPlanner planner = planner(FakeTerrain.flat(30), settings);
         planner.finish();
-        List<ArrivalPlanner.Goal> goals = planner.getGoals();
+        List<RouteGoal> goals = planner.getGoals();
         assertEquals(ArrivalPlanner.MAX_GOALS, goals.size());
-        ArrivalPlanner.Goal best = goals.get(0);
+        RouteGoal best = goals.get(0);
         assertEquals(0, bearingOf(best), 1);
         assertEquals(90, best.yaw, 1e-9);
         assertEquals(0, best.y);
@@ -148,7 +147,7 @@ public class ArrivalPlannerTest {
         assertFalse(planner.canTurnIn(origin[0] - runIn[0], 0, origin[1], origin[2]));
         //So straight ahead it pulls up further out, where it can get in.
         planner.finish();
-        for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+        for (RouteGoal goal : planner.getGoals()) {
             if (Math.abs(bearingOf(goal)) < 1) {
                 assertTrue(planner.getNearestDistance(goal.x, goal.z, goal.yaw) > settings.gap + 0.4);
             }
@@ -171,7 +170,7 @@ public class ArrivalPlannerTest {
             ArrivalPlanner.Settings settings = new ArrivalPlanner.Settings();
             ArrivalPlanner planner = planner(terrain, settings);
             planner.finish();
-            for (ArrivalPlanner.Goal goal : planner.getGoals()) {
+            for (RouteGoal goal : planner.getGoals()) {
                 assertTrue(planner.getNearestDistance(goal.x, goal.z, goal.yaw) >= settings.gap);
                 double[] runIn = planner.measureRunIn(goal.x, goal.y, goal.z, goal.yaw);
                 //The car is 4 long, so its run-in has to be at least that, and it should be twice that.
@@ -207,7 +206,7 @@ public class ArrivalPlannerTest {
         //Driving in, there's no run-in there.  Put there, it fits, the gap away, with the left side to the player.
         double[] origin = placed.getOrigin(0);
         assertTrue(placed.measureRunIn(origin[0], 0, origin[1], origin[2])[0] < 3);
-        ArrivalPlanner.Goal goal = placed.getGoals().get(0);
+        RouteGoal goal = placed.getGoals().get(0);
         assertEquals(0, bearingOf(goal), 1);
         assertEquals(90, goal.yaw, 1e-9);
         assertEquals(placing.gap, placed.getNearestDistance(goal.x, goal.z, goal.yaw), 0.06);
@@ -223,7 +222,7 @@ public class ArrivalPlannerTest {
         ArrivalPlanner placed = planner(terrain, placing);
         placed.finish();
         assertFalse(placed.getGoals().isEmpty());
-        ArrivalPlanner.Goal goal = placed.getGoals().get(0);
+        RouteGoal goal = placed.getGoals().get(0);
         assertTrue(placed.getNearestDistance(goal.x, goal.z, goal.yaw) > 2);
     }
 
@@ -231,7 +230,7 @@ public class ArrivalPlannerTest {
     public void comesDownToTheGroundBelowAPlayerOnABlock() {
         //The player stands on a single block, so their feet are at y = 1 and the ground round them at 0.
         FakeTerrain terrain = FakeTerrain.flat(30).fill(0, 0, 0, 0, 0, 0);
-        ArrivalPlanner planner = new ArrivalPlanner(new PoseChecker(new TerrainMap(terrain), car()), new ArrivalPlanner.Settings(), new Point3D(0.5, 1, 0.5), 0);
+        ArrivalPlanner planner = new ArrivalPlanner(new PoseChecker(new TerrainMap(terrain), TestShapes.car()), new ArrivalPlanner.Settings(), new Point3D(0.5, 1, 0.5), 0);
         planner.finish();
         assertEquals(0, planner.getGoals().get(0).y);
     }

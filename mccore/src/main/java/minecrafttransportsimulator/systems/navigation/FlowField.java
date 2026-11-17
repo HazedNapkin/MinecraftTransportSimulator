@@ -1,4 +1,4 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.PriorityQueue;
 
 /**
- * How far a vehicle has to drive between each surface cell near the player and a set of sources, going round
+ * How far a vehicle has to drive between each surface cell near a centre point and a set of sources, going round
  * whatever's in the way and up and down hills.  It spreads out from the sources a slice at a time, like a flood.
  * <p>
  * It's quick and rough: it treats the vehicle as a point that needs {@link Settings#clearance} blocks of room round
@@ -17,10 +17,12 @@ import java.util.PriorityQueue;
  * Cells are a block column and a surface height in it, so a road under a bridge and the bridge are different cells.
  * Moving to a neighbouring cell can climb {@link Settings#maxUp} and drop {@link Settings#maxDown}, in the direction
  * the vehicle drives, which is to the sources, as they're where it's going.
+ *
+ * @author HazedNapkin
  */
-final class FlowField {
+public final class FlowField {
     /**Furthest from a cell we can look for things in the way when working out how much room it has, in blocks.**/
-    static final int CLEARANCE_RANGE = 4;
+    public static final int CLEARANCE_RANGE = 4;
     /**
      * The columns within {@link #CLEARANCE_RANGE}, other than the center, as {dx, dz}, nearest first, with the
      * distance from the center of the middle column to the nearest edge of each.
@@ -47,32 +49,32 @@ final class FlowField {
     private static final int[][] NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
 
     /**What the vehicle needs, and how far the flood spreads.**/
-    static final class Settings {
+    public static final class Settings {
         /**Room the vehicle needs either side of the cell it's in, in blocks from the cell center to the nearest thing in the way.**/
-        double clearance;
+        public double clearance;
         /**Height from the ground the vehicle needs clear, in blocks.**/
-        double headroom = 2;
-        int maxUp = 1;
-        int maxDown = 2;
+        public double headroom = 2;
+        public int maxUp = 1;
+        public int maxDown = 2;
         /**
          * How far from a cell to look for things in the way, in blocks, up to {@link #CLEARANCE_RANGE}.  Cells with
          * more room than this count as having this much.  Looking only as far as matters saves a lot of checks.
          */
-        double clearanceRange = CLEARANCE_RANGE;
+        public double clearanceRange = CLEARANCE_RANGE;
         /**How far from the center the flood may spread, in blocks across.**/
-        double radius = 64;
+        public double radius = 64;
         /**Furthest drive from the sources the flood spreads to, in blocks.**/
-        double maxDistance = Double.POSITIVE_INFINITY;
+        public double maxDistance = Double.POSITIVE_INFINITY;
         /**Most cells to reach.**/
-        int maxCells = 40000;
+        public int maxCells = 40000;
         /**
          * Room the vehicle would like either side of the cell it's in, in blocks as for {@link #clearance}, and how much
          * more than its length each block through a cell with less costs, as a fraction.  The flood spreads the cheapest
          * way, which keeps off tight places where it can, and says what getting to the sources costs as well as how far
          * it is: see {@link FlowField#getCost}.
          */
-        double comfortableClearance;
-        double tightCost;
+        public double comfortableClearance;
+        public double tightCost;
     }
 
     private final TerrainMap terrain;
@@ -94,7 +96,7 @@ final class FlowField {
     private int sourceCount;
 
     /**Makes a flood spreading out from no further than settings.radius from the center.  Add sources before stepping it.**/
-    FlowField(TerrainMap terrain, Settings settings, int centerX, int centerZ) {
+    public FlowField(TerrainMap terrain, Settings settings, int centerX, int centerZ) {
         this.terrain = terrain;
         this.settings = settings;
         this.centerX = centerX;
@@ -105,7 +107,7 @@ final class FlowField {
      * Adds a source, at the extra distance.  Returns false and adds nothing if the vehicle can't be there, as
      * it isn't a surface or hasn't the room.
      */
-    boolean addSource(int x, int y, int z, double extraDistance) {
+    public boolean addSource(int x, int y, int z, double extraDistance) {
         if (!isPassable(x, y, z)) {
             return false;
         }
@@ -119,18 +121,18 @@ final class FlowField {
      * block of y, rather than spreading as far as it may.  For floods that only need to reach one place, like where a
      * vehicle that's already nearby is.  Call before stepping.
      */
-    void setTarget(int x, int y, int z, int radius, double margin) {
+    public void setTarget(int x, int y, int z, int radius, double margin) {
         target = new int[] { x, y, z, radius };
         targetMargin = margin;
     }
 
     /**The cell the flood reached nearest its target, if it's set and the flood got there, or null.**/
-    Cell getTargetCell() {
+    public Cell getTargetCell() {
         return targetCell;
     }
 
     /**Spreads the flood until it's done or maxNanos pass.  Returns true once it's done.**/
-    boolean step(long maxNanos) {
+    public boolean step(long maxNanos) {
         long startTime = System.nanoTime();
         while (!finished && System.nanoTime() - startTime < maxNanos) {
             Queued queued = open.poll();
@@ -156,12 +158,12 @@ final class FlowField {
     }
 
     /**Spreads the flood until it's done.  For tests and anything else that can wait.**/
-    void finish() {
+    public void finish() {
         while (!step(Long.MAX_VALUE)) {
         }
     }
 
-    boolean isFinished() {
+    public boolean isFinished() {
         return finished;
     }
 
@@ -212,7 +214,7 @@ final class FlowField {
     }
 
     /**Returns true if the vehicle could be at the surface: it's a surface, and it has the room.**/
-    boolean isPassable(int x, int y, int z) {
+    public boolean isPassable(int x, int y, int z) {
         return terrain.isSurface(x, y, z, settings.headroom) && getClearance(x, y, z) >= settings.clearance;
     }
 
@@ -224,7 +226,7 @@ final class FlowField {
      * How much room the vehicle has at the surface: the distance from the cell's center to the nearest edge of a
      * column it couldn't have a wheel in at this height, up to {@link Settings#clearanceRange}.
      */
-    double getClearance(int x, int y, int z) {
+    public double getClearance(int x, int y, int z) {
         long key = TerrainMap.blockKey(x, y, z);
         Double cached = clearanceCache.get(key);
         if (cached == null) {
@@ -243,7 +245,7 @@ final class FlowField {
     }
 
     /**The cell at the surface, or null if the flood hasn't reached it.**/
-    Cell getCell(int x, int y, int z) {
+    public Cell getCell(int x, int y, int z) {
         return cells.get(TerrainMap.blockKey(x, y, z));
     }
 
@@ -251,7 +253,7 @@ final class FlowField {
      * The distance to the sources from the column, at the surface nearest y within tolerance blocks of it, or
      * infinity if the flood hasn't reached any of those.
      */
-    double getDistance(int x, int y, int z, int tolerance) {
+    public double getDistance(int x, int y, int z, int tolerance) {
         for (int offset = 0; offset <= tolerance; ++offset) {
             Cell cell = getCell(x, y + offset, z);
             if (cell == null && offset > 0) {
@@ -269,7 +271,7 @@ final class FlowField {
      * infinity if the flood hasn't reached any of those: the distance, plus {@link Settings#tightCost} for each block of
      * it through tight places.
      */
-    double getCost(int x, int y, int z, int tolerance) {
+    public double getCost(int x, int y, int z, int tolerance) {
         for (int offset = 0; offset <= tolerance; ++offset) {
             Cell cell = getCell(x, y + offset, z);
             if (cell == null && offset > 0) {
@@ -283,37 +285,37 @@ final class FlowField {
     }
 
     /**How many cells the flood has reached so far.**/
-    int getCellCount() {
+    public int getCellCount() {
         return cells.size();
     }
 
     /**Every cell the flood has reached so far.**/
-    List<Cell> getCells() {
+    public List<Cell> getCells() {
         return new ArrayList<>(cells.values());
     }
 
     private static final class Queued {
-        final Cell cell;
-        final double cost;
+        public final Cell cell;
+        public final double cost;
 
-        Queued(Cell cell, double cost) {
+        public Queued(Cell cell, double cost) {
             this.cell = cell;
             this.cost = cost;
         }
     }
 
     /**A surface the flood has reached, how far it is from the sources, and the next cell towards them.**/
-    static final class Cell {
-        final int x;
-        final int y;
-        final int z;
-        double distance = Double.POSITIVE_INFINITY;
+    public static final class Cell {
+        public final int x;
+        public final int y;
+        public final int z;
+        public double distance = Double.POSITIVE_INFINITY;
         /**What getting to the sources from here the cheapest way costs: see {@link FlowField#getCost}.**/
-        double cost = Double.POSITIVE_INFINITY;
+        public double cost = Double.POSITIVE_INFINITY;
         /**The next cell on the way to the sources, or null for a source.**/
-        Cell next;
+        public Cell next;
         /**Which source the way from here leads to, numbered in the order they were added.**/
-        int source;
+        public int source;
         private boolean closed;
 
         private Cell(int x, int y, int z) {
@@ -326,11 +328,11 @@ final class FlowField {
          * The yaw from this cell to the next one, which is the way the vehicle drives if the flood goes towards
          * the sources, or the way it comes from if it goes away from them.  NaN for a source.
          */
-        double getYawToNext() {
+        public double getYawToNext() {
             return next == null ? Double.NaN : Math.toDegrees(Math.atan2(next.x - x, next.z - z));
         }
 
-        boolean isClosed() {
+        public boolean isClosed() {
             return closed;
         }
     }

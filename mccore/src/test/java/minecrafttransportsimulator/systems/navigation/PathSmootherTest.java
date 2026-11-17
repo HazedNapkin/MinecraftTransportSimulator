@@ -1,12 +1,13 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
-
 import org.junit.Test;
+
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 
 public class PathSmootherTest {
     private static final double SPACING = 0.5;
@@ -15,27 +16,27 @@ public class PathSmootherTest {
      * Makes a route of poses every half block, driving each of the pieces in turn from the origin facing +Z.
      * Each piece is {length, curvature}, or {length, curvature, 1} to back along it.
      */
-    static SummonRoute route(double[]... pieces) {
-        List<SummonRoute.Pose> poses = new ArrayList<>();
+    public static Route route(double[]... pieces) {
+        List<Route.Pose> poses = new ArrayList<>();
         double[] pose = { 0.5, 0.5, 0 };
-        poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], pieces[0][1], isReverse(pieces[0])));
+        poses.add(new Route.Pose(pose[0], 0, pose[1], pose[2], pieces[0][1], isReverse(pieces[0])));
         for (double[] piece : pieces) {
             int samples = (int) Math.round(piece[0] / SPACING);
             boolean reverse = isReverse(piece);
             for (int i = 0; i < samples; ++i) {
                 pose = HybridSearch.arc(pose[0], pose[1], pose[2], piece[1], reverse ? -SPACING : SPACING);
-                poses.add(new SummonRoute.Pose(pose[0], 0, pose[1], pose[2], piece[1], reverse));
+                poses.add(new Route.Pose(pose[0], 0, pose[1], pose[2], piece[1], reverse));
             }
         }
-        ArrivalPlanner.Goal goal = new ArrivalPlanner.Goal(pose[0], 0, pose[1], pose[2], 6, 0);
-        return new SummonRoute(poses, true, goal);
+        RouteGoal goal = new RouteGoal(pose[0], 0, pose[1], pose[2], 6, 0);
+        return new Route(poses, true, goal);
     }
 
     private static boolean isReverse(double[] piece) {
         return piece.length > 2 && piece[2] != 0;
     }
 
-    private static double maxCurvatureJump(SummonRoute route) {
+    private static double maxCurvatureJump(Route route) {
         double jump = 0;
         for (int i = 1; i < route.poses.size(); ++i) {
             jump = Math.max(jump, Math.abs(route.poses.get(i).curvature - route.poses.get(i - 1).curvature));
@@ -46,9 +47,9 @@ public class PathSmootherTest {
     @Test
     public void easesSteeringIntoTurns() {
         //Straight, a quarter turn left at radius 6, then a straight run-in.
-        SummonRoute original = route(new double[] { 10, 0 }, new double[] { 6 * Math.PI / 2, 1 / 6D }, new double[] { 6, 0 });
-        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), ArrivalPlannerTest.car());
-        SummonRoute smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
+        Route original = route(new double[] { 10, 0 }, new double[] { 6 * Math.PI / 2, 1 / 6D }, new double[] { 6, 0 });
+        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), TestShapes.car());
+        Route smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
         assertEquals(original.poses.size(), smoothed.poses.size());
 
         //The steering changes by much less from one pose to the next.
@@ -61,10 +62,10 @@ public class PathSmootherTest {
         }
         //It still fits everywhere and never turns tighter than the vehicle can.
         for (int i = 1; i < smoothed.poses.size(); ++i) {
-            SummonRoute.Pose pose = smoothed.poses.get(i);
-            SummonRoute.Pose last = smoothed.poses.get(i - 1);
+            Route.Pose pose = smoothed.poses.get(i);
+            Route.Pose last = smoothed.poses.get(i - 1);
             assertTrue(checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
-            double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
+            double turn = Math.toRadians(Math.abs(RotationMatrix.clampAngle(pose.yaw - last.yaw)));
             assertTrue(turn / Math.hypot(pose.x - last.x, pose.z - last.z) <= 1.01 / 4);
         }
     }
@@ -72,9 +73,9 @@ public class PathSmootherTest {
     @Test
     public void ironsOutWiggles() {
         //A little left-right wiggle in an otherwise straight route.
-        SummonRoute original = route(new double[] { 8, 0 }, new double[] { 1.5, 0.25 }, new double[] { 3, -0.25 }, new double[] { 1.5, 0.25 }, new double[] { 10, 0 });
-        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), ArrivalPlannerTest.car());
-        SummonRoute smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
+        Route original = route(new double[] { 8, 0 }, new double[] { 1.5, 0.25 }, new double[] { 3, -0.25 }, new double[] { 1.5, 0.25 }, new double[] { 10, 0 });
+        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), TestShapes.car());
+        Route smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
         double originalPeak = 0;
         double smoothedPeak = 0;
         for (int i = 0; i < original.poses.size(); ++i) {
@@ -87,9 +88,9 @@ public class PathSmootherTest {
     @Test
     public void keepsToTheRouteWhereSmoothingWouldHitThings() {
         //A tight quarter turn.  Smoothing on open ground cuts the corner, covering a block the route didn't.
-        SummonRoute original = route(new double[] { 10, 0 }, new double[] { 4 * Math.PI / 2, 1 / 4D }, new double[] { 8, 0 });
-        VehicleShape car = ArrivalPlannerTest.car();
-        SummonRoute open = PathSmoother.smooth(original, new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), car), 1 / 3D, 6);
+        Route original = route(new double[] { 10, 0 }, new double[] { 4 * Math.PI / 2, 1 / 4D }, new double[] { 8, 0 });
+        VehicleShape car = TestShapes.car();
+        Route open = PathSmoother.smooth(original, new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), car), 1 / 3D, 6);
         java.util.Set<Long> originalColumns = getColumns(original, car);
         Long cut = null;
         for (long column : getColumns(open, car)) {
@@ -106,13 +107,13 @@ public class PathSmootherTest {
         int z = (int) (long) cut;
         terrain.fill(x, 0, z, x, 2, z);
         assertTrue(allFit(original, new PoseChecker(new TerrainMap(terrain), car)));
-        SummonRoute smoothed = PathSmoother.smooth(original, new PoseChecker(new TerrainMap(terrain), car), 1 / 3D, 6);
+        Route smoothed = PathSmoother.smooth(original, new PoseChecker(new TerrainMap(terrain), car), 1 / 3D, 6);
         assertTrue(allFit(smoothed, new PoseChecker(new TerrainMap(terrain), car)));
     }
 
-    private static java.util.Set<Long> getColumns(SummonRoute route, VehicleShape shape) {
+    private static java.util.Set<Long> getColumns(Route route, VehicleShape shape) {
         java.util.Set<Long> columns = new java.util.HashSet<>();
-        for (SummonRoute.Pose pose : route.poses) {
+        for (Route.Pose pose : route.poses) {
             for (VehicleShape.Column column : shape.getFootprint(pose.x, pose.z, pose.yaw)) {
                 columns.add(VehicleShape.columnKey(column.x, column.z));
             }
@@ -120,8 +121,8 @@ public class PathSmootherTest {
         return columns;
     }
 
-    private static boolean allFit(SummonRoute route, PoseChecker checker) {
-        for (SummonRoute.Pose pose : route.poses) {
+    private static boolean allFit(Route route, PoseChecker checker) {
+        for (Route.Pose pose : route.poses) {
             if (!checker.canDrive(pose.x, pose.y, pose.z, pose.yaw)) {
                 return false;
             }
@@ -132,10 +133,10 @@ public class PathSmootherTest {
     @Test
     public void keepsWhereItChangesDirection() {
         //Forward into a left turn, back out of it turning the other way, then forward to a straight run-in.
-        SummonRoute original = route(new double[] { 8, 0 }, new double[] { 5, 0.25 }, new double[] { 3, -0.2, 1 }, new double[] { 3, 0, 1 }, new double[] { 6, -0.2 }, new double[] { 10, 0 });
+        Route original = route(new double[] { 8, 0 }, new double[] { 5, 0.25 }, new double[] { 3, -0.2, 1 }, new double[] { 3, 0, 1 }, new double[] { 6, -0.2 }, new double[] { 10, 0 });
         assertEquals(2, original.getCusps().size());
-        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), ArrivalPlannerTest.car());
-        SummonRoute smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
+        PoseChecker checker = new PoseChecker(new TerrainMap(FakeTerrain.flat(40)), TestShapes.car());
+        Route smoothed = PathSmoother.smooth(original, checker, 1 / 4D, 6);
         assertTrue("smoothing gave up", smoothed != original);
         assertEquals(original.getCusps(), smoothed.getCusps());
         for (int cusp : original.getCusps()) {
@@ -146,20 +147,20 @@ public class PathSmootherTest {
             }
         }
         for (int i = 0; i < smoothed.poses.size(); ++i) {
-            SummonRoute.Pose was = original.poses.get(i);
-            SummonRoute.Pose pose = smoothed.poses.get(i);
+            Route.Pose was = original.poses.get(i);
+            Route.Pose pose = smoothed.poses.get(i);
             assertEquals(was.reverse, pose.reverse);
             //Backing up it still faces the way it did, not the way it's going.
-            assertTrue("yaw at " + i, Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - was.yaw)) < 10);
+            assertTrue("yaw at " + i, Math.abs(RotationMatrix.clampAngle(pose.yaw - was.yaw)) < 10);
             //And steers the same way to follow it.  This route gives each pose the steering it arrives with, but at a
             //change of direction the smoother gives it the steering it sets off with, so those aren't compared.
             if (Math.abs(was.curvature) > 0.1 && !original.isCusp(i)) {
                 assertTrue("steering at " + i, pose.curvature * was.curvature > 0);
             }
             if (i > 0) {
-                SummonRoute.Pose last = smoothed.poses.get(i - 1);
+                Route.Pose last = smoothed.poses.get(i - 1);
                 assertTrue(checker.canDrive(pose.x, pose.y, pose.z, pose.yaw));
-                double turn = Math.toRadians(Math.abs(VehicleSummonFlight.clampAngle(pose.yaw - last.yaw)));
+                double turn = Math.toRadians(Math.abs(RotationMatrix.clampAngle(pose.yaw - last.yaw)));
                 assertTrue(turn / Math.hypot(pose.x - last.x, pose.z - last.z) <= 1.01 / 4);
             }
         }

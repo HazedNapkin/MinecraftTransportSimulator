@@ -21,44 +21,51 @@ When goals conflict, the earlier one wins. A cheaper search that sometimes fails
 
 ## Where the code is
 
-Everything is in `mccore/src/main/java/minecrafttransportsimulator/systems/summoning/`, with tests in the same package under `mccore/src/test/java/`.
+The code is in two packages under `mccore/src/main/java/minecrafttransportsimulator/systems/`, with tests in the same packages under `mccore/src/test/java/`:
 
-| Stage | Class | Role |
-|---|---|---|
-| Entry | `VehiclePhone`, `VehicleSummonManager` | Phone entries and permission checks. The manager owns one job per vehicle, ticks them each server tick and shares out the search time (10 ms a tick across all calls). |
-| Job | `VehicleSummonJob` | The state machine for one call: locate, plan, teleport, drive, fly, land, fall back. The only class that touches the real vehicle. |
-| Finding it | `VehicleLocationTracker` | Last saved position of every vehicle per world, so an unloaded one can be found and its chunk loaded. |
-| World | `TerrainQuery`, `TerrainMap` | The only way planning asks about blocks. `TerrainMap` caches answers for one plan. |
-| Vehicle | `VehicleShape`, `VehicleKinematics`, `PoseChecker` | The space the vehicle takes up, how it steers (copied from MTS's own steering maths), and whether it fits at a pose. |
-| Planning | `RoutePlanner` | Runs the stages below a time slice at a time. |
-| 1 | `ArrivalPlanner` | Where it pulls up: exact goal poses beside the player, each with a straight run-in. |
-| 2 | `FlowField` | Flood out from the goals: drive distance from every nearby cell. Guides the search. |
-| 3 | `SpawnSelector` | Hidden places about the summon distance out to set off from. |
-| 4 | `HybridSearch`, `AnalyticPaths` | Hybrid A* forward from the starts, joining the run-in exactly with Dubins or Reeds-Shepp curves. Reversing and turning on the spot only when they save a lot. |
-| 5 | `PathSmoother`, `SummonRoute` | Eases the steering between arcs, re-checking fit. The route is poses half a block apart, each with its curvature. |
-| Driving | `SpeedProfile`, `PathTracker`, `DriveControls` | Speeds along the route, steering and target speed each tick, and what that means for pedals and gears. `DriveControls` learns the vehicle's brakes and coasting as it goes. |
-| Flying | `VehicleSummonFlight` | Moves an aircraft to a target, on both sides, from synced variables. |
-| Debug | `VehicleSummonDebug`, `SummonPlanReport`, `SummonDriveReport` | Markers and chat reports when the `summonDebug` config is on. |
+- **`navigation/`** is general ground-vehicle route planning and driving: the terrain, the vehicle's shape and steering, the route search, and the autopilot that drives a route. It knows nothing about phones, players or summoning, so anything else that needs a vehicle to drive itself somewhere (AI traffic, a tow truck, a parking command) can use it. It must never import from `summoning`.
+- **`summoning/`** is the phone feature: what a call is, where the vehicle should pull up and set off from, and the job that runs one call using `navigation`.
 
-Wiring outside the package: `EntityManager` calls `VehicleSummonManager.tickWorld` and `onWorldUnload`; `AEntityVehicleD_Moving` calls `onVehicleTick` and the location tracker; `PacketVehiclePhoneAction` and `GUIVehiclePhone` are the phone screen; `JSONVehicle` holds the pack fields (`summonFlyIn`, `summonDistance`, `summonArrivalAngle`, `summonSpeed`, `summonArrivalGap`); chat messages are `INTERACT_PHONE_*` in `LanguageSystem`. Each of the six `mcinterface*` projects has its own `WrapperWorld` implementing `keepChunkLoaded`, `chunkLoaded` and `getBlockSurfaceFlags`, so a change to `AWrapperWorld` must be made in all six.
+| Stage | Package | Class | Role |
+|---|---|---|---|
+| Entry | summoning | `VehiclePhone`, `VehicleSummonManager` | Phone entries and permission checks. The manager owns one job per vehicle, ticks them each server tick and shares out the search time (10 ms a tick across all calls). |
+| Job | summoning | `VehicleSummonJob` | The state machine for one call: locate, plan, teleport, drive, fly, land, fall back. The only class that touches the real vehicle. |
+| Finding it | summoning | `VehicleLocationTracker` | Last saved position of every vehicle per world, so an unloaded one can be found and its chunk loaded. |
+| World | navigation | `ITerrainQuery`, `TerrainMap` | The only way planning asks about blocks. `TerrainMap` caches answers for one plan. |
+| Vehicle | navigation | `VehicleShape`, `VehicleKinematics`, `PoseChecker` | The space the vehicle takes up, how it steers (copied from MTS's own steering maths), and whether it fits at a pose. |
+| Planning | summoning | `RoutePlanner` | Runs the stages below a time slice at a time. |
+| 1 | summoning | `ArrivalPlanner` | Where it pulls up: exact `RouteGoal`s beside the player, each with a straight run-in. |
+| 2 | navigation | `FlowField` | Flood out from the goals: drive distance from every nearby cell. Guides the search. |
+| 3 | summoning | `SpawnSelector` | Hidden places about the summon distance out to set off from, and what each costs as a start. |
+| 4 | navigation | `HybridSearch`, `AnalyticPaths` | Hybrid A* forward from the starts to the goals, joining the run-in exactly with Dubins or Reeds-Shepp curves. Reversing and turning on the spot only when they save a lot. |
+| 5 | navigation | `PathSmoother`, `Route`, `RouteGoal` | Eases the steering between arcs, re-checking fit. The route is poses half a block apart, each with its curvature. |
+| Driving | navigation | `SpeedProfile`, `PathTracker`, `DriveControls` | Speeds along the route, steering and target speed each tick, and what that means for pedals and gears. `DriveControls` learns the vehicle's brakes and coasting as it goes. |
+| Flying | summoning | `VehicleSummonFlight` | Moves an aircraft to a target, on both sides, from synced variables. |
+| Debug | summoning | `VehicleSummonDebug`, `SummonPlanReport`, `SummonDriveReport` | Markers and chat reports when the `summonDebug` config is on. |
+
+Small helpers that are not about vehicles at all go in `baseclasses`, next to what they work on: `RotationMatrix.clampAngle` wraps a heading difference to -180..180 for every class here.
+
+Wiring outside the packages: `EntityManager` calls `VehicleSummonManager.tickWorld` and `onWorldUnload`; `AEntityVehicleD_Moving` calls `onVehicleTick` and the location tracker; `PacketVehiclePhoneAction` and `GUIVehiclePhone` are the phone screen; `JSONVehicle` holds the pack fields (`summonFlyIn`, `summonDistance`, `summonArrivalAngle`, `summonSpeed`, `summonArrivalGap`); chat messages are `INTERACT_PHONE_*` in `LanguageSystem`. Each of the six `mcinterface*` projects has its own `WrapperWorld` implementing `keepChunkLoaded`, `chunkLoaded` and `getBlockSurfaceFlags`, so a change to `AWrapperWorld` must be made in all six.
 
 ## Conventions the code relies on
 
 - Yaw is in degrees and rises turning left; a vehicle heads along `(sin yaw, cos yaw)` in x, z. Curvature is radians per block, positive turning left. Rudder input has the opposite sign.
-- Speeds are in m/s inside summoning. MTS's `velocity` is blocks per tick before `speedFactor`; convert at the edges only.
+- Speeds are in m/s inside navigation and summoning. MTS's `velocity` is blocks per tick before `speedFactor`; convert at the edges only.
 - A surface at height `y` is the top of the solid block at `y - 1`. A column can have several surfaces, so always look one up near a known height.
 - The vehicle yaws about its origin, so the origin is the point that follows the route.
 - Unloaded and liquid columns are blocked.
 
 ## Testing
 
-Run the summoning tests from the repo root (about three minutes):
+Run the navigation and summoning tests from the repo root (about three minutes):
 
 ```bash
-./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' -i
+./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' --tests 'minecrafttransportsimulator.systems.navigation.*' -i
 ```
 
-Use the package name, not `'*summoning*'`: on Windows the Java launcher expands wildcards itself, so that pattern matches `SUMMONING_PLAN.md` in the repo root and Gradle finds no tests.
+Use the package names, not `'*summoning*'`: on Windows the Java launcher expands wildcards itself, so that pattern matches `SUMMONING_PLAN.md` in the repo root and Gradle finds no tests.
+
+Tests of `navigation` classes live in the `navigation` test package and must not use anything from `summoning`. The shared fakes (`FakeTerrain`, `CountingTerrain`, `DriveSimulator`, `TestShapes`) are there too, so summoning tests can use them.
 
 - **`SummonInvariantsTest`** is what summoning may never do: a route the vehicle cannot drive, one that touches the player, or a plan that differs with how its time was sliced. Never weaken it to make a change pass.
 - **`SummonScorecardTest`** scores every vehicle at every place plus 30 made-up places against `mccore/src/test/resources/summoning/scorecard-baseline.tsv`, and fails if a guarded metric gets worse. Each run writes `mccore/build/summon-scorecard.tsv`. Lines starting `SCORE` in the output show totals, improvements and regressions.
@@ -98,14 +105,33 @@ What the tests do not cover: `VehicleSummonJob` itself, teleporting, flight and 
 ### Cost
 
 - Never do unbounded work in one tick. Anything that searches takes a time budget and can be resumed.
-- Ask the world only through `TerrainQuery`, and cache within a plan. `worldCalls` and `raycasts` are guarded metrics.
+- Ask the world only through `ITerrainQuery`, and cache within a plan. `worldCalls` and `raycasts` are guarded metrics.
 - Allocation matters as much as time on a server. Avoid boxing and per-query objects in the planning loops; watch `planMb`.
 - Control changes are packets to every client. Send only when a value changes by a meaningful step (`PEDAL_STEP`, `RUDDER_STEP`, the `set` helper); `controlsSent` is guarded.
 - Driving and flying ticks must stay trivial: no searching, no world scans every tick.
 
+### Fitting in with core MTS
+
+This code ships inside MTS, so it must look and be laid out like the rest of `mccore`. Before adding anything, look at how core MTS already does the same kind of thing and follow it.
+
+- **Layout.** A feature gets its own package under the area it belongs to, as `systems/summoning` and `rendering/dynamiclight` do. Core classes reach it through one static hook per event (`VehicleSummonManager.tickWorld`, `onVehicleTick` and so on), never by reaching into its internals. Packets go in `packets/instances`, screens in `guis/instances`, pack fields in `jsondefs`, config in `JSONConfigSettings`, chat text in `LanguageSystem`, and world access through `AWrapperWorld` (in all six interfaces).
+- **Naming.** Interfaces start with `I` and abstract classes with `A`, as in core. Packets are `Packet<Area><Action>` and screens `GUI<Name>`.
+- **Registration lists** (packets in `APacketBase`, language entries, config entries) stay in the order the list already uses, which for packets is alphabetical within each section. Packet indices come from that order, so never insert one mid-list out of order.
+- **Code style.** Every class has a Javadoc ending in an `@author` line, as all of core does. Four-space indents, braces on the same line, `//Comment` with no space after the slashes, and `/**...**/` on one-line member docs. Lambdas are fine; streams and `Optional` are not used anywhere in core, so use loops. Java 8 only.
+- **Line endings.** Core files are a mix of CRLF and LF. Keep each file's existing endings when editing it, and use LF for new files. A whole-file line-ending change hides the real diff.
+
+### Generalise what could be used elsewhere
+
+When something new could serve more than summoning, build it general from the start rather than moving it later:
+
+- Put it in `navigation` (vehicle driving and planning) or `baseclasses` (plain maths and data) rather than `summoning`, and give it a name without "Summon" or "Phone".
+- Write it in general terms: a centre point, goals and starts, not the player, the phone or the spawn. Keep the summoning policy, such as hiding from the player, the summon distance and what pulling up beside them costs, in `summoning`, and pass it in as costs, settings or goals.
+- Make the class and the members other packages need `public`, and keep the rest private. A general class must not depend on a summoning class; if it needs something from one, the thing it needs is general too and moves with it.
+- If a piece is general in principle but tied to summoning in practice (saved variable names, phone IDs), leave it and add it to the generalisation list in [SUMMONING_PLAN.md](SUMMONING_PLAN.md) with what it would take.
+
 ### Style
 
-- Keep new logic in small classes that know nothing of the real vehicle or world, as `DriveControls` and `TerrainQuery` do, so it can be tested with fakes. Keep `VehicleSummonJob` to orchestration.
+- Keep new logic in small classes that know nothing of the real vehicle or world, as `DriveControls` and `ITerrainQuery` do, so it can be tested with fakes. Keep `VehicleSummonJob` to orchestration.
 - Tuning numbers are named constants with a comment saying what they are, their unit, and why that value.
 - Comments are plain English in the existing `/**...**/` style and explain why. Commit messages are one plain sentence about what changed for the player, with the scorecard movement in the body.
 - One change per commit, with the tests passing. Commit only when the user asks.

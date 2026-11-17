@@ -11,6 +11,8 @@ import minecrafttransportsimulator.systems.summoning.VehicleSummonManager;
 /**
  * Packet sent from the phone GUI to the server to call, stop calling, or remove
  * a vehicle registered on the phone the player is holding.
+ *
+ * @author HazedNapkin
  */
 public class PacketVehiclePhoneAction extends APacketPlayer {
     private final PhoneAction action;

@@ -1,4 +1,6 @@
-package minecrafttransportsimulator.systems.summoning;
+package minecrafttransportsimulator.systems.navigation;
+
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 
 /**
  * Drives a route with a simple vehicle that steers the way MTS ground vehicles do, for testing how well routes can be
@@ -6,8 +8,10 @@ package minecrafttransportsimulator.systems.summoning;
  * It backs up in reverse gear, turning the other way for the same steering as MTS vehicles do, and has to stop to
  * shift between forward and reverse, which takes a moment.  A vehicle that skid steers turns on the spot when it's
  * told to and all but stopped, a twentieth of the steering angle a tick, as MTS turns them.
+ *
+ * @author HazedNapkin
  */
-final class DriveSimulator {
+public final class DriveSimulator {
     /**How fast the simulated vehicle speeds up and brakes, in m/s per second, and the length of a tick in seconds.**/
     private static final double ACCELERATION = 2.5;
     private static final double BRAKING = 4;
@@ -21,30 +25,30 @@ final class DriveSimulator {
     private static final double PIVOT_SPEED = 0.05 * 20 * 0.35;
 
     /**What happened driving a route.**/
-    static final class Drive {
-        double x;
-        double z;
-        double yaw;
-        double speed;
-        double topSpeed;
-        double worstCrossTrack;
-        int ticks;
-        boolean arrived;
+    public static final class Drive {
+        public double x;
+        public double z;
+        public double yaw;
+        public double speed;
+        public double topSpeed;
+        public double worstCrossTrack;
+        public int ticks;
+        public boolean arrived;
         /**How many times it shifted between forward and reverse, and the furthest it ran past where it should have stopped to.**/
-        int shifts;
-        double worstOverrun;
+        public int shifts;
+        public double worstOverrun;
         /**How far it turned on the spot in all, in degrees, and how far it moved while doing so, in blocks.**/
-        double pivoted;
-        double pivotDrift;
+        public double pivoted;
+        public double pivotDrift;
 
         /**How far from the end of the route it stopped, across the ground.**/
-        double getEndError(SummonRoute route) {
+        public double getEndError(Route route) {
             return Math.hypot(x - route.getEnd().x, z - route.getEnd().z);
         }
 
         /**How far its heading is from the end of the route's, in degrees.**/
-        double getYawError(SummonRoute route) {
-            return Math.abs(VehicleSummonFlight.clampAngle(yaw - route.getEnd().yaw));
+        public double getYawError(Route route) {
+            return Math.abs(RotationMatrix.clampAngle(yaw - route.getEnd().yaw));
         }
     }
 
@@ -55,17 +59,17 @@ final class DriveSimulator {
      * Drives the route, starting off to the side and turned by the offsets, and at the speed it was planned to set off
      * at.  Errors are only counted once it's had settleDistance blocks to get onto the route.
      */
-    static Drive drive(SummonRoute route, VehicleKinematics kinematics, double startSpeed, double sideOffset, double yawOffset, double settleDistance) {
+    public static Drive drive(Route route, VehicleKinematics kinematics, double startSpeed, double sideOffset, double yawOffset, double settleDistance) {
         return drive(route, kinematics, startSpeed, sideOffset, yawOffset, settleDistance, false);
     }
 
-    /**As {@link #drive(SummonRoute, VehicleKinematics, double, double, double, double)}, turning on the spot if it skid steers.**/
-    static Drive drive(SummonRoute route, VehicleKinematics kinematics, double startSpeed, double sideOffset, double yawOffset, double settleDistance, boolean skidSteer) {
+    /**As {@link #drive(Route, VehicleKinematics, double, double, double, double)}, turning on the spot if it skid steers.**/
+    public static Drive drive(Route route, VehicleKinematics kinematics, double startSpeed, double sideOffset, double yawOffset, double settleDistance, boolean skidSteer) {
         SpeedProfile profile = SpeedProfile.plan(route, kinematics, new SpeedProfile.Settings(), startSpeed);
         PathTracker tracker = new PathTracker(route, profile, kinematics, new PathTracker.Settings());
         //Setting off with the wheel already turned for the curve it starts on, as the summon job does.
         tracker.setRudder(DriveControls.getStartRudder(route, kinematics, profile.speeds[0]));
-        SummonRoute.Pose start = route.getStart();
+        Route.Pose start = route.getStart();
         Drive drive = new Drive();
         drive.yaw = start.yaw + yawOffset;
         drive.x = start.x + Math.cos(Math.toRadians(start.yaw)) * sideOffset;

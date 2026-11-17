@@ -25,6 +25,8 @@ import minecrafttransportsimulator.mcinterface.InterfaceManager;
  * when they're written to a file of their own next to the world's MTS data.  They're never sent to clients, so players can't find out where everyone's vehicles are.
  * Vehicles are forgotten when they're picked up, or when a call finds they're no longer where they were
  * last seen, so the file doesn't fill up with vehicles that are long gone.
+ *
+ * @author HazedNapkin
  */
 public final class VehicleLocationTracker {
     private static final String FILE_NAME = "mtsvehiclelocations.txt";

@@ -11,8 +11,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-
 import org.junit.Test;
+
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.Route;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleKinematics;
 
 /**
  * Scores summoning over every vehicle at every place, and fails if anything it guards has got worse than the scores
@@ -35,6 +40,8 @@ import org.junit.Test;
  * The scores from each run are written to build/summon-scorecard.tsv, or wherever -Dsummon.scorecard.out says.  When a
  * change makes things better, or worse in a way that's meant, copy that over the baseline to keep it.  Scores are
  * exact for the same code on the same JVM, and the slack each metric has covers the small differences between JVMs.
+ *
+ * @author HazedNapkin
  */
 public class SummonScorecardTest {
     private static final String BASELINE = "/summoning/scorecard-baseline.tsv";
@@ -118,9 +125,9 @@ public class SummonScorecardTest {
         if (plan.route == null) {
             return;
         }
-        SummonRoute route = plan.route;
+        Route route = plan.route;
         if (route.placed) {
-            SummonRoute.Pose first = route.getStart();
+            Route.Pose first = route.getStart();
             scorecard.put(name, "hidden", SpawnSelector.isVisible(new PoseChecker(new TerrainMap(place.terrain), vehicle.shape), place.player, first.x, first.y, first.z) ? 0 : 1);
         }
         scorecard.put(name, "length", route.getLength());
@@ -203,12 +210,12 @@ public class SummonScorecardTest {
     }
 
     /**A straight route along +z, the length in blocks, to the origin, the vehicle placed at its start or already there.**/
-    static SummonRoute getStraightRoute(double length, boolean placed) {
-        List<SummonRoute.Pose> poses = new ArrayList<>();
+    static Route getStraightRoute(double length, boolean placed) {
+        List<Route.Pose> poses = new ArrayList<>();
         for (double back = length; back >= -1e-9; back -= 0.5) {
-            poses.add(new SummonRoute.Pose(0.5, 0, 0.5 - back, 0, 0));
+            poses.add(new Route.Pose(0.5, 0, 0.5 - back, 0, 0));
         }
-        return new SummonRoute(Collections.unmodifiableList(poses), placed, new ArrivalPlanner.Goal(0.5, 0, 0.5, 0, 8, 0));
+        return new Route(Collections.unmodifiableList(poses), placed, new RouteGoal(0.5, 0, 0.5, 0, 8, 0));
     }
 
     /**The made-up places, scored together for each vehicle, as any one of them says little.**/

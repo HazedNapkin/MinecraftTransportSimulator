@@ -7,6 +7,13 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
+import minecrafttransportsimulator.systems.navigation.FlowField;
+import minecrafttransportsimulator.systems.navigation.HybridSearch;
+import minecrafttransportsimulator.systems.navigation.PoseChecker;
+import minecrafttransportsimulator.systems.navigation.RouteGoal;
+import minecrafttransportsimulator.systems.navigation.TerrainMap;
+import minecrafttransportsimulator.systems.navigation.VehicleShape;
 
 /**
  * Picks good places for a vehicle to be placed to drive in from, for the route search to head for.
@@ -20,12 +27,21 @@ import minecrafttransportsimulator.baseclasses.Point3D;
  * The search sets off from all the picks at once.  Each goal has its own picks first, the best place whose way in
  * leads to it, as a goal may only be reachable from some sides: a long vehicle that can't turn a tight corner onto its
  * run-in has to come at it straight.  The rest of the picks are the best of what's left.
+ *
+ * @author HazedNapkin
  */
 final class SpawnSelector {
     /**Costs, in blocks of route: for each block the drive is off the summon distance, for being seen, and for being behind.**/
     private static final double LENGTH_COST = 0.2;
     static final double VISIBLE_COST = 15;
     private static final double BEHIND_COST = 6;
+    /**
+     * Costs of setting off from a place, for each block the drive from there is short of or over the summon distance,
+     * as weighed by {@link #getStartCost}.  Short costs more than a block of driving, or the shortest drive allowed
+     * would always be cheapest.
+     */
+    private static final double START_SHORT_COST = 1.5;
+    private static final double START_LONG_COST = 0.2;
     /**How far apart picks must be, in blocks.**/
     private static final double MIN_SPACING = 4;
     /**How high above the player's feet their eyes are.**/
@@ -66,11 +82,11 @@ final class SpawnSelector {
     private boolean eachGoalPicked;
     private boolean picksDone;
     /**The goals to look straight back from, and the next to.**/
-    private final List<ArrivalPlanner.Goal> goals;
+    private final List<RouteGoal> goals;
     private int goalIndex;
     private List<Target> targets;
 
-    SpawnSelector(PoseChecker checker, FlowField goalField, List<ArrivalPlanner.Goal> goals, Settings settings, Point3D player, double lookYaw) {
+    SpawnSelector(PoseChecker checker, FlowField goalField, List<RouteGoal> goals, Settings settings, Point3D player, double lookYaw) {
         this.checker = checker;
         this.settings = settings;
         this.player = player.copy();
@@ -119,7 +135,7 @@ final class SpawnSelector {
         if (distance < settings.minDistance || Double.isNaN(yaw)) {
             return;
         }
-        double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
+        double offFront = Math.abs(RotationMatrix.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
         double cost = Math.abs(cell.distance - settings.targetLength) * LENGTH_COST + offFront / 180 * BEHIND_COST;
         queue.add(new Candidate(x, cell.y, z, yaw, cell.distance, cost, cell.source));
     }
@@ -173,7 +189,7 @@ final class SpawnSelector {
      * clear straight in has this one it can always get to.  Walking back, each point's ground is found from the one
      * after it, the way driving in climbs and drops.
      */
-    private void addStraightApproach(ArrivalPlanner.Goal goal) {
+    private void addStraightApproach(RouteGoal goal) {
         double forwardX = Math.sin(Math.toRadians(goal.yaw));
         double forwardZ = Math.cos(Math.toRadians(goal.yaw));
         double headroom = checker.shape.top - checker.shape.bottom;
@@ -188,8 +204,8 @@ final class SpawnSelector {
             }
             laterY = y;
             if (back >= settings.minLength - 1e-9 && Math.floorMod((int) Math.round(back * 2), 4) == 0 && Math.hypot(x - player.x, z - player.z) >= settings.minDistance) {
-                double offFront = Math.abs(VehicleSummonFlight.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
-                points.add(new Candidate(x, y, z, goal.yaw, back, HybridSearch.getStartCost(back, settings.targetLength, false, offFront), -1));
+                double offFront = Math.abs(RotationMatrix.clampAngle(Math.toDegrees(Math.atan2(x - player.x, z - player.z)) - lookYaw));
+                points.add(new Candidate(x, y, z, goal.yaw, back, getStartCost(back, settings.targetLength, false, offFront), -1));
             }
         }
         //The best of them, checking whether each can be seen only once it could be best.
@@ -215,6 +231,17 @@ final class SpawnSelector {
                 best.add(point);
             }
         }
+    }
+
+    /**
+     * The cost of setting off from a place a placed vehicle could be put: for the drive in from there being short of
+     * or over the target length, being seen by the player, and being round behind them, in blocks of route.  It's
+     * weighted like the search's estimate, as these were when searches ran from the goals and set off where they
+     * ended, so a place seen by the player is worth as much driving to avoid as it was.
+     */
+    static double getStartCost(double length, double targetLength, boolean visible, double degreesOffFront) {
+        double off = length - targetLength;
+        return HybridSearch.HEURISTIC_WEIGHT * ((off < 0 ? -off * START_SHORT_COST : off * START_LONG_COST) + (visible ? VISIBLE_COST : 0) + degreesOffFront / 180 * BEHIND_COST);
     }
 
     /**

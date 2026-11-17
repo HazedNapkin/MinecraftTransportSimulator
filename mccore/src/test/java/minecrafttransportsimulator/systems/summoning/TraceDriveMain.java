@@ -1,9 +1,13 @@
 package minecrafttransportsimulator.systems.summoning;
 
+import minecrafttransportsimulator.systems.navigation.Route;
+
 /**
  * Prints a drive tick by tick, for working out why it went as it did.  Run it with a stop, as the
  * {@link SummonScorecardTest} names them without "stop/", and placed or standing: "car placed".  Or with a place and a
  * vehicle, as {@link SummonScenarios} names them, to plan a summon there and print its drive: "bay bike", "fuzz12 car".
+ *
+ * @author HazedNapkin
  */
 public final class TraceDriveMain {
     private TraceDriveMain() {
@@ -42,7 +46,7 @@ public final class TraceDriveMain {
                 return;
             }
             for (int i = 0; i < plan.route.poses.size(); ++i) {
-                SummonRoute.Pose pose = plan.route.poses.get(i);
+                Route.Pose pose = plan.route.poses.get(i);
                 System.out.println(String.format("POSE  %3d at %.2f, %d, %.2f facing %.1f curvature %.3f%s%s", i, pose.x, pose.y, pose.z, pose.yaw, pose.curvature, pose.reverse ? " reverse" : "", pose.pivot ? " pivot" : ""));
             }
             setup.terrain = place.terrain;

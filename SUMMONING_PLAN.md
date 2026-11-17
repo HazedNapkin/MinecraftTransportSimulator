@@ -2,16 +2,18 @@
 
 This is a work plan for a model continuing the vehicle summoning system on the `summon2` branch. Read [CLAUDE.md](CLAUDE.md) first: it explains the system, the goals and the rules for changing it. The goals, in priority order, are **reliable, works as expected, cinematic, cheap**.
 
+Every step must also fit in with core MTS and generalise what could be used elsewhere, as **Fitting in with core MTS** and **Generalise what could be used elsewhere** in CLAUDE.md describe. In practice: new route planning and driving logic goes in `systems/navigation` in general terms, summon policy stays in `systems/summoning`, and new code follows core's naming, `@author` Javadocs and file layout. Phase 0 lists what is still to be generalised.
+
 ## How to work through this
 
 - Do the phases in order. Within a phase, do the steps in order unless one says otherwise. Each step is one commit.
 - Before starting, run the summoning tests and confirm they pass against the committed baseline:
 
   ```bash
-  ./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' -i
+  ./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' --tests 'minecrafttransportsimulator.systems.navigation.*' -i
   ```
 
-- Each step lists where to look, what to change, how to verify and when it is done. The file and line references were correct at commit `ee0782a7d`; re-find them by name if the code has moved.
+- Each step lists where to look, what to change, how to verify and when it is done. The file and line references were correct at commit `ee0782a7d`; re-find them by name if the code has moved. Since then the general classes have moved to `systems/navigation`, `TerrainQuery` became `ITerrainQuery`, `SummonRoute` became `Route`, `ArrivalPlanner.Goal` became `RouteGoal`, and the start cost moved from `HybridSearch` to `SpawnSelector`.
 - Several findings come from reading the code and were never reproduced in game. Steps that rest on one say **Confirm first**. If the finding turns out to be wrong, skip the step and tell the user why.
 - You cannot run Minecraft. Where a step needs an in-game check, finish the code and tests, then give the user the exact steps to check it and say plainly that it is unverified until they do.
 - Steps marked **Ask the user** need a decision that is theirs. Ask before writing code for that step, and carry on with the next independent step meanwhile.
@@ -20,6 +22,27 @@ This is a work plan for a model continuing the vehicle summoning system on the `
 ## Starting point
 
 At commit `ee0782a7d` the scorecard reads: 37 of 41 named summons find a route (the bus, tank and truck do not fit in the passage, and the bus does not fit in the forest), 60 of 60 made-up ones do, and every route found is driven to a stop. Clipping is 3 ticks in total, worst stray 0.32 blocks, worst stop error 0.21 blocks for normal vehicles. Planning takes 4 to 154 ms and allocates about 65 MB a plan on average. The outlier is a car with weak brakes, which overshoots by about 4.9 blocks.
+
+---
+
+## Phase 0: Fit with core MTS
+
+**Done (2026-11-17).** Reviewed the branch against core MTS's layout and style:
+
+- The general route planning and driving classes moved to `systems/navigation` and were made public: `ITerrainQuery`, `TerrainMap`, `VehicleShape`, `VehicleKinematics`, `PoseChecker`, `FlowField`, `HybridSearch`, `AnalyticPaths`, `PathSmoother`, `Route`, `RouteGoal`, `SpeedProfile`, `PathTracker` and `DriveControls`. Their tests and the shared fakes moved with them. Nothing in `navigation` imports `summoning`.
+- `HybridSearch` no longer knows about the player or about hiding: it is laid out round a centre point that it keeps clear when turning on the spot, and the summon start cost (`getStartCost`, with its distance, visibility and behind costs) moved to `SpawnSelector`.
+- The angle wrap moved from `VehicleSummonFlight` to `RotationMatrix.clampAngle`.
+- `TerrainQuery` became `ITerrainQuery` to match core's interface naming; every new class got an `@author` line; the one stream was replaced with a loop; `PacketVehiclePhoneAction` was registered out of alphabetical order and now is in order.
+
+None of this changes behaviour; the scorecard is unchanged.
+
+**Still to generalise.** Each is general in principle but tied to summoning in practice. Do each when a step next touches it, or when something else needs it:
+
+- **`VehicleSummonFlight`** is a general "fly this aircraft to a point" autopilot. Its synced variables are named `phone_fly_*` and are saved with vehicles, so renaming them needs the guard in `VehicleSummonManager.onVehicleTick` to read the old names for a while. Move it to `navigation` as a flight autopilot when Phase 7 changes it.
+- **`VehicleLocationTracker`** finds any vehicle's last saved position, but is keyed by phone ID. Keying it by `uniqueUUID`, or by any ID the caller chooses, would let other features find unloaded vehicles. Look at this with the open `TELEPORT_SPAWN` question in 1.4, which may change which ID survives a teleport.
+- **`VehicleSummonDebug` and `PacketVehicleSummonDebug`** draw markers on a vehicle for debugging. Nothing in them is summon-specific except the config switch and the name.
+- **Phase 2's job interfaces** (what the job needs from a vehicle and from the world) are general: put the vehicle-control one in `navigation` so any autopilot can be tested with a fake vehicle.
+- **Phase 5.1's primitive maps** belong in `baseclasses` if they are written, as nothing about them is specific to planning.
 
 ---
 
@@ -78,7 +101,7 @@ Read `tick()` and each phase method once more with this question: on cancel, pla
 **Problem.** `VehicleSummonJob` is about 1,400 lines covering the state machine, teleporting, driving glue and flight, and has no tests, because it works directly on `EntityVehicleF_Physics`, `AWrapperWorld` and `IWrapperPlayer`. Phases 3 and 6 change its behaviour and need tests to be safe.
 
 **Change.**
-- Introduce a narrow interface for what the job needs from the vehicle (position, yaw, speed, riders, engines and gears, control setters, save and respawn, validity) and one for the world and player (player position and look, chunk loading, messages), in the way `TerrainQuery` already separates planning from the world. Provide the real implementations as thin adapters.
+- Introduce a narrow interface for what the job needs from the vehicle (position, yaw, speed, riders, engines and gears, control setters, save and respawn, validity) and one for the world and player (player position and look, chunk loading, messages), in the way `ITerrainQuery` already separates planning from the world. Follow Phase 0: the vehicle-control interface is general and goes in `navigation`. Provide the real implementations as thin adapters.
 - Move the job onto those interfaces without changing behaviour. Do it in small commits: ground first, flight after.
 - If the file is still unwieldy, split flight into its own class behind the same job interface.
 - Write a fake vehicle and world for tests. `SimVehicle` and `FakeTerrain` are the starting points.
@@ -149,10 +172,10 @@ Do not add a visible test dab of the brakes: it looks wrong.
 - `PoseChecker.drivableColumns`: the same nested boxed shape.
 - `VehicleShape.getFootprint` and `getSupports`: a new list per pose checked.
 - `HybridSearch`: a `Node`, an `Entry` and several `double[]` per move, and `HashMap<Long, Node>`.
-- `TerrainQuery.of`: a new `Point3D` and `BoundingBox` for every world question.
+- `ITerrainQuery.of`: a new `Point3D` and `BoundingBox` for every world question.
 
 **Change.** Take the biggest first and measure after each.
-- Replace the boxed caches with primitive open-addressing maps written for the purpose (no new dependency; `mccore` targets Java 8), or with small per-chunk-column arrays.
+- Replace the boxed caches with primitive open-addressing maps written for the purpose (no new dependency; `mccore` targets Java 8), or with small per-chunk-column arrays. Write such maps as general classes in `baseclasses`.
 - Reuse mutable `Point3D` and `BoundingBox` instances in the world adapter. Planning is single threaded.
 - Reuse footprint storage between calls, or cache footprints by yaw bin where the result is identical.
 

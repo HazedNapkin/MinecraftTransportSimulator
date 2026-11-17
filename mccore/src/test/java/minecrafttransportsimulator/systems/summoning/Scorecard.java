@@ -18,6 +18,8 @@ import java.util.Map;
  * makes things better shows by how much.
  * <p>
  * It's kept as lines of scenario, metric and value, tab separated, so a change to it reads well in a diff.
+ *
+ * @author HazedNapkin
  */
 final class Scorecard {
     /**A number measured for each scenario.**/

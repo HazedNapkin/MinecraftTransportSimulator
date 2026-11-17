@@ -1,6 +1,7 @@
 package minecrafttransportsimulator.systems.summoning;
 
 import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.baseclasses.RotationMatrix;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 
 /**
@@ -10,6 +11,8 @@ import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
  * This runs on both sides every tick, just before the vehicle is moved, so clients fly the
  * same path instead of fighting server corrections.  It overrides the vehicle's motion and
  * rotation for the tick, so collisions still apply.
+ *
+ * @author HazedNapkin
  */
 public final class VehicleSummonFlight {
     static final String VAR_ACTIVE = "phone_fly";
@@ -46,10 +49,10 @@ public final class VehicleSummonFlight {
         //we're going while moving sideways, and hold heading when climbing or descending.
         double yawDelta = 0;
         if (vehicle.getOrCreateVariable(VAR_TURN).isActive) {
-            yawDelta = clampAngle(vehicle.getOrCreateVariable(VAR_YAW).currentValue - vehicle.orientation.angles.y) * 0.1;
+            yawDelta = RotationMatrix.clampAngle(vehicle.getOrCreateVariable(VAR_YAW).currentValue - vehicle.orientation.angles.y) * 0.1;
         } else if (Math.hypot(velocity.x, velocity.z) > 0.15) {
             double desiredYaw = Math.toDegrees(Math.atan2(velocity.x, velocity.z));
-            yawDelta = clampAngle(desiredYaw - vehicle.orientation.angles.y) * 0.1;
+            yawDelta = RotationMatrix.clampAngle(desiredYaw - vehicle.orientation.angles.y) * 0.1;
         }
         yawDelta = Math.max(-MAX_YAW_RATE, Math.min(MAX_YAW_RATE, yawDelta));
         vehicle.rotation.angles.set(-vehicle.orientation.angles.x * LEVEL_RATE, yawDelta, -vehicle.orientation.angles.z * LEVEL_RATE);
@@ -76,22 +79,12 @@ public final class VehicleSummonFlight {
 
     /**True if the aircraft is facing within a degree and a half of the yaw.**/
     static boolean isFacing(EntityVehicleF_Physics vehicle, double yaw) {
-        return Math.abs(clampAngle(yaw - vehicle.orientation.angles.y)) < 1.5;
+        return Math.abs(RotationMatrix.clampAngle(yaw - vehicle.orientation.angles.y)) < 1.5;
     }
 
     /**Server only: hands the aircraft back to its normal physics.**/
     static void stop(EntityVehicleF_Physics vehicle) {
         vehicle.getOrCreateVariable(VAR_ACTIVE).setTo(0, true);
         vehicle.getOrCreateVariable(VAR_TURN).setTo(0, true);
-    }
-
-    static double clampAngle(double angle) {
-        angle %= 360;
-        if (angle > 180) {
-            angle -= 360;
-        } else if (angle < -180) {
-            angle += 360;
-        }
-        return angle;
     }
 }

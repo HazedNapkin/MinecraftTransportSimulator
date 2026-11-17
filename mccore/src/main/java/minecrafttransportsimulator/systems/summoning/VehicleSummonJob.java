@@ -13,6 +13,7 @@ import minecrafttransportsimulator.entities.instances.PartEngine;
 import minecrafttransportsimulator.items.instances.ItemVehicle;
 import minecrafttransportsimulator.jsondefs.JSONPart.EngineType;
 import minecrafttransportsimulator.mcinterface.AWrapperWorld;
+import minecrafttransportsimulator.mcinterface.IWrapperEntity;
 import minecrafttransportsimulator.mcinterface.IWrapperNBT;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
 import minecrafttransportsimulator.mcinterface.InterfaceManager;
@@ -190,11 +191,6 @@ final class VehicleSummonJob {
     private PathTracker tracker;
     /**What the driver does with the controls each tick, made afresh for each route: see {@link DriveControls}.**/
     private DriveControls driver;
-    /**
-     * Whether the vehicle had MTS's simple throttle on before the drive, which the drive turns on so MTS changes
-     * gear up and down for it as it does for automatic gearboxes, or null if the drive hasn't touched it.
-     */
-    private Boolean simpleThrottleBefore;
     /**How the drive's going, kept if summon debugging is on, else null.**/
     private SummonDriveReport driveReport;
     /**The speed to place the vehicle at the start of the route moving at, in m/s, if it's placed there.**/
@@ -247,6 +243,26 @@ final class VehicleSummonJob {
     }
 
     /**
+     * Stops the call after something went wrong in it, leaving it as safe as {@link #cancel()} does, and tells the
+     * player.  Nothing here may throw, as it's what's left when everything else has.
+     */
+    void fail() {
+        try {
+            cancel();
+        } catch (RuntimeException e) {
+            InterfaceManager.coreInterface.logError("Vehicle summon couldn't stop safely: " + e);
+        }
+        try {
+            Object player = world.getExternalEntity(playerID);
+            if (player instanceof IWrapperPlayer) {
+                message((IWrapperPlayer) player, LanguageSystem.INTERACT_PHONE_FAILED);
+            }
+        } catch (RuntimeException e) {
+            //Nothing more to be done.
+        }
+    }
+
+    /**
      * Runs one tick, spending at most about tickTime nanoseconds searching.  Driving and flying still
      * happen if it's 0.  Returns true when the job is finished and can be dropped.
      */
@@ -270,6 +286,18 @@ final class VehicleSummonJob {
             return true;
         }
         ++phaseTicks;
+        if (phase != Phase.LOCATE && phase != Phase.TELEPORT_SPAWN && !isFlying()) {
+            IWrapperEntity rider = getRider();
+            if (rider != null) {
+                //Someone's got in, maybe while the route was planned.  Hand it over to them, rather than move it out from under them.
+                stopControls();
+                if (!rider.getID().equals(playerID)) {
+                    message(player, LanguageSystem.INTERACT_PHONE_INUSE);
+                }
+                releaseChunk();
+                return true;
+            }
+        }
         if (isFlying()) {
             if (VehiclePhone.hasPlayerRider(vehicle)) {
                 //A player has got in mid-flight.  Hand it over to them.
@@ -354,6 +382,11 @@ final class VehicleSummonJob {
             return false;
         }
 
+        //An earlier call that was cut off may have left it with the controls on.  Hold it still while this one works out what to do.
+        if (vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING).isActive) {
+            park();
+        }
+
         //Check the caller may still call it.  Its owner may have given it a key since it was registered on this phone.
         if (!VehiclePhone.canControl(player, vehicle)) {
             message(player, LanguageSystem.INTERACT_PHONE_NEEDKEYCALL);
@@ -362,12 +395,10 @@ final class VehicleSummonJob {
         }
 
         //Check it can come.
-        for (APart part : vehicle.allParts) {
-            if (part.rider != null) {
-                message(player, LanguageSystem.INTERACT_PHONE_INUSE);
-                releaseChunk();
-                return true;
-            }
+        if (getRider() != null) {
+            message(player, LanguageSystem.INTERACT_PHONE_INUSE);
+            releaseChunk();
+            return true;
         }
         //It has to be able to get here under its own power: not broken, with a working engine, and fuel if that needs it.
         boolean isAircraft = vehicle.definition.motorized.isAircraft;
@@ -403,6 +434,16 @@ final class VehicleSummonJob {
             return teleportAircraftToGround(player);
         }
         return startGroundPlanning(player);
+    }
+
+    /**Whoever is riding anywhere in the vehicle, or null if no one is.**/
+    private IWrapperEntity getRider() {
+        for (APart part : vehicle.allParts) {
+            if (part.rider != null) {
+                return part.rider;
+            }
+        }
+        return null;
     }
 
     private EntityVehicleF_Physics getLoadedVehicle() {
@@ -815,10 +856,13 @@ final class VehicleSummonJob {
         set(vehicle.rudderInputVar, startRudder);
         tracker.setRudder(startRudder);
         driver = new DriveControls(BRAKING);
-        //Have MTS change gear up and down as it goes, as it does for automatic gearboxes, or it'd stay in first.
-        if (simpleThrottleBefore == null) {
-            simpleThrottleBefore = vehicle.isSimpleThrottleVar.isActive;
+        //Mark it as driven, so it's parked if this call goes without letting go, and remember its simple throttle to put back.
+        ComputedVariable driving = vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING);
+        if (!driving.isActive) {
+            vehicle.getOrCreateVariable(VehiclePhone.VAR_SIMPLE_THROTTLE_BEFORE).setActive(vehicle.isSimpleThrottleVar.isActive, false);
+            driving.setActive(true, false);
         }
+        //Have MTS change gear up and down as it goes, as it does for automatic gearboxes, or it'd stay in first.
         if (!vehicle.isSimpleThrottleVar.isActive) {
             vehicle.isSimpleThrottleVar.setActive(true, true);
         }
@@ -838,13 +882,6 @@ final class VehicleSummonJob {
     }
 
     private boolean drive(IWrapperPlayer player) {
-        for (APart part : vehicle.allParts) {
-            if (part.rider != null) {
-                //Someone got in.  Hand it over.
-                stopControls();
-                return true;
-            }
-        }
         if (planMarkers != null && (phaseTicks == DEBUG_SEND_DELAY || phaseTicks % DEBUG_RESEND_INTERVAL == 0)) {
             VehicleSummonDebug.send(vehicle, planMarkers);
         }
@@ -1328,30 +1365,41 @@ final class VehicleSummonJob {
         return engine.definition.generic.type.contains("jet");
     }
 
-    /**
-     * Lets go of the controls, takes it out of reverse if it was backing up, and puts its simple throttle back as it
-     * was, so whoever drives it next isn't caught out.
-     */
     private void stopControls() {
-        if (simpleThrottleBefore != null) {
-            if (vehicle.isSimpleThrottleVar.isActive != simpleThrottleBefore) {
-                vehicle.isSimpleThrottleVar.setActive(simpleThrottleBefore, true);
+        stopControls(vehicle);
+    }
+
+    /**
+     * Lets go of the vehicle's controls, takes it out of reverse if it was backing up, and, if a call was driving it,
+     * puts its simple throttle back as it was, so whoever drives it next isn't caught out.
+     */
+    static void stopControls(EntityVehicleF_Physics vehicle) {
+        ComputedVariable driving = vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING);
+        if (driving.isActive) {
+            ComputedVariable simpleThrottleBefore = vehicle.getOrCreateVariable(VehiclePhone.VAR_SIMPLE_THROTTLE_BEFORE);
+            if (vehicle.isSimpleThrottleVar.isActive != simpleThrottleBefore.isActive) {
+                vehicle.isSimpleThrottleVar.setActive(simpleThrottleBefore.isActive, true);
             }
-            simpleThrottleBefore = null;
+            simpleThrottleBefore.setActive(false, false);
+            driving.setActive(false, false);
         }
         set(vehicle.throttleVar, 0);
         set(vehicle.rudderInputVar, 0);
         set(vehicle.brakeVar, 0);
-        for (PartEngine engine : getWorkingEngines(false)) {
-            if (engine.currentGearVar.currentValue < 0) {
+        for (PartEngine engine : vehicle.engines) {
+            if (!engine.outOfHealth && engine.currentGearVar.currentValue < 0) {
                 engine.shiftNeutral();
             }
         }
     }
 
-    /**Stops and holds the vehicle where it is.  Engines are left running.**/
     private void park() {
-        stopControls();
+        park(vehicle);
+    }
+
+    /**Stops the vehicle's controls and holds it where it is with the parking brake.  Engines are left running.**/
+    static void park(EntityVehicleF_Physics vehicle) {
+        stopControls(vehicle);
         set(vehicle.parkingBrakeVar, 1);
     }
 

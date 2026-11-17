@@ -55,8 +55,10 @@ Wiring outside the package: `EntityManager` calls `VehicleSummonManager.tickWorl
 Run the summoning tests from the repo root (about three minutes):
 
 ```bash
-./gradlew :mccore:test --tests '*summoning*' -i
+./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' -i
 ```
+
+Use the package name, not `'*summoning*'`: on Windows the Java launcher expands wildcards itself, so that pattern matches `SUMMONING_PLAN.md` in the repo root and Gradle finds no tests.
 
 - **`SummonInvariantsTest`** is what summoning may never do: a route the vehicle cannot drive, one that touches the player, or a plan that differs with how its time was sliced. Never weaken it to make a change pass.
 - **`SummonScorecardTest`** scores every vehicle at every place plus 30 made-up places against `mccore/src/test/resources/summoning/scorecard-baseline.tsv`, and fails if a guarded metric gets worse. Each run writes `mccore/build/summon-scorecard.tsv`. Lines starting `SCORE` in the output show totals, improvements and regressions.

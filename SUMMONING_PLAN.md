@@ -8,7 +8,7 @@ This is a work plan for a model continuing the vehicle summoning system on the `
 - Before starting, run the summoning tests and confirm they pass against the committed baseline:
 
   ```bash
-  ./gradlew :mccore:test --tests '*summoning*' -i
+  ./gradlew :mccore:test --tests 'minecrafttransportsimulator.systems.summoning.*' -i
   ```
 
 - Each step lists where to look, what to change, how to verify and when it is done. The file and line references were correct at commit `ee0782a7d`; re-find them by name if the code has moved.
@@ -29,6 +29,8 @@ Small, independent fixes in `VehicleSummonJob` and `VehicleSummonManager`. None 
 
 ### 1.1 Park a ground vehicle whose job has gone
 
+**Done (2026-11-17), unverified in game.** The drive sets `phone_drive` and remembers the simple throttle in `phone_drive_simplethrottle`; `stopControls` clears both. The once-a-second guard in `onVehicleTick` parks a vehicle that has the flag with no job, and a new call parks one it finds still flagged.
+
 **Problem.** While driving, the job holds throttle on, brakes and parking brake off, and simple throttle on. If the vehicle unloads mid-drive (the player teleports away) or the server stops without a clean unload, `tick()` ends the job with "lost contact" and nothing resets the controls. `throttle`, `brake`, `p_brake` and `simplethrottle` are all saved with the vehicle, so it would load again later with the throttle applied and nobody driving. Aircraft already have a guard for the equivalent case in `VehicleSummonManager.onVehicleTick`; ground vehicles do not.
 
 **Confirm first.** Check that these variables really are restored from saved data (`new ComputedVariable(this, "throttle", data)` in `AEntityVehicleE_Powered`) and that nothing in MTS already brakes an unoccupied vehicle on load.
@@ -45,6 +47,8 @@ Small, independent fixes in `VehicleSummonJob` and `VehicleSummonManager`. None 
 
 ### 1.2 Check for riders again before every teleport
 
+**Done (2026-11-17), unverified in game.** Implemented as one check at the top of every ground tick after `LOCATE`, which covers every teleport and replaces the check in `drive()`. It hands over silently to the caller, and tells the caller `INTERACT_PHONE_INUSE` if someone else got in.
+
 **Problem.** Riders are checked in `locate()` and each tick of `drive()`. Planning takes up to a second or so in between, and `teleport()` removes the vehicle and respawns it from saved data without checking again. The same is true of the teleports from `findSpot()`.
 
 **Change.** Add one helper that says whether any part has a rider, and call it at the top of `teleport()`'s callers or inside `teleport()` itself. If someone is aboard, stop the controls, send `INTERACT_PHONE_INUSE`, release the chunk and end the job. Make sure the aircraft timeout path, which already hands over to a player rider, still does.
@@ -55,18 +59,17 @@ Small, independent fixes in `VehicleSummonJob` and `VehicleSummonManager`. None 
 
 **Problem.** `teleport()` calls `vehicle.disconnectAllConnections()`, so a vehicle summoned from afar silently leaves its trailer behind. A vehicle that is itself being towed can also be summoned.
 
-**Ask the user** which they want:
-1. Refuse to summon a vehicle that would be teleported while towing or being towed, with a new message (recommended: smallest, and nothing is lost silently).
-2. Disconnect as now, but tell the player.
-3. Bring the trailer along. This is a much larger piece of work and should be its own plan.
+**Decided (2026-11-17):** the user wants the trailer brought along. That is too large for phase 1, so it has its own phase: see **Phase 10**. Until then the behaviour is unchanged.
 
-A nearby vehicle that drives over without teleporting can keep its trailer; `canReverse()` and `canPivot()` already stop it backing up or turning on the spot while towing.
-
-**Change, for option 1.** In `locate()`, after `driveOnly` is known, end the job with a new `INTERACT_PHONE_*` message if the vehicle is not `driveOnly` and has `towingConnections` or a `towedByConnection`. Also refuse a towed vehicle in the `driveOnly` case. Add the language entry in `LanguageSystem` next to the others.
+A nearby vehicle that drives over without teleporting already keeps its trailer; `canReverse()` and `canPivot()` stop it backing up or turning on the spot while towing.
 
 ### 1.4 Review every exit from the job
 
 Read `tick()` and each phase method once more with this question: on cancel, player logout, vehicle unload and world unload, is the vehicle parked, held, or handed over, and is the forced chunk released? Fix any gap found and list what you checked in the commit message. Known places to look: the "lost contact" return, `onWorldUnload` during `TELEPORT_SPAWN`, and `cancel()` during `FIND_SPOT` for a flight that timed out.
+
+**Done (2026-11-17), with one gap left open.** Fixed: an exception thrown in a job no longer escapes into the server tick; the manager now catches it, logs it, parks or holds the vehicle through `VehicleSummonJob.fail()`, and tells the player (`INTERACT_PHONE_FAILED`). Checked and fine: "lost contact" (now covered by 1.1's guard), cancel in every phase, a flight that timed out, player logout and dimension change.
+
+**Open: a vehicle can be lost if the world stops during `TELEPORT_SPAWN`.** Teleporting removes the vehicle on one tick and spawns it from saved data on the next. Forge fires the world unload event after the world has been saved, so if the server stops between those two ticks, the vehicle is in neither the save nor the world. Spawning it from `onWorldUnload` happens after the save, so it does not help. The window is one tick. Fixing it means spawning the copy on the same tick, which the two-tick split exists to avoid (most likely a clash with the old entity's ID). Investigate in game before changing it: find out what goes wrong spawning on the same tick, and whether giving the copy a new `uniqueUUID` is safe now that phones find vehicles by `phoneUUID`.
 
 ---
 
@@ -230,8 +233,20 @@ Flight has no tests until Phase 2 covers it. Do this phase after Phase 2.
 
 ---
 
+## Phase 10: Bring trailers along
+
+The user wants a vehicle summoned from afar to bring what it is towing (decided 2026-11-17). Plan this in detail before writing code, and show the plan to the user. Questions to answer first:
+
+- **Teleporting.** `teleport()` calls `disconnectAllConnections()`, then saves and respawns the one vehicle. Find how MTS saves and restores a towing chain (`TowingConnection`, `AEntityG_Towable`), and whether both vehicles can be moved together and reconnected on the respawn tick.
+- **Planning.** `VehicleShape` and `PoseChecker` cover one rigid body. A trailer swings behind on its hitch, so the route search must check the trailer's swept space too. Decide whether to model the trailer's angle in the search state, or to only allow routes gentle enough that the trailer follows closely, checked along the route afterwards.
+- **Placing.** The trailer must be placed lined up behind the vehicle at the start of the route, out of sight, and both must fit.
+- **Driving.** No reversing or turning on the spot while towing (`canReverse()` and `canPivot()` already refuse). Check whether `SpeedProfile` and the turn radius need a margin for the trailer cutting in.
+- **Arrival.** The goal must leave room for the trailer behind the vehicle.
+- **Failures.** If no route fits with the trailer, decide with the user whether to fall back to teleporting both beside the player, or to leave the trailer and say so.
+
+Until this is done, a towing vehicle summoned from afar still leaves its trailer behind.
+
 ## Not in this plan
 
-- Bringing trailers along on a teleport (see 1.3).
 - Summoning across dimensions. The location tracker is per world and the job cancels if the player is not in the vehicle's world.
 - Saving vehicle locations more often than on world unload. Periodic saving was removed on purpose in commit `375b29354`; raise it with the user before changing it.

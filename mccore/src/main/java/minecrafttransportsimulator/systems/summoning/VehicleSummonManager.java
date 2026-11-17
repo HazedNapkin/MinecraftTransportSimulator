@@ -13,6 +13,7 @@ import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.mcinterface.AWrapperWorld;
 import minecrafttransportsimulator.mcinterface.IWrapperItemStack;
 import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
+import minecrafttransportsimulator.mcinterface.InterfaceManager;
 import minecrafttransportsimulator.packets.instances.PacketVehiclePhoneAction.PhoneAction;
 import minecrafttransportsimulator.systems.LanguageSystem;
 import minecrafttransportsimulator.systems.summoning.VehiclePhone.PhoneEntry;
@@ -93,7 +94,16 @@ public final class VehicleSummonManager {
         for (int i = 0; i < worldJobs.size(); ++i) {
             VehicleSummonJob job = worldJobs.get((firstJob + i) % worldJobs.size());
             long startTime = System.nanoTime();
-            boolean done = job.tick(Math.max(0, searchTimeLeft / (worldJobs.size() - i)));
+            boolean done;
+            try {
+                done = job.tick(Math.max(0, searchTimeLeft / (worldJobs.size() - i)));
+            } catch (RuntimeException e) {
+                //A bug in one call mustn't take the server tick down with it, or leave the vehicle driving with no one at the wheel.
+                InterfaceManager.coreInterface.logError("Vehicle summon failed, stopping it: " + e);
+                e.printStackTrace();
+                job.fail();
+                done = true;
+            }
             searchTimeLeft -= System.nanoTime() - startTime;
             if (done) {
                 jobs.remove(job.vehicleID, job);
@@ -105,6 +115,10 @@ public final class VehicleSummonManager {
     public static void onVehicleTick(EntityVehicleF_Physics vehicle) {
         if (!vehicle.world.isClient()) {
             if (vehicle.ticksExisted % 20 == 0) {
+                if (vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING).isActive && !jobs.containsKey(VehiclePhone.getPhoneID(vehicle))) {
+                    //Left driving by a call that no longer exists, like one cut off by the vehicle unloading.  Park it.
+                    VehicleSummonJob.park(vehicle);
+                }
                 boolean held = vehicle.getOrCreateVariable(VehiclePhone.VAR_FLY_HELD).isActive;
                 if (!held && vehicle.getOrCreateVariable(VehicleSummonFlight.VAR_ACTIVE).isActive && !jobs.containsKey(VehiclePhone.getPhoneID(vehicle))) {
                     //Flight left on from a call that no longer exists, like one cut off by a restart.  Hold it where it is.

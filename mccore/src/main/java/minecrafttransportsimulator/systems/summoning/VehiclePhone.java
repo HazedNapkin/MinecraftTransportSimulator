@@ -33,6 +33,13 @@ public final class VehiclePhone {
      * Saved with the vehicle, so the hold carries over a restart.
      */
     static final String VAR_FLY_HELD = "phone_fly_held";
+    /**
+     * Set on a ground vehicle while a call is driving it, so if the call goes without letting go of the controls, as
+     * when the vehicle unloads mid-drive or the server stops, it's parked once it's loaded again.  Saved with the
+     * vehicle, along with whether its simple throttle was on before the call, to put back.  Server only.
+     */
+    static final String VAR_DRIVING = "phone_drive";
+    static final String VAR_SIMPLE_THROTTLE_BEFORE = "phone_drive_simplethrottle";
     static final int MAX_VEHICLES = 8;
     /**Top speed the summon flight uses to hold an aircraft in place, in blocks per tick.**/
     private static final double HOLD_SPEED = 0.2;

@@ -442,6 +442,7 @@ public class LanguageSystem {
     public static final LanguageEntry INTERACT_PHONE_CALLING = new LanguageEntry("interact.phone.calling", "Calling %s...");
     public static final LanguageEntry INTERACT_PHONE_NOTFOUND = new LanguageEntry("interact.phone.notfound", "Can't find %s in this dimension.");
     public static final LanguageEntry INTERACT_PHONE_NOANSWER = new LanguageEntry("interact.phone.noanswer", "No answer from %s.  It may have been picked up or destroyed.");
+    public static final LanguageEntry INTERACT_PHONE_FAILED = new LanguageEntry("interact.phone.failed", "Something went wrong calling %s, so it's stopped where it is.");
     public static final LanguageEntry INTERACT_PHONE_LOSTCONTACT = new LanguageEntry("interact.phone.lostcontact", "Lost contact with %s.");
     public static final LanguageEntry INTERACT_PHONE_INUSE = new LanguageEntry("interact.phone.inuse", "%s is in use.");
     public static final LanguageEntry INTERACT_PHONE_WRECKED = new LanguageEntry("interact.phone.wrecked", "%s is wrecked.");

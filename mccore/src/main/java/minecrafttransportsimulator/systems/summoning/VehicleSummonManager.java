@@ -32,6 +32,8 @@ public final class VehicleSummonManager {
      */
     private static final long SEARCH_TIME_PER_TICK = 10_000_000;
     private static final Map<UUID, VehicleSummonJob> jobs = new ConcurrentHashMap<>();
+    /**What the jobs see of each world with calls in it.**/
+    private static final Map<AWrapperWorld, WrapperSummonWorld> summonWorlds = new ConcurrentHashMap<>();
     /**Worlds ticked so far this server tick, and the search time left in it.**/
     private static final Set<AWrapperWorld> worldsTicked = new HashSet<>();
     private static long searchTimeLeft = SEARCH_TIME_PER_TICK;
@@ -66,7 +68,7 @@ public final class VehicleSummonManager {
         }
         switch (action) {
             case SUMMON: {
-                jobs.put(vehicleID, new VehicleSummonJob(world, player, vehicleID, entry.name));
+                jobs.put(vehicleID, new VehicleSummonJob(getSummonWorld(world), player.getID(), vehicleID, entry.name));
                 break;
             }
             case STOP: {
@@ -94,8 +96,9 @@ public final class VehicleSummonManager {
 
         //Share the search time left evenly between this world's calls.  Time one doesn't use goes to the rest.
         List<VehicleSummonJob> worldJobs = new ArrayList<>();
+        ISummonWorld summonWorld = summonWorlds.get(world);
         for (VehicleSummonJob job : jobs.values()) {
-            if (job.world == world) {
+            if (job.world == summonWorld) {
                 worldJobs.add(job);
             }
         }
@@ -125,7 +128,7 @@ public final class VehicleSummonManager {
             if (vehicle.ticksExisted % 20 == 0) {
                 if (vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING).isActive && !jobs.containsKey(VehiclePhone.getPhoneID(vehicle))) {
                     //Left driving by a call that no longer exists, like one cut off by the vehicle unloading.  Park it.
-                    VehicleSummonJob.park(vehicle);
+                    new WrapperSummonVehicle(vehicle).park();
                 }
                 boolean held = vehicle.getOrCreateVariable(VehiclePhone.VAR_FLY_HELD).isActive;
                 if (!held && vehicle.getOrCreateVariable(VehicleSummonFlight.VAR_ACTIVE).isActive && !jobs.containsKey(VehiclePhone.getPhoneID(vehicle))) {
@@ -140,12 +143,18 @@ public final class VehicleSummonManager {
         VehicleSummonFlight.apply(vehicle);
     }
 
+    /**What jobs in the world see of it, made the first time it's asked for.**/
+    private static WrapperSummonWorld getSummonWorld(AWrapperWorld world) {
+        return summonWorlds.computeIfAbsent(world, WrapperSummonWorld::new);
+    }
+
     /**Called when a server world unloads.  Leaves any vehicles on their way safe, and saves where vehicles are.**/
     public static void onWorldUnload(AWrapperWorld world) {
+        ISummonWorld summonWorld = summonWorlds.remove(world);
         Iterator<VehicleSummonJob> iterator = jobs.values().iterator();
         while (iterator.hasNext()) {
             VehicleSummonJob job = iterator.next();
-            if (job.world == world) {
+            if (job.world == summonWorld) {
                 job.cancel();
                 iterator.remove();
             }

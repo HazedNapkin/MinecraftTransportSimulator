@@ -4,27 +4,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-import minecrafttransportsimulator.baseclasses.ComputedVariable;
 import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.baseclasses.RotationMatrix;
-import minecrafttransportsimulator.blocks.components.ABlockBase.Axis;
-import minecrafttransportsimulator.entities.instances.APart;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
-import minecrafttransportsimulator.entities.instances.PartEngine;
-import minecrafttransportsimulator.items.instances.ItemVehicle;
-import minecrafttransportsimulator.jsondefs.JSONPart.EngineType;
-import minecrafttransportsimulator.mcinterface.AWrapperWorld;
-import minecrafttransportsimulator.mcinterface.IWrapperEntity;
-import minecrafttransportsimulator.mcinterface.IWrapperNBT;
-import minecrafttransportsimulator.mcinterface.IWrapperPlayer;
-import minecrafttransportsimulator.mcinterface.InterfaceManager;
-import minecrafttransportsimulator.packets.instances.PacketPartEngine.Signal;
-import minecrafttransportsimulator.packets.instances.PacketPartEngine;
-import minecrafttransportsimulator.systems.ConfigSystem;
 import minecrafttransportsimulator.systems.LanguageSystem.LanguageEntry;
 import minecrafttransportsimulator.systems.LanguageSystem;
 import minecrafttransportsimulator.systems.navigation.DriveControls;
-import minecrafttransportsimulator.systems.navigation.ITerrainQuery;
 import minecrafttransportsimulator.systems.navigation.PathTracker;
 import minecrafttransportsimulator.systems.navigation.PoseChecker;
 import minecrafttransportsimulator.systems.navigation.Route;
@@ -50,6 +35,9 @@ import minecrafttransportsimulator.systems.navigation.VehicleShape;
  * the player until a player gets in.  Other aircraft are teleported straight onto the ground near the player.
  * <p>
  * Wherever a vehicle ends up by the player, it has the side its summonArrivalAngle says towards them.
+ * <p>
+ * It works on the vehicle, world and player only through {@link ISummonVehicle}, {@link ISummonWorld} and
+ * {@link ISummonPlayer}, so it can be tested with made-up ones.
  *
  * @author HazedNapkin
  */
@@ -132,7 +120,8 @@ final class VehicleSummonJob {
     /**Ticks to keep pressing down after first touching the ground.**/
     private static final int SETTLE_TICKS = 10;
 
-    private enum Phase {
+    /**The steps of a call.  Package-private for tests.**/
+    enum Phase {
         LOCATE,
         FIND_SPOT,
         PLAN_GROUND,
@@ -159,7 +148,7 @@ final class VehicleSummonJob {
     }
 
     final UUID vehicleID;
-    final AWrapperWorld world;
+    final ISummonWorld world;
     private final UUID playerID;
     private final String name;
     private Phase phase = Phase.LOCATE;
@@ -168,15 +157,14 @@ final class VehicleSummonJob {
     private long tickTime;
     private boolean cancelled;
 
-    private EntityVehicleF_Physics vehicle;
+    private ISummonVehicle vehicle;
     private VehicleShape shape;
     private Point3D forcedChunk;
     /**True when the vehicle was already loaded and in driving range, so it must never be teleported.**/
     private boolean driveOnly;
 
     //Teleporting is remove now, spawn next tick, so the old entity is fully gone first.
-    private IWrapperNBT teleportData;
-    private ItemVehicle teleportItem;
+    private ISummonVehicle.Saved teleportData;
     private Phase afterTeleport;
     private LanguageEntry afterTeleportMessage;
 
@@ -233,9 +221,9 @@ final class VehicleSummonJob {
     private boolean flightTimedOut;
     private int settleTicks;
 
-    VehicleSummonJob(AWrapperWorld world, IWrapperPlayer player, UUID vehicleID, String name) {
+    VehicleSummonJob(ISummonWorld world, UUID playerID, UUID vehicleID, String name) {
         this.world = world;
-        this.playerID = player.getID();
+        this.playerID = playerID;
         this.vehicleID = vehicleID;
         this.name = name;
     }
@@ -263,12 +251,12 @@ final class VehicleSummonJob {
         try {
             cancel();
         } catch (RuntimeException e) {
-            InterfaceManager.coreInterface.logError("Vehicle summon couldn't stop safely: " + e);
+            world.logError("Vehicle summon couldn't stop safely: " + e);
         }
         try {
-            Object player = world.getExternalEntity(playerID);
-            if (player instanceof IWrapperPlayer) {
-                message((IWrapperPlayer) player, LanguageSystem.INTERACT_PHONE_FAILED);
+            ISummonPlayer player = world.getPlayer(playerID);
+            if (player != null) {
+                message(player, LanguageSystem.INTERACT_PHONE_FAILED);
             }
         } catch (RuntimeException e) {
             //Nothing more to be done.
@@ -284,7 +272,7 @@ final class VehicleSummonJob {
         if (cancelled) {
             return true;
         }
-        IWrapperPlayer player = (IWrapperPlayer) world.getExternalEntity(playerID);
+        ISummonPlayer player = world.getPlayer(playerID);
         if (player == null) {
             //Player logged off or changed dimension.
             cancel();
@@ -293,18 +281,18 @@ final class VehicleSummonJob {
         if (forcedChunk != null && world.getTime() % CHUNK_LOAD_INTERVAL == 0) {
             world.keepChunkLoaded(forcedChunk);
         }
-        if (phase != Phase.LOCATE && phase != Phase.TELEPORT_SPAWN && (vehicle == null || !vehicle.isValid)) {
+        if (phase != Phase.LOCATE && phase != Phase.TELEPORT_SPAWN && (vehicle == null || !vehicle.isValid())) {
             message(player, LanguageSystem.INTERACT_PHONE_LOSTCONTACT);
             releaseChunk();
             return true;
         }
         ++phaseTicks;
         if (phase != Phase.LOCATE && phase != Phase.TELEPORT_SPAWN && !isFlying()) {
-            IWrapperEntity rider = getRider();
-            if (rider != null) {
+            UUID riderID = vehicle.getRiderID();
+            if (riderID != null) {
                 //Someone's got in, maybe while the route was planned.  Hand it over to them, rather than move it out from under them.
                 stopControls();
-                if (!rider.getID().equals(playerID)) {
+                if (!riderID.equals(playerID)) {
                     message(player, LanguageSystem.INTERACT_PHONE_INUSE);
                 }
                 releaseChunk();
@@ -312,16 +300,16 @@ final class VehicleSummonJob {
             }
         }
         if (isFlying()) {
-            if (VehiclePhone.hasPlayerRider(vehicle)) {
+            if (vehicle.hasPlayerRider()) {
                 //A player has got in mid-flight.  Hand it over to them.
-                VehiclePhone.releaseHold(vehicle);
+                vehicle.releaseHold();
                 stopControls();
                 return true;
             }
             if (!flightTimedOut && ++flightTicks > FLIGHT_TIMEOUT) {
                 //Taking too long, likely blocked.  Hold where it is while we find somewhere on the ground for it.
                 flightTimedOut = true;
-                VehicleSummonFlight.flyTo(vehicle, vehicle.position.copy(), FLY_SPEED);
+                vehicle.flyTo(vehicle.getPosition().copy(), FLY_SPEED);
                 frontAngle = getLookAngle(player);
                 startSpotSearch(player.getPosition(), SpotPurpose.FLIGHT_TIMEOUT);
                 return false;
@@ -351,6 +339,11 @@ final class VehicleSummonJob {
         return true;
     }
 
+    /**What step the call is at, for tests.**/
+    Phase getPhase() {
+        return phase;
+    }
+
     /**True while the summon flight is flying the aircraft in, or holding it while we find it somewhere to go after timing out.**/
     private boolean isFlying() {
         return phase == Phase.CLIMB || phase == Phase.FLY_TO_PLAYER || phase == Phase.FIND_LANDING || phase == Phase.FLY_TO_LANDING || phase == Phase.DESCEND || (phase == Phase.FIND_SPOT && spotPurpose == SpotPurpose.FLIGHT_TIMEOUT);
@@ -363,11 +356,11 @@ final class VehicleSummonJob {
 
     //-----FINDING THE VEHICLE-----
 
-    private boolean locate(IWrapperPlayer player) {
-        vehicle = getLoadedVehicle();
+    private boolean locate(ISummonPlayer player) {
+        vehicle = world.getLoadedVehicle(vehicleID);
         if (vehicle == null) {
             if (forcedChunk == null) {
-                Point3D lastPosition = VehicleLocationTracker.getLastPosition(world, vehicleID);
+                Point3D lastPosition = world.getLastPosition(vehicleID);
                 if (lastPosition == null) {
                     message(player, LanguageSystem.INTERACT_PHONE_NOTFOUND);
                     return true;
@@ -378,7 +371,7 @@ final class VehicleSummonJob {
             } else if (phaseTicks > LOAD_TIMEOUT) {
                 //It's not where it was last seen, so it's been picked up or destroyed.  Stop looking for it there.
                 message(player, LanguageSystem.INTERACT_PHONE_NOANSWER);
-                VehicleLocationTracker.forget(world, vehicleID);
+                world.forgetPosition(vehicleID);
                 releaseChunk();
                 return true;
             }
@@ -386,7 +379,7 @@ final class VehicleSummonJob {
         }
 
         //Found it.  If it's only just loaded, wait for it to tick so its collision boxes are in place.
-        if (vehicle.ticksExisted < 2) {
+        if (!vehicle.isSettled()) {
             if (phaseTicks > LOAD_TIMEOUT) {
                 message(player, LanguageSystem.INTERACT_PHONE_NOANSWER);
                 releaseChunk();
@@ -396,32 +389,33 @@ final class VehicleSummonJob {
         }
 
         //An earlier call that was cut off may have left it with the controls on.  Hold it still while this one works out what to do.
-        if (vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING).isActive) {
+        if (vehicle.isMarkedDriving()) {
             park();
         }
 
         //Check the caller may still call it.  Its owner may have given it a key since it was registered on this phone.
-        if (!VehiclePhone.canControl(player, vehicle)) {
+        UUID keyID = vehicle.getKeyID();
+        if (keyID != null && !player.hasKey(keyID)) {
             message(player, LanguageSystem.INTERACT_PHONE_NEEDKEYCALL);
             releaseChunk();
             return true;
         }
 
         //Check it can come.
-        if (getRider() != null) {
+        if (vehicle.getRiderID() != null) {
             message(player, LanguageSystem.INTERACT_PHONE_INUSE);
             releaseChunk();
             return true;
         }
         //It has to be able to get here under its own power: not broken, with a working engine, and fuel if that needs it.
-        boolean isAircraft = vehicle.definition.motorized.isAircraft;
-        boolean flyIn = isAircraft && VehiclePhone.canFlyIn(vehicle);
+        boolean isAircraft = vehicle.isAircraft();
+        boolean flyIn = isAircraft && vehicle.canFlyIn();
         LanguageEntry notReady = null;
-        if (vehicle.outOfHealth) {
+        if (vehicle.isWrecked()) {
             notReady = LanguageSystem.INTERACT_PHONE_WRECKED;
-        } else if (getWorkingEngines(isAircraft).isEmpty()) {
+        } else if (!vehicle.hasWorkingEngine(isAircraft)) {
             notReady = LanguageSystem.INTERACT_PHONE_NOENGINE;
-        } else if (needsFuel(isAircraft) && vehicle.fuelTank.getFluidLevel() == 0) {
+        } else if (vehicle.isOutOfFuel(isAircraft)) {
             notReady = LanguageSystem.INTERACT_PHONE_NOFUEL;
         }
         if (notReady != null) {
@@ -429,7 +423,7 @@ final class VehicleSummonJob {
             releaseChunk();
             return true;
         }
-        shape = VehicleShape.of(vehicle);
+        shape = vehicle.getShape();
         reportShape(player);
         planCenter = player.getPosition().copy();
         frontAngle = getLookAngle(player);
@@ -449,33 +443,19 @@ final class VehicleSummonJob {
         return startGroundPlanning(player);
     }
 
-    /**Whoever is riding anywhere in the vehicle, or null if no one is.**/
-    private IWrapperEntity getRider() {
-        for (APart part : vehicle.allParts) {
-            if (part.rider != null) {
-                return part.rider;
-            }
-        }
-        return null;
-    }
-
-    private EntityVehicleF_Physics getLoadedVehicle() {
-        return VehiclePhone.getLoadedVehicle(world, vehicleID);
-    }
-
     /**Stops keeping the vehicle's old chunk loaded.  It unloads on its own shortly after.**/
     private void releaseChunk() {
         forcedChunk = null;
     }
 
     private double getSummonDistance() {
-        double distance = vehicle.summonDistanceVar.currentValue;
+        double distance = vehicle.getSummonDistance();
         return distance > 0 ? distance : DEFAULT_SUMMON_DISTANCE;
     }
 
     /**How fast the vehicle drives in, in m/s.**/
     private double getCruiseSpeed() {
-        double speed = vehicle.summonSpeedVar.currentValue;
+        double speed = vehicle.getSummonSpeed();
         return (speed > 0 ? speed : DEFAULT_SUMMON_SPEED) / 3.6;
     }
 
@@ -485,19 +465,20 @@ final class VehicleSummonJob {
      * it, and each degree the angle goes round towards the front turns the nose a degree towards the target.
      */
     private double getArrivalYaw(Point3D from, Point3D target) {
-        return yawTowards(from, target) - 90 + vehicle.summonArrivalAngleVar.currentValue;
+        return yawTowards(from, target) - 90 + vehicle.getArrivalAngle();
     }
 
-    private boolean isFar(IWrapperPlayer player) {
+    private boolean isFar(ISummonPlayer player) {
         Point3D playerPosition = player.getPosition();
-        return Math.hypot(vehicle.position.x - playerPosition.x, vehicle.position.z - playerPosition.z) > getSummonDistance() + 8 || Math.abs(vehicle.position.y - playerPosition.y) > 30;
+        Point3D position = vehicle.getPosition();
+        return Math.hypot(position.x - playerPosition.x, position.z - playerPosition.z) > getSummonDistance() + 8 || Math.abs(position.y - playerPosition.y) > 30;
     }
 
     //-----GROUND PLANNING-----
 
     /**Starts planning the drive in.  Returns true if the job's over, as it's nearby but not on ground it can drive from.**/
-    private boolean startGroundPlanning(IWrapperPlayer player) {
-        kinematics = VehicleKinematics.of(vehicle);
+    private boolean startGroundPlanning(ISummonPlayer player) {
+        kinematics = vehicle.getKinematics();
         if (!startPlanner(driveOnly)) {
             park();
             message(player, LanguageSystem.INTERACT_PHONE_NOWAYFROMHERE);
@@ -505,7 +486,7 @@ final class VehicleSummonJob {
         }
         //Answer straight away and start up while the route's planned, so the wait for it feels like setting off.
         message(player, LanguageSystem.INTERACT_PHONE_ONITSWAY);
-        startEngines(false);
+        vehicle.startEngines();
         return false;
     }
 
@@ -514,25 +495,26 @@ final class VehicleSummonJob {
      * can be placed.  Returns false, and starts nothing, if it's to set off from here but isn't on ground it can drive from.
      */
     private boolean startPlanner(boolean fromHere) {
-        TerrainMap terrain = new TerrainMap(ITerrainQuery.of(world));
+        TerrainMap terrain = new TerrainMap(world.getTerrain());
         RoutePlanner.Settings settings = new RoutePlanner.Settings();
         settings.summonDistance = getSummonDistance();
         settings.cruiseSpeed = getCruiseSpeed();
         settings.turnRadius = getTurnRadius();
-        settings.allowReverse = REVERSE_ENABLED && canReverse();
-        settings.allowPivot = PIVOT_ENABLED && canPivot();
+        settings.allowReverse = REVERSE_ENABLED && vehicle.canReverse();
+        settings.allowPivot = PIVOT_ENABLED && vehicle.canPivot();
         settings.pivotRate = PIVOT_RATE;
         setArrival(settings.arrival);
         planner = new RoutePlanner(new PoseChecker(terrain, shape), kinematics, settings, planCenter, Math.toDegrees(frontAngle));
         if (fromHere) {
-            int x = (int) Math.floor(vehicle.position.x);
-            int z = (int) Math.floor(vehicle.position.z);
-            int y = terrain.findSurface(x, z, (int) Math.floor(vehicle.position.y + shape.bottom + 0.5), 1, 2, shape.top - shape.bottom);
+            Point3D position = vehicle.getPosition();
+            int x = (int) Math.floor(position.x);
+            int z = (int) Math.floor(position.z);
+            int y = terrain.findSurface(x, z, (int) Math.floor(position.y + shape.bottom + 0.5), 1, 2, shape.top - shape.bottom);
             if (y == TerrainMap.NO_SURFACE) {
                 planner = null;
                 return false;
             }
-            planner.setStart(vehicle.position.x, y, vehicle.position.z, vehicle.orientation.angles.y);
+            planner.setStart(position.x, y, position.z, vehicle.getYaw());
         }
         setPhase(Phase.PLAN_GROUND);
         return true;
@@ -540,11 +522,11 @@ final class VehicleSummonJob {
 
     /**Sets the arrival settings to pull up the way the vehicle says: which side to the player, how far off, lined up how.**/
     private void setArrival(ArrivalPlanner.Settings settings) {
-        settings.arrivalAngle = vehicle.summonArrivalAngleVar.currentValue;
-        if (vehicle.summonArrivalGapVar.currentValue > 0) {
-            settings.gap = vehicle.summonArrivalGapVar.currentValue;
+        settings.arrivalAngle = vehicle.getArrivalAngle();
+        if (vehicle.getArrivalGap() > 0) {
+            settings.gap = vehicle.getArrivalGap();
         }
-        double[] align = ArrivalPlanner.getAlignPoint(vehicle, settings.arrivalAngle);
+        double[] align = vehicle.getAlignPoint(settings.arrivalAngle);
         settings.alignX = align[0];
         settings.alignZ = align[1];
     }
@@ -558,13 +540,13 @@ final class VehicleSummonJob {
         setArrival(settings);
         settings.drivesIn = false;
         settings.maxExtraGap = PLACEMENT_MAX_EXTRA_GAP;
-        placementSearch = new ArrivalPlanner(new PoseChecker(new TerrainMap(ITerrainQuery.of(world)), shape), settings, center, Math.toDegrees(frontAngle));
+        placementSearch = new ArrivalPlanner(new PoseChecker(new TerrainMap(world.getTerrain()), shape), settings, center, Math.toDegrees(frontAngle));
         spotPurpose = purpose;
         setPhase(Phase.FIND_SPOT);
     }
 
     /**Carries on the spot search, and acts on its result when it's done.**/
-    private boolean findSpot(IWrapperPlayer player) {
+    private boolean findSpot(ISummonPlayer player) {
         if (!placementSearch.step(tickTime)) {
             return false;
         }
@@ -597,15 +579,15 @@ final class VehicleSummonJob {
             }
             case FLIGHT_TIMEOUT: {
                 //Stop the flight before saving the aircraft to move it, or it'd fly back to its old target once placed.
-                VehicleSummonFlight.stop(vehicle);
+                vehicle.stopFlight();
                 if (spot != null) {
                     //It'll be on the ground, so gear down.
-                    set(vehicle.getOrCreateVariable(VehiclePhone.VAR_GEAR), 0);
+                    vehicle.setGearUp(false);
                     teleportToGround(spot.getGround(), spot.yaw, null, LanguageSystem.INTERACT_PHONE_BROUGHT);
                     return false;
                 }
                 //Nowhere on the ground either.  Stay up where it is until a player gets in.
-                VehiclePhone.holdInAir(vehicle);
+                vehicle.holdInAir();
                 stopControls();
                 message(player, LanguageSystem.INTERACT_PHONE_HOVERINGSTUCK);
                 return true;
@@ -623,7 +605,7 @@ final class VehicleSummonJob {
      * plus {@link #TURN_RADIUS_MARGIN}, or infinity if it can't steer.
      */
     private double getTurnRadius() {
-        return TURN_RADIUS_MARGIN * VehicleKinematics.of(vehicle).getTurnRadius(TURN_SPEED);
+        return TURN_RADIUS_MARGIN * kinematics.getTurnRadius(TURN_SPEED);
     }
 
     /**
@@ -640,12 +622,12 @@ final class VehicleSummonJob {
     }
 
     /**The horizontal direction the player is looking, as an angle for sin/cos (x, z).**/
-    private static double getLookAngle(IWrapperPlayer player) {
-        Point3D look = player.getLineOfSight(1).copy();
+    private static double getLookAngle(ISummonPlayer player) {
+        Point3D look = player.getLookDirection();
         return Math.atan2(look.x, look.z);
     }
 
-    private boolean planGround(IWrapperPlayer player) {
+    private boolean planGround(ISummonPlayer player) {
         if (!planner.step(tickTime)) {
             return false;
         }
@@ -667,41 +649,41 @@ final class VehicleSummonJob {
      * Tells the player what shape planning thinks the vehicle has, if summon debugging is on, and logs every box of it.
      * Everything that keeps the vehicle off blocks and the player goes by this shape.
      */
-    private void reportShape(IWrapperPlayer player) {
-        if (VehicleSummonDebug.isEnabled()) {
-            for (String line : SummonPlanReport.getShape(vehicle, shape)) {
-                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, line);
+    private void reportShape(ISummonPlayer player) {
+        if (world.isDebugEnabled()) {
+            for (String line : vehicle.describeShape(shape)) {
+                player.debugMessage(line);
             }
-            for (String line : SummonPlanReport.getShapeBoxes(vehicle, shape)) {
-                InterfaceManager.coreInterface.logError(line);
+            for (String line : vehicle.describeShapeBoxes(shape)) {
+                world.logError(line);
             }
         }
     }
 
     /**Tells the player where the vehicle's to pull up, and how near the player that is, if summon debugging is on.**/
-    private void reportGoal(IWrapperPlayer player) {
-        if (VehicleSummonDebug.isEnabled()) {
+    private void reportGoal(ISummonPlayer player) {
+        if (world.isDebugEnabled()) {
             List<RouteGoal> goals = planner.getGoals();
             if (goals.isEmpty()) {
-                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, String.format("Summon goal: none fits by the player, even pulling up %.2f away", planner.getArrival().getGap()));
+                player.debugMessage(String.format("Summon goal: none fits by the player, even pulling up %.2f away", planner.getArrival().getGap()));
                 return;
             }
             RouteGoal goal = planner.getRoute() != null ? planner.getRoute().goal : goals.get(0);
             for (String line : SummonPlanReport.getGoal(goal, planner.getArrival(), shape, planCenter, planner.getLookYaw(), goals.size())) {
-                player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, line);
+                player.debugMessage(line);
             }
         }
     }
 
     /**Tells the player how long planning took, stage by stage, if summon debugging is on.**/
-    private void reportPlanTimings(IWrapperPlayer player) {
-        if (VehicleSummonDebug.isEnabled()) {
-            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, "Summon plan: " + planner.getTimings());
+    private void reportPlanTimings(ISummonPlayer player) {
+        if (world.isDebugEnabled()) {
+            player.debugMessage("Summon plan: " + planner.getTimings());
         }
     }
 
     /**No route to the player.**/
-    private boolean groundFallback(IWrapperPlayer player) {
+    private boolean groundFallback(ISummonPlayer player) {
         boolean noRoom = planner.getGoals().isEmpty();
         planner = null;
         if (driveOnly) {
@@ -724,7 +706,7 @@ final class VehicleSummonJob {
      * Sets off along the route, placing the vehicle at its start first if that's where it starts from.  The message
      * is sent as it sets off, unless it's null.
      */
-    private void startRoute(IWrapperPlayer player, Route newRoute, LanguageEntry startMessage) {
+    private void startRoute(ISummonPlayer player, Route newRoute, LanguageEntry startMessage) {
         route = newRoute;
         planRouteSpeeds();
         planMarkers = getPlanMarkers();
@@ -762,7 +744,7 @@ final class VehicleSummonJob {
 
     /**How fast the vehicle's going, in m/s.**/
     private double getSpeed() {
-        return vehicle.velocity * vehicle.speedFactor * 20;
+        return vehicle.getSpeed();
     }
 
     /**
@@ -770,7 +752,7 @@ final class VehicleSummonJob {
      * it could have pulled up, and the places the planner aimed to set off from.  Null if debugging is off.
      */
     private List<VehicleSummonDebug.Marker> getPlanMarkers() {
-        if (!VehicleSummonDebug.isEnabled()) {
+        if (!world.isDebugEnabled()) {
             return null;
         }
         List<VehicleSummonDebug.Marker> markers = VehicleSummonDebug.markers(route.getPoints(), VehicleSummonDebug.Kind.PATH);
@@ -802,36 +784,18 @@ final class VehicleSummonJob {
 
     /**
      * Moves the vehicle by saving it, removing it, and spawning it again from that save at the
-     * new spot next tick.  Clients only see vehicle movement through MTS's movement deltas, so
-     * just changing the position on the server would leave them with the vehicle in the old place.
-     * The vehicle keeps its phone ID, so the phone still knows it, and anything else it saves, like its engines
-     * running.  It's placed moving forwards at the speed, in m/s.
+     * new spot next tick: see {@link ISummonVehicle#remove}.  It's placed moving forwards at the speed, in m/s.
      */
     private void teleport(Point3D position, double yaw, double speed, Phase next, LanguageEntry doneMessage) {
-        vehicle.disconnectAllConnections();
-        IWrapperNBT data = vehicle.save(InterfaceManager.coreInterface.getNewNBTWrapper());
-        data.setPoint3d("position", position);
-        data.setPoint3d("angles", new Point3D(0, yaw, 0));
-        //Motion is per tick, before the speed factor MTS scales it by.
-        double motion = speed / 20D / vehicle.speedFactor;
-        data.setPoint3d("motion", new Point3D(Math.sin(Math.toRadians(yaw)) * motion, 0, Math.cos(Math.toRadians(yaw)) * motion));
-        data.setPoint3d("serverDeltaM", new Point3D());
-        data.setPoint3d("serverDeltaR", new Point3D());
-        data.setDouble("serverDeltaP", 0);
-        teleportData = data;
-        teleportItem = (ItemVehicle) vehicle.cachedItem;
+        teleportData = vehicle.remove(position, yaw, speed);
         afterTeleport = next;
         afterTeleportMessage = doneMessage;
-        vehicle.remove();
         vehicle = null;
         setPhase(Phase.TELEPORT_SPAWN);
     }
 
-    private boolean finishTeleport(IWrapperPlayer player) {
-        vehicle = new EntityVehicleF_Physics(world, null, teleportItem, teleportData);
-        vehicle.addPartsPostAddition(null, teleportData);
-        world.spawnEntity(vehicle);
-        VehicleLocationTracker.update(vehicle);
+    private boolean finishTeleport(ISummonPlayer player) {
+        vehicle = teleportData.spawn();
         releaseChunk();
         teleportData = null;
         if (cancelled) {
@@ -856,9 +820,9 @@ final class VehicleSummonJob {
 
     private void beginDriving() {
         setPhase(Phase.DRIVE);
-        startEngines(false);
-        set(vehicle.parkingBrakeVar, 0);
-        lastProgressPosition = vehicle.position.copy();
+        vehicle.startEngines();
+        vehicle.setParkingBrake(false);
+        lastProgressPosition = vehicle.getPosition().copy();
         directionChangeTick = 0;
         driveTimeout = getDriveTimeout();
         PathTracker.Settings settings = new PathTracker.Settings();
@@ -866,20 +830,13 @@ final class VehicleSummonJob {
         tracker = new PathTracker(route, profile, kinematics, settings);
         //Turn the wheel for the curve it sets off on, which a vehicle can do standing, and one placed is placed doing.
         double startRudder = DriveControls.getStartRudder(route, kinematics, getSpeed());
-        set(vehicle.rudderInputVar, startRudder);
+        vehicle.setRudder(startRudder);
         tracker.setRudder(startRudder);
         driver = new DriveControls(BRAKING);
-        //Mark it as driven, so it's parked if this call goes without letting go, and remember its simple throttle to put back.
-        ComputedVariable driving = vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING);
-        if (!driving.isActive) {
-            vehicle.getOrCreateVariable(VehiclePhone.VAR_SIMPLE_THROTTLE_BEFORE).setActive(vehicle.isSimpleThrottleVar.isActive, false);
-            driving.setActive(true, false);
-        }
-        //Have MTS change gear up and down as it goes, as it does for automatic gearboxes, or it'd stay in first.
-        if (!vehicle.isSimpleThrottleVar.isActive) {
-            vehicle.isSimpleThrottleVar.setActive(true, true);
-        }
-        driveReport = VehicleSummonDebug.isEnabled() ? new SummonDriveReport(route, profile, getCruiseSpeed(), profile.speeds[0]) : null;
+        //Mark it as driven, so it's parked if this call goes without letting go, and have MTS change gear up and down
+        //as it goes, as it does for automatic gearboxes, or it'd stay in first.
+        vehicle.beginDriving();
+        driveReport = world.isDebugEnabled() ? new SummonDriveReport(route, profile, getCruiseSpeed(), profile.speeds[0]) : null;
     }
 
     /**
@@ -894,20 +851,20 @@ final class VehicleSummonJob {
         return timeout + (int) Math.ceil(route.getCusps().size() * DIRECTION_CHANGE_SECONDS * 20);
     }
 
-    private boolean drive(IWrapperPlayer player) {
+    private boolean drive(ISummonPlayer player) {
         if (planMarkers != null && (phaseTicks == DEBUG_SEND_DELAY || phaseTicks % DEBUG_RESEND_INTERVAL == 0)) {
-            VehicleSummonDebug.send(vehicle, planMarkers);
+            vehicle.sendDebugMarkers(planMarkers);
         }
 
-        Point3D position = vehicle.position;
+        Point3D position = vehicle.getPosition();
         double speed = getSpeed();
-        PathTracker.Command command = tracker.update(position.x, position.z, vehicle.orientation.angles.y, speed);
+        PathTracker.Command command = tracker.update(position.x, position.z, vehicle.getYaw(), speed);
         if (driveReport != null) {
             driveReport.record(command, speed);
         }
         //Get into gear for the way it's going, then steer and keep to the planned speed: see DriveControls.
-        boolean shifting = !command.pivot && shiftFor(command.reverse, speed);
-        DriveControls.Controls controls = driver.update(command, speed, vehicle.goingInReverse, shifting);
+        boolean shifting = !command.pivot && vehicle.shiftFor(command.reverse, speed);
+        DriveControls.Controls controls = driver.update(command, speed, vehicle.isGoingInReverse(), shifting);
         boolean playerInTheWay = !controls.park && !command.pivot && isPlayerInTheWay(player, command.reverse);
         if (controls.park || playerInTheWay) {
             reportDrive(player, controls.park ? controls.parkReason : "player in the way", command, speed);
@@ -931,9 +888,9 @@ final class VehicleSummonJob {
         if (controls.straightened) {
             tracker.setRudder(0);
         }
-        set(vehicle.rudderInputVar, controls.rudder);
-        set(vehicle.throttleVar, controls.throttle);
-        set(vehicle.brakeVar, controls.brake);
+        vehicle.setRudder(controls.rudder);
+        vehicle.setThrottle(controls.throttle);
+        vehicle.setBrake(controls.brake);
     }
 
     /**
@@ -942,48 +899,21 @@ final class VehicleSummonJob {
      * lets go of the brakes, and the steering turns it.  Once it's lined up, the next way it goes shifts back into
      * gear, from neutral without stopping.  Turning doesn't move it, so it's not counted as stuck meanwhile.
      */
-    private boolean pivot(IWrapperPlayer player, Point3D position, DriveControls.Controls controls) {
+    private boolean pivot(ISummonPlayer player, Point3D position, DriveControls.Controls controls) {
         directionChangeTick = phaseTicks;
         if (controls.neutral) {
-            set(vehicle.parkingBrakeVar, 0);
-            for (PartEngine engine : getWorkingEngines(false)) {
-                if (engine.running && engine.currentGearVar.currentValue != 0) {
-                    engine.shiftNeutral();
-                }
-            }
+            vehicle.setParkingBrake(false);
+            vehicle.shiftToNeutral();
         }
         applyControls(controls);
         return checkProgress(player, position);
     }
 
     /**
-     * Shifts the vehicle's engines towards the gear for going forward, or backing up if reverse is set.  Returns true
-     * while it's still shifting between forward and reverse: it has to stop first, and is held still meanwhile.  Engines
-     * in neutral, as when they've just started, are put in gear without stopping.
-     */
-    private boolean shiftFor(boolean reverse, double speed) {
-        boolean shifting = false;
-        for (PartEngine engine : getWorkingEngines(false)) {
-            if (!engine.running) {
-                continue;
-            }
-            double gear = engine.currentGearVar.currentValue;
-            shifting |= DriveControls.isShifting(gear, reverse);
-            DriveControls.Shift shift = DriveControls.getShift(gear, reverse, speed);
-            if (shift == DriveControls.Shift.DOWN) {
-                engine.shiftDown();
-            } else if (shift == DriveControls.Shift.UP) {
-                engine.shiftUp();
-            }
-        }
-        return shifting;
-    }
-
-    /**
      * Checks the vehicle's getting somewhere, and returns true if the job's over as it's stuck or taken too long.
      * Stopping to change direction doesn't count as stuck.
      */
-    private boolean checkProgress(IWrapperPlayer player, Point3D position) {
+    private boolean checkProgress(ISummonPlayer player, Point3D position) {
         if (phaseTicks % STUCK_CHECK_INTERVAL == 0) {
             boolean stuck = phaseTicks - directionChangeTick >= STUCK_CHECK_INTERVAL && lastProgressPosition.isDistanceToCloserThan(position, 1.5);
             lastProgressPosition = position.copy();
@@ -999,8 +929,8 @@ final class VehicleSummonJob {
      * drive into them.  Routes keep off the player, but they may have moved since it was planned.  Only just ahead
      * counts: a vehicle pulling up alongside them passes its nose close by, and stopping then would leave it short.
      */
-    private boolean isPlayerInTheWay(IWrapperPlayer player, boolean reverse) {
-        Point3D local = player.getPosition().copy().subtract(vehicle.position).reOrigin(vehicle.orientation);
+    private boolean isPlayerInTheWay(ISummonPlayer player, boolean reverse) {
+        Point3D local = player.getPosition().copy().subtract(vehicle.getPosition()).reOrigin(vehicle.getOrientation());
         boolean atHeight = local.y > shape.bottom - 2 && local.y < shape.top;
         boolean inLine = reverse ? local.z < 0 && -local.z < shape.back + STOP_FRONT_DISTANCE : local.z > 0 && local.z < shape.front + STOP_FRONT_DISTANCE;
         return atHeight && inLine && Math.abs(local.x) < shape.side + STOP_SIDE_MARGIN;
@@ -1010,21 +940,21 @@ final class VehicleSummonJob {
      * Tells the player how the drive went, if summon debugging is on: where it stopped against where it should have,
      * for the reason, and how it drove on the way.  A drive that got stuck has no stop to tell of.
      */
-    private void reportDrive(IWrapperPlayer player, String reason, PathTracker.Command command, double speed) {
+    private void reportDrive(ISummonPlayer player, String reason, PathTracker.Command command, double speed) {
         if (driveReport == null) {
             return;
         }
         if (command != null) {
-            double gap = vehicle.summonArrivalGapVar.currentValue > 0 ? vehicle.summonArrivalGapVar.currentValue : new ArrivalPlanner.Settings().gap;
-            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, driveReport.getStop(reason, command, vehicle, shape, player.getPosition(), vehicle.summonArrivalAngleVar.currentValue, gap, speed));
+            double gap = vehicle.getArrivalGap() > 0 ? vehicle.getArrivalGap() : new ArrivalPlanner.Settings().gap;
+            player.debugMessage(driveReport.getStop(reason, command, vehicle, shape, player.getPosition(), vehicle.getArrivalAngle(), gap, speed));
         } else {
-            player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, "Summon stopped: " + reason);
+            player.debugMessage("Summon stopped: " + reason);
         }
-        player.displayChatMessage(LanguageSystem.SYSTEM_DEBUG, driveReport.getDrive(replans));
+        player.debugMessage(driveReport.getDrive(replans));
         driveReport = null;
     }
 
-    private boolean onStuck(IWrapperPlayer player) {
+    private boolean onStuck(ISummonPlayer player) {
         reportDrive(player, phaseTicks > driveTimeout ? "took too long" : "stuck", null, getSpeed());
         stopControls();
         if (replans == 0 && phaseTicks <= driveTimeout) {
@@ -1040,7 +970,7 @@ final class VehicleSummonJob {
         return stuckFallback(player);
     }
 
-    private boolean replan(IWrapperPlayer player) {
+    private boolean replan(ISummonPlayer player) {
         if (!planner.step(tickTime)) {
             return false;
         }
@@ -1058,7 +988,7 @@ final class VehicleSummonJob {
      * Brings a vehicle that's stuck to the player, unless it was close by to start with.  Where it goes is looked for
      * again now, rather than where planning found it had room, as the player may have moved, even onto that spot.
      */
-    private boolean stuckFallback(IWrapperPlayer player) {
+    private boolean stuckFallback(ISummonPlayer player) {
         if (!driveOnly) {
             frontAngle = getLookAngle(player);
             startSpotSearch(player.getPosition(), SpotPurpose.STUCK);
@@ -1075,21 +1005,21 @@ final class VehicleSummonJob {
      * For aircraft that don't fly in (see {@link VehiclePhone#canFlyIn}).  Puts it straight on the ground near the player,
      * far enough out that none of it lands on them.
      */
-    private boolean teleportAircraftToGround(IWrapperPlayer player) {
+    private boolean teleportAircraftToGround(ISummonPlayer player) {
         startSpotSearch(player.getPosition(), SpotPurpose.AIRCRAFT);
         return false;
     }
 
-    private boolean startFlight(IWrapperPlayer player) {
+    private boolean startFlight(ISummonPlayer player) {
         Point3D playerPosition = player.getPosition();
-        landingChecker = new PoseChecker(new TerrainMap(ITerrainQuery.of(world)), shape);
+        landingChecker = new PoseChecker(new TerrainMap(world.getTerrain()), shape);
         cruiseY = getCruiseHeight(playerPosition);
-        startEngines(true);
+        vehicle.startEngines(true);
         //A new call takes over from any earlier one that left it in the sky.
-        set(vehicle.getOrCreateVariable(VehiclePhone.VAR_FLY_HELD), 0);
-        set(vehicle.getOrCreateVariable(VehiclePhone.VAR_GEAR), 1);
-        set(vehicle.parkingBrakeVar, 0);
-        set(vehicle.throttleVar, 0);
+        vehicle.clearHold();
+        vehicle.setGearUp(true);
+        vehicle.setParkingBrake(false);
+        vehicle.setThrottle(0);
         if (!driveOnly) {
             //Arrive from in front of the player.
             double distance = getSummonDistance();
@@ -1100,14 +1030,14 @@ final class VehicleSummonJob {
             teleport(spawn, yawTowards(spawn, playerPosition), Phase.FLY_TO_PLAYER, LanguageSystem.INTERACT_PHONE_ONITSWAY);
         } else {
             message(player, LanguageSystem.INTERACT_PHONE_ONITSWAY);
-            VehicleSummonFlight.flyTo(vehicle, new Point3D(vehicle.position.x, cruiseY, vehicle.position.z), FLY_SPEED * 0.5);
+            vehicle.flyTo(new Point3D(vehicle.getPosition().x, cruiseY, vehicle.getPosition().z), FLY_SPEED * 0.5);
             setPhase(Phase.CLIMB);
         }
         return false;
     }
 
-    private boolean fly(IWrapperPlayer player) {
-        Point3D position = vehicle.position;
+    private boolean fly(ISummonPlayer player) {
+        Point3D position = vehicle.getPosition();
         switch (phase) {
             case CLIMB: {
                 if (Math.abs(position.y - cruiseY) < 1) {
@@ -1119,7 +1049,7 @@ final class VehicleSummonJob {
                 //Follow the player as they move.
                 Point3D target = new Point3D(player.getPosition().x, cruiseY, player.getPosition().z);
                 if (phaseTicks == 1 || phaseTicks % 10 == 0) {
-                    VehicleSummonFlight.flyTo(vehicle, target, FLY_SPEED);
+                    vehicle.flyTo(target, FLY_SPEED);
                 }
                 if (horizontalDistance(position, target) < 1.5 && Math.abs(position.y - cruiseY) < 1) {
                     //Overhead.  Look for somewhere to land.
@@ -1133,11 +1063,11 @@ final class VehicleSummonJob {
                     if (!landingTurnsOnWayDown && !isFacingLandingHeading()) {
                         break;
                     }
-                    set(vehicle.getOrCreateVariable(VehiclePhone.VAR_GEAR), 0);
+                    vehicle.setGearUp(false);
                     setPhase(Phase.DESCEND);
                     //Until it's facing its landing heading, only come down to just above the ground and wait there.
                     descentHeld = !isFacingLandingHeading();
-                    VehicleSummonFlight.flyTo(vehicle, descentHeld ? getDescentHold() : getDescentTarget(), DESCEND_SPEED);
+                    vehicle.flyTo(descentHeld ? getDescentHold() : getDescentTarget(), DESCEND_SPEED);
                 }
                 break;
             }
@@ -1147,13 +1077,12 @@ final class VehicleSummonJob {
                         //Finished turning.  Carry on down.
                         descentHeld = false;
                         setPhase(Phase.DESCEND);
-                        VehicleSummonFlight.flyTo(vehicle, getDescentTarget(), DESCEND_SPEED);
+                        vehicle.flyTo(getDescentTarget(), DESCEND_SPEED);
                     }
                     break;
                 }
                 double heightLeft = position.y - (landingSpot.y + shape.groundOffset());
-                //Note MTS's isAnythingOnGround() is true when nothing is on the ground, so check the grounded set directly.
-                boolean wheelsDown = !vehicle.groundDeviceCollective.groundedGroundDevices.isEmpty();
+                boolean wheelsDown = vehicle.hasWheelsDown();
                 //If we've stopped sinking, we're resting on something.  Call that landed rather than hang there.
                 boolean stalled = false;
                 if (phaseTicks % 40 == 0) {
@@ -1166,7 +1095,7 @@ final class VehicleSummonJob {
                     settleTicks = SETTLE_TICKS;
                 }
                 if (settleTicks > 0 && --settleTicks == 0) {
-                    VehicleSummonFlight.stop(vehicle);
+                    vehicle.stopFlight();
                     park();
                     message(player, LanguageSystem.INTERACT_PHONE_LANDED);
                     return true;
@@ -1180,7 +1109,7 @@ final class VehicleSummonJob {
     }
 
     private boolean isFacingLandingHeading() {
-        return VehicleSummonFlight.isFacing(vehicle, landingYaw);
+        return VehicleSummonFlight.isFacing(vehicle.getYaw(), landingYaw);
     }
 
     /**
@@ -1197,7 +1126,7 @@ final class VehicleSummonJob {
         return new Point3D(landingSpot.x, landingSpot.y + shape.groundOffset() + LANDING_TURN_HOLD, landingSpot.z);
     }
 
-    private void startLandingSearch(IWrapperPlayer player) {
+    private void startLandingSearch(ISummonPlayer player) {
         setPhase(Phase.FIND_LANDING);
         landingCandidates.clear();
         Point3D center = player.getPosition();
@@ -1220,12 +1149,12 @@ final class VehicleSummonJob {
         landingIndex = 0;
     }
 
-    private boolean findLanding(IWrapperPlayer player) {
+    private boolean findLanding(ISummonPlayer player) {
         long startTime = System.nanoTime();
         while (System.nanoTime() - startTime < tickTime) {
             if (landingIndex >= landingCandidates.size()) {
                 //Nowhere to land.  Stay overhead until a player gets in.
-                VehiclePhone.holdInAir(vehicle);
+                vehicle.holdInAir();
                 stopControls();
                 message(player, LanguageSystem.INTERACT_PHONE_HOVERING);
                 return true;
@@ -1238,14 +1167,14 @@ final class VehicleSummonJob {
                 continue;
             }
             //Land with the side its arrival angle says to the player if it fits, or else turned whichever way it does.
-            double[] yaw = landingChecker.findLandingYaw(spot.x, groundY, spot.z, getArrivalYaw(spot, player.getPosition()), vehicle.orientation.angles.y, cruiseY);
+            double[] yaw = landingChecker.findLandingYaw(spot.x, groundY, spot.z, getArrivalYaw(spot, player.getPosition()), vehicle.getYaw(), cruiseY);
             if (yaw != null) {
                 landingSpot = new Point3D(spot.x, groundY, spot.z);
                 landingYaw = yaw[0];
                 landingTurnsOnWayDown = yaw[1] == 1;
                 //Start turning now, smoothly, as it flies over to the spot.
-                VehicleSummonFlight.turnTo(vehicle, landingYaw);
-                VehicleSummonFlight.flyTo(vehicle, new Point3D(spot.x, cruiseY, spot.z), FLY_SPEED * 0.4);
+                vehicle.turnTo(landingYaw);
+                vehicle.flyTo(new Point3D(spot.x, cruiseY, spot.z), FLY_SPEED * 0.4);
                 setPhase(Phase.FLY_TO_LANDING);
                 return false;
             }
@@ -1259,9 +1188,8 @@ final class VehicleSummonJob {
      */
     private int getLandingGround(int x, int z) {
         for (int y = (int) Math.floor(cruiseY); y > cruiseY - 128; --y) {
-            Point3D block = new Point3D(x + 0.5, y + 0.5, z + 0.5);
-            if (!world.isAir(block)) {
-                return world.isBlockLiquid(block) || !world.isBlockSolid(block, Axis.UP) ? TerrainMap.NO_SURFACE : y + 1;
+            if (!world.isAir(x, y, z)) {
+                return world.isLiquid(x, y, z) || !world.isSolidTop(x, y, z) ? TerrainMap.NO_SURFACE : y + 1;
             }
         }
         return TerrainMap.NO_SURFACE;
@@ -1283,18 +1211,20 @@ final class VehicleSummonJob {
     private double getColumnTop(int x, int z, double nearY) {
         int top = (int) Math.min(world.getMaxHeight() - 1, nearY + 128);
         for (int y = top; y > nearY - 32; --y) {
-            if (!world.isAir(new Point3D(x + 0.5, y + 0.5, z + 0.5))) {
+            if (!world.isAir(x, y, z)) {
                 return y + 1;
             }
         }
         return nearY;
     }
 
-    private boolean isIndoors(IWrapperPlayer player) {
+    private boolean isIndoors(ISummonPlayer player) {
         Point3D position = player.getPosition();
         int top = (int) Math.min(world.getMaxHeight() - 1, position.y + 256);
+        int x = (int) Math.floor(position.x);
+        int z = (int) Math.floor(position.z);
         for (int y = (int) Math.floor(position.y) + 2; y <= top; ++y) {
-            if (!world.isAir(new Point3D(position.x, y + 0.5, position.z))) {
+            if (!world.isAir(x, y, z)) {
                 return true;
             }
         }
@@ -1303,137 +1233,25 @@ final class VehicleSummonJob {
 
     //-----CONTROLS-----
 
-    private void startEngines(boolean includeJets) {
-        for (PartEngine engine : getWorkingEngines(includeJets)) {
-            if (!engine.running) {
-                if (engine.definition.engine.type == EngineType.MAGIC) {
-                    //Magic engines start themselves once the magneto is on.  We can't use the
-                    //auto-starter, as it refuses to start anything when the fuel tank is empty.
-                    engine.magnetoVar.setTo(1, true);
-                } else {
-                    engine.autoStartEngine();
-                    InterfaceManager.packetInterface.sendToAllClients(new PacketPartEngine(engine, Signal.AS_ON));
-                }
-            }
-        }
-    }
-
-    /**
-     * The engines that aren't broken and that we'd use to bring the vehicle in.  Ground vehicles drive in,
-     * so their jets don't count.
-     */
-    private List<PartEngine> getWorkingEngines(boolean includeJets) {
-        List<PartEngine> engines = new ArrayList<>();
-        for (PartEngine engine : vehicle.engines) {
-            if ((includeJets || !isJet(engine)) && !engine.outOfHealth) {
-                engines.add(engine);
-            }
-        }
-        return engines;
-    }
-
-    /**
-     * True if any working engine we'd start burns fuel from the tank.  Magic engines don't, so a vehicle
-     * powered only by them never runs out.
-     */
-    private boolean needsFuel(boolean includeJets) {
-        if (vehicle.isCreative || ConfigSystem.settings.general.fuelUsageFactor.value == 0) {
-            return false;
-        }
-        for (PartEngine engine : getWorkingEngines(includeJets)) {
-            if (engine.definition.engine.type != EngineType.MAGIC) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * True if the vehicle can back up the way a route plans: it has an engine to drive it, every engine has a
-     * reverse gear, it steers with its wheels rather than always skid steering, and it isn't towing anything, as
-     * backing a trailer is another thing altogether.  Vehicles that always skid steer turn on the spot instead.
-     */
-    private boolean canReverse() {
-        List<PartEngine> engines = getWorkingEngines(false);
-        if (engines.isEmpty() || vehicle.definition.motorized.hasPermanentSkidSteer || !vehicle.towingConnections.isEmpty()) {
-            return false;
-        }
-        for (PartEngine engine : engines) {
-            if (engine.reverseGears == 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * True if the vehicle can turn on the spot: it skid steers, as tracked vehicles do when stopped and mechs and
-     * hovercraft always do, it has an engine to run in neutral, which MTS needs to skid steer, and it isn't towing anything.
-     */
-    private boolean canPivot() {
-        return (vehicle.definition.motorized.hasSkidSteer || vehicle.definition.motorized.hasPermanentSkidSteer) && !getWorkingEngines(false).isEmpty() && vehicle.towingConnections.isEmpty();
-    }
-
-    private static boolean isJet(PartEngine engine) {
-        return engine.definition.generic.type.contains("jet");
-    }
-
     private void stopControls() {
-        stopControls(vehicle);
-    }
-
-    /**
-     * Lets go of the vehicle's controls, takes it out of reverse if it was backing up, and, if a call was driving it,
-     * puts its simple throttle back as it was, so whoever drives it next isn't caught out.
-     */
-    static void stopControls(EntityVehicleF_Physics vehicle) {
-        ComputedVariable driving = vehicle.getOrCreateVariable(VehiclePhone.VAR_DRIVING);
-        if (driving.isActive) {
-            ComputedVariable simpleThrottleBefore = vehicle.getOrCreateVariable(VehiclePhone.VAR_SIMPLE_THROTTLE_BEFORE);
-            if (vehicle.isSimpleThrottleVar.isActive != simpleThrottleBefore.isActive) {
-                vehicle.isSimpleThrottleVar.setActive(simpleThrottleBefore.isActive, true);
-            }
-            simpleThrottleBefore.setActive(false, false);
-            driving.setActive(false, false);
-        }
-        set(vehicle.throttleVar, 0);
-        set(vehicle.rudderInputVar, 0);
-        set(vehicle.brakeVar, 0);
-        for (PartEngine engine : vehicle.engines) {
-            if (!engine.outOfHealth && engine.currentGearVar.currentValue < 0) {
-                engine.shiftNeutral();
-            }
-        }
+        vehicle.stopControls();
     }
 
     private void park() {
-        park(vehicle);
-    }
-
-    /**Stops the vehicle's controls and holds it where it is with the parking brake.  Engines are left running.**/
-    static void park(EntityVehicleF_Physics vehicle) {
-        stopControls(vehicle);
-        set(vehicle.parkingBrakeVar, 1);
+        vehicle.park();
     }
 
     /**Makes whatever the vehicle is doing safe after a cancel.**/
     private void stopVehicle() {
-        if (vehicle == null || !vehicle.isValid) {
+        if (vehicle == null || !vehicle.isValid()) {
             return;
         }
-        if (vehicle.getOrCreateVariable(VehicleSummonFlight.VAR_ACTIVE).isActive) {
+        if (vehicle.isFlown()) {
             //Airborne.  Stay up where it is until a player gets in.
-            VehiclePhone.holdInAir(vehicle);
+            vehicle.holdInAir();
             stopControls();
         } else {
             park();
-        }
-    }
-
-    /**Sets a control and syncs it to clients, only if it changed enough to matter.**/
-    private static void set(ComputedVariable variable, double value) {
-        if (Math.abs(variable.currentValue - value) > 0.005) {
-            variable.setTo(value, true);
         }
     }
 
@@ -1447,7 +1265,7 @@ final class VehicleSummonJob {
         return Math.toDegrees(Math.atan2(to.x - from.x, to.z - from.z));
     }
 
-    private void message(IWrapperPlayer player, LanguageEntry language) {
-        VehiclePhone.message(player, language, name);
+    private void message(ISummonPlayer player, LanguageEntry language) {
+        player.message(language, name);
     }
 }

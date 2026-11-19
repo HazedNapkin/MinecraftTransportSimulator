@@ -29,7 +29,9 @@ The code is in two packages under `mccore/src/main/java/minecrafttransportsimula
 | Stage | Package | Class | Role |
 |---|---|---|---|
 | Entry | summoning | `VehiclePhone`, `VehicleSummonManager` | Phone entries and permission checks. The manager owns one job per vehicle, ticks them each server tick and shares out the search time (10 ms a tick across all calls). |
-| Job | summoning | `VehicleSummonJob` | The state machine for one call: locate, plan, teleport, drive, fly, land, fall back. The only class that touches the real vehicle. |
+| Job | summoning | `VehicleSummonJob` | The state machine for one call: locate, plan, teleport, drive, fly, land, fall back. It reaches the vehicle, world and player only through the interfaces below. |
+| Seams | navigation | `IDrivenVehicle`, `WrapperDrivenVehicle` | What anything that drives a ground vehicle needs of it (position, speed, controls, gears), and the real MTS vehicle behind that. |
+| Seams | summoning | `ISummonVehicle`, `ISummonWorld`, `ISummonPlayer`, `WrapperSummon*` | What the job needs besides: readiness, pack fields, teleporting, flight, chunk loading, messages. The `WrapperSummon*` classes are the only ones that touch the real vehicle, world and player. |
 | Finding it | summoning | `VehicleLocationTracker` | Last saved position of every vehicle per world, so an unloaded one can be found and its chunk loaded. |
 | World | navigation | `ITerrainQuery`, `TerrainMap` | The only way planning asks about blocks. `TerrainMap` caches answers for one plan. |
 | Vehicle | navigation | `VehicleShape`, `VehicleKinematics`, `PoseChecker` | The space the vehicle takes up, how it steers (copied from MTS's own steering maths), and whether it fits at a pose. |
@@ -79,7 +81,9 @@ Rules for the baseline:
 - A regression in one metric is acceptable only when it is the stated price of a larger gain, and the trade is written down. Never update the baseline just to make the test pass.
 - When you fix a bug, add the place or stop that shows it to `SummonScenarios` or the scorecard first, so the fix is visible in the numbers.
 
-What the tests do not cover: `VehicleSummonJob` itself, teleporting, flight and landing, and anything that depends on real MTS physics. `SimVehicle` is a stand-in whose numbers are not taken from MTS. Changes in those areas need an in-game check, which you cannot do yourself: say plainly what was not verified and give the user the steps to check it.
+- **`VehicleSummonJobTest`** runs the job for ground vehicles in `FakeSummonWorld`, with `FakeSummonVehicle` (driven like `SimVehicle`) and `FakeSummonPlayer`: every way a call goes, and cancel, logout, failure and riders in every phase. Add a test there for any new phase or exit.
+
+What the tests do not cover: the `WrapperSummon*` and `WrapperDrivenVehicle` adapters, real teleporting, flight and landing, and anything that depends on real MTS physics. `SimVehicle` is a stand-in whose numbers are not taken from MTS. Changes in those areas need an in-game check, which you cannot do yourself: say plainly what was not verified and give the user the steps to check it.
 
 ## Guidelines for changes
 

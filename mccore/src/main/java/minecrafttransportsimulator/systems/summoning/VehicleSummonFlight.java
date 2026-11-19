@@ -77,9 +77,9 @@ public final class VehicleSummonFlight {
         vehicle.getOrCreateVariable(VAR_TURN).setTo(1, true);
     }
 
-    /**True if the aircraft is facing within a degree and a half of the yaw.**/
-    static boolean isFacing(EntityVehicleF_Physics vehicle, double yaw) {
-        return Math.abs(RotationMatrix.clampAngle(yaw - vehicle.orientation.angles.y)) < 1.5;
+    /**True if an aircraft facing currentYaw is within a degree and a half of the yaw.**/
+    static boolean isFacing(double currentYaw, double yaw) {
+        return Math.abs(RotationMatrix.clampAngle(yaw - currentYaw)) < 1.5;
     }
 
     /**Server only: hands the aircraft back to its normal physics.**/

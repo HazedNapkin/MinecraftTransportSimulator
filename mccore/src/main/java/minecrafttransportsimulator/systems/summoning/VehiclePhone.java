@@ -114,12 +114,14 @@ public final class VehiclePhone {
      * singleplayer and LAN worlds.
      */
     static boolean canControl(IWrapperPlayer player, EntityVehicleF_Physics vehicle) {
-        if (vehicle.keyUUID == null) {
-            return true;
-        }
+        return vehicle.keyUUID == null || hasKey(player, vehicle.keyUUID);
+    }
+
+    /**True if the player is carrying the key with the ID.**/
+    static boolean hasKey(IWrapperPlayer player, UUID keyID) {
         for (int i = 0; i < player.getInventory().getSize(); ++i) {
             IWrapperNBT data = player.getInventory().getStack(i).getData();
-            if (data != null && vehicle.keyUUID.equals(data.getUUID(ItemItem.KEY_UUID_TAG))) {
+            if (data != null && keyID.equals(data.getUUID(ItemItem.KEY_UUID_TAG))) {
                 return true;
             }
         }

@@ -41,7 +41,7 @@ None of this changes behaviour; the scorecard is unchanged.
 - **`VehicleSummonFlight`** is a general "fly this aircraft to a point" autopilot. Its synced variables are named `phone_fly_*` and are saved with vehicles, so renaming them needs the guard in `VehicleSummonManager.onVehicleTick` to read the old names for a while. Move it to `navigation` as a flight autopilot when Phase 7 changes it.
 - **`VehicleLocationTracker`** finds any vehicle's last saved position, but is keyed by phone ID. Keying it by `uniqueUUID`, or by any ID the caller chooses, would let other features find unloaded vehicles. Look at this with the open `TELEPORT_SPAWN` question in 1.4, which may change which ID survives a teleport.
 - **`VehicleSummonDebug` and `PacketVehicleSummonDebug`** draw markers on a vehicle for debugging. Nothing in them is summon-specific except the config switch and the name.
-- **Phase 2's job interfaces** (what the job needs from a vehicle and from the world) are general: put the vehicle-control one in `navigation` so any autopilot can be tested with a fake vehicle.
+- **Phase 2's job interfaces**: done for vehicle control (`navigation/IDrivenVehicle`). The rest of `ISummonVehicle` is tied to summoning by its saved variable names (`phone_drive`, `phone_fly_*`) and goes with `VehicleSummonFlight` when that moves.
 - **Phase 5.1's primitive maps** belong in `baseclasses` if they are written, as nothing about them is specific to planning.
 
 ---
@@ -97,6 +97,10 @@ Read `tick()` and each phase method once more with this question: on cancel, pla
 ---
 
 ## Phase 2: Make the job testable
+
+**Ground half done (2026-11-17), unverified in game.** The job reaches the vehicle only through `ISummonVehicle` (which extends the general `navigation/IDrivenVehicle`), and the world and player through `ISummonWorld` and `ISummonPlayer`. The real ones are `WrapperDrivenVehicle`, `WrapperSummonVehicle`, `WrapperSummonWorld` and `WrapperSummonPlayer`; the manager keeps one `WrapperSummonWorld` per world. Behaviour and the scorecard are unchanged. `VehicleSummonJobTest` covers, for ground vehicles: a placed drive to arrival, a nearby vehicle driving over, an unloaded vehicle being loaded, no route (teleport, or stay put when nearby), no room (spot further out), stuck then replan then teleport (or stay put when nearby), cancel, logout and `fail()` in every ground phase, the vehicle unloading mid-drive, the caller or someone else getting in, every refusal in `locate`, and a vehicle left flagged by an earlier call being parked first (1.1). 1.2 is covered by someone getting in while planning.
+
+**Left to do:** flight tests (fly in, land, nowhere to land, timeout, a player getting in mid-flight, cancel while flying), which need `FakeSummonVehicle`'s flight to actually move. The fakes are in the summoning test package because they drive a `SimVehicle`; move a plain fake `IDrivenVehicle` to the navigation test package when something there needs one.
 
 **Problem.** `VehicleSummonJob` is about 1,400 lines covering the state machine, teleporting, driving glue and flight, and has no tests, because it works directly on `EntityVehicleF_Physics`, `AWrapperWorld` and `IWrapperPlayer`. Phases 3 and 6 change its behaviour and need tests to be safe.
 

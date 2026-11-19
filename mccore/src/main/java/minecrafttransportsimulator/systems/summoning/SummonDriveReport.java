@@ -81,16 +81,16 @@ final class SummonDriveReport {
      * Where the vehicle stopped, compared with where it should have: which side the player sees and how far they are
      * from it, compared with the arrival angle and gap it wanted, and how far short or past, to the side and crooked it is.
      */
-    String getStop(String reason, PathTracker.Command command, EntityVehicleF_Physics vehicle, VehicleShape shape, Point3D player, double arrivalAngle, double gap, double speed) {
-        double[] align = ArrivalPlanner.getAlignPoint(vehicle, arrivalAngle);
-        Point3D local = player.copy().subtract(vehicle.position).reOrigin(vehicle.orientation);
+    String getStop(String reason, PathTracker.Command command, ISummonVehicle vehicle, VehicleShape shape, Point3D player, double arrivalAngle, double gap, double speed) {
+        double[] align = vehicle.getAlignPoint(arrivalAngle);
+        Point3D local = player.copy().subtract(vehicle.getPosition()).reOrigin(vehicle.getOrientation());
         //Angles go round from the vehicle's left (+X) towards its front (+Z).
         double seenAngle = Math.toDegrees(Math.atan2(local.z - align[1], local.x - align[0]));
         double seenGap = Double.MAX_VALUE;
         for (ShapeBox box : shape.boxes) {
             seenGap = Math.min(seenGap, Math.hypot(Math.max(0, Math.abs(local.x - box.x) - box.radius), Math.max(0, Math.abs(local.z - box.z) - box.radius)));
         }
-        double headingError = RotationMatrix.clampAngle(vehicle.orientation.angles.y - route.goal.yaw);
+        double headingError = RotationMatrix.clampAngle(vehicle.getYaw() - route.goal.yaw);
         return String.format("Summon stop (%s): side %.0f deg off (saw %.0f, wanted %.0f), gap %.2f (wanted %.2f), %.2f blocks %s, %.2f to the %s, heading %.1f deg off, still at %.1f m/s", reason, RotationMatrix.clampAngle(seenAngle - arrivalAngle), RotationMatrix.clampAngle(seenAngle), arrivalAngle, seenGap, gap, Math.abs(command.remaining), command.remaining >= 0 ? "short" : "past", Math.abs(command.crossTrack), command.crossTrack >= 0 ? "left" : "right", headingError, speed);
     }
 
